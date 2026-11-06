@@ -5,87 +5,46 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go/jetstream"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/publisher"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-func setupTestcontainers(t *testing.T, ctx context.Context) (natsURL, pgURL, s3URL string) {
+func runEmbeddedNATS(t *testing.T) (*server.Server, string) {
 	t.Helper()
-
-	// 1. NATS JetStream Container
-	natsReq := testcontainers.ContainerRequest{
-		Image:        "nats:2.10-alpine",
-		Cmd:          []string{"-js"},
-		ExposedPorts: []string{"4222/tcp"},
-		WaitingFor:   wait.ForLog("Server is ready"),
+	opts := &server.Options{
+		Port:      -1,
+		JetStream: true,
+		StoreDir:  t.TempDir(),
 	}
-	natsC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: natsReq,
-		Started:          true,
-	})
+	s, err := server.NewServer(opts)
 	if err != nil {
-		t.Fatalf("failed to start NATS container: %v", err)
+		t.Fatalf("failed to create embedded nats: %v", err)
 	}
-	t.Cleanup(func() { _ = natsC.Terminate(ctx) })
-
-	natsIP, _ := natsC.Host(ctx)
-	natsPort, _ := natsC.MappedPort(ctx, "4222")
-	natsURL = "nats://" + natsIP + ":" + natsPort.Port()
-
-	// 2. PostgreSQL Container
-	pgReq := testcontainers.ContainerRequest{
-		Image:        "postgres:16-alpine",
-		Env:          map[string]string{"POSTGRES_USER": "bsgo", "POSTGRES_PASSWORD": "password", "POSTGRES_DB": "bsgodb"},
-		ExposedPorts: []string{"5432/tcp"},
-		WaitingFor:   wait.ForLog("database system is ready to accept connections"),
+	go s.Start()
+	if !s.ReadyForConnections(5 * time.Second) {
+		t.Fatalf("nats start timed out")
 	}
-	pgC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: pgReq,
-		Started:          true,
-	})
-	if err != nil {
-		t.Fatalf("failed to start Postgres container: %v", err)
-	}
-	t.Cleanup(func() { _ = pgC.Terminate(ctx) })
-
-	pgIP, _ := pgC.Host(ctx)
-	pgPort, _ := pgC.MappedPort(ctx, "5432")
-	pgURL = "postgres://bsgo:password@" + pgIP + ":" + pgPort.Port() + "/bsgodb?sslmode=disable"
-
-	// 3. MinIO (Garage S3 equivalent) Container
-	s3Req := testcontainers.ContainerRequest{
-		Image:        "minio/minio:RELEASE.2024-01-28T22-35-53Z",
-		Cmd:          []string{"server", "/data"},
-		Env:          map[string]string{"MINIO_ROOT_USER": "admin", "MINIO_ROOT_PASSWORD": "password"},
-		ExposedPorts: []string{"9000/tcp"},
-		WaitingFor:   wait.ForLog("MinIO Object Storage Server"),
-	}
-	s3C, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: s3Req,
-		Started:          true,
-	})
-	if err != nil {
-		t.Fatalf("failed to start S3 container: %v", err)
-	}
-	t.Cleanup(func() { _ = s3C.Terminate(ctx) })
-
-	s3IP, _ := s3C.Host(ctx)
-	s3Port, _ := s3C.MappedPort(ctx, "9000")
-	s3URL = "http://" + s3IP + ":" + s3Port.Port()
-
-	return natsURL, pgURL, s3URL
+	t.Cleanup(func() { s.Shutdown() })
+	return s, s.ClientURL()
 }
 
 func TestE2EFullDistributionPipeline(t *testing.T) {
 	ctx := context.Background()
 
-	// 1. Spin up Testcontainers
-	natsURL, _, _ := setupTestcontainers(t, ctx)
+	// 1. Connect to local running NATS or embedded NATS
+	var natsURL string
+	ncTest, _, err := natsqueue.ConnectJetStream("nats://localhost:4222")
+	if err == nil {
+		ncTest.Close()
+		natsURL = "nats://localhost:4222"
+	} else {
+		_, natsURL = runEmbeddedNATS(t)
+	}
 
 	// 2. Connect to NATS and setup streams
 	nc, js, err := natsqueue.ConnectJetStream(natsURL)
@@ -126,7 +85,7 @@ func TestE2EFullDistributionPipeline(t *testing.T) {
 
 	// 5. Worker consumes job
 	cons, err := js.CreateOrUpdateConsumer(ctx, natsqueue.StreamJobsPending, jetstream.ConsumerConfig{
-		Durable:   "worker-consumer",
+		Durable:   "worker-e2e-consumer",
 		AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	if err != nil {
@@ -161,7 +120,7 @@ func TestE2EFullDistributionPipeline(t *testing.T) {
 
 	// 7. Verify Publisher Stream receipt
 	pubCons, err := js.CreateOrUpdateConsumer(ctx, natsqueue.StreamPublish, jetstream.ConsumerConfig{
-		Durable:   "publisher-consumer",
+		Durable:   "publisher-e2e-consumer",
 		AckPolicy: jetstream.AckExplicitPolicy,
 	})
 	if err != nil {

@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE TABLE IF NOT EXISTS project_packages (
     project_name    VARCHAR(128) NOT NULL REFERENCES projects(name) ON DELETE CASCADE,
     package_name    VARCHAR(128) NOT NULL,
-    shard           VARCHAR(4) NOT NULL,
+    shard           VARCHAR(64) NOT NULL,
     git_url         VARCHAR(512) NOT NULL,
     branch          VARCHAR(128),
     commit_sha      VARCHAR(64),
