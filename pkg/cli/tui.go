@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -219,7 +221,20 @@ func (m *DashboardModel) toggleLogSubscription() {
 
 	if m.viewLog && len(m.jobs) > 0 {
 		curJob := m.jobs[m.cursor]
-		m.logLines = []string{fmt.Sprintf("Subscribed to live NATS log stream: bsgo.logs.%s", curJob.JobID)}
+		m.logLines = []string{fmt.Sprintf("─── Build Logs: %s (%s) ───", curJob.JobID, curJob.Package)}
+
+		// Load archived log file from disk if available
+		savedLog := filepath.Join("/tmp/bsgo-worker/jobs", curJob.JobID, "build.log")
+		if data, err := os.ReadFile(savedLog); err == nil && len(data) > 0 {
+			lines := strings.Split(string(data), "\n")
+			for _, l := range lines {
+				if strings.TrimSpace(l) != "" {
+					m.appendLog(l)
+				}
+			}
+		}
+
+		// Subscribe to live NATS log stream for in-progress output
 		sub, err := m.nc.Subscribe("bsgo.logs."+curJob.JobID, func(msg *nats.Msg) {
 			m.appendLog(string(msg.Data))
 		})

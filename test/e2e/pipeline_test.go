@@ -36,15 +36,8 @@ func runEmbeddedNATS(t *testing.T) (*server.Server, string) {
 func TestE2EFullDistributionPipeline(t *testing.T) {
 	ctx := context.Background()
 
-	// 1. Connect to local running NATS or embedded NATS
-	var natsURL string
-	ncTest, _, err := natsqueue.ConnectJetStream("nats://localhost:4222")
-	if err == nil {
-		ncTest.Close()
-		natsURL = "nats://localhost:4222"
-	} else {
-		_, natsURL = runEmbeddedNATS(t)
-	}
+	// Always use isolated embedded NATS for tests to prevent polluting live dev streams
+	_, natsURL := runEmbeddedNATS(t)
 
 	// 2. Connect to NATS and setup streams
 	nc, js, err := natsqueue.ConnectJetStream(natsURL)
