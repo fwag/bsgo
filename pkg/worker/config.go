@@ -2,9 +2,12 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os"
 
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
+	"gopkg.in/yaml.v3"
 )
 
 type WorkerConfig struct {
@@ -16,6 +19,55 @@ type WorkerConfig struct {
 	WorkDir      string
 	CacheDir     string
 	Hardware     v1.WorkerHardware
+	SandboxMode  string
+}
+
+type WorkerConfigFile struct {
+	Worker struct {
+		ID       string `yaml:"id"`
+		Arch     string `yaml:"arch"`
+		WorkDir  string `yaml:"work_dir"`
+		CacheDir string `yaml:"cache_dir"`
+	} `yaml:"worker"`
+	Nats struct {
+		URL string `yaml:"url"`
+	} `yaml:"nats"`
+	Storage struct {
+		S3Endpoint string `yaml:"s3_endpoint"`
+		S3Bucket   string `yaml:"s3_bucket"`
+		S3Region   string `yaml:"s3_region"`
+	} `yaml:"storage"`
+	Sandbox struct {
+		Mode        string `yaml:"mode"`
+		ObsBuildBin string `yaml:"obs_build_bin"`
+		KVM         struct {
+			VMType   string `yaml:"vm_type"`
+			Device   string `yaml:"device"`
+			Kernel   string `yaml:"kernel"`
+			Initrd   string `yaml:"initrd"`
+			MemoryMB int    `yaml:"memory_mb"`
+			VCPUs    int    `yaml:"vcpus"`
+		} `yaml:"kvm"`
+		Podman struct {
+			VMType string `yaml:"vm_type"`
+			Image  string `yaml:"image"`
+			Memory string `yaml:"memory"`
+			VCPUs  int    `yaml:"vcpus"`
+		} `yaml:"podman"`
+	} `yaml:"sandbox"`
+}
+
+func LoadConfigFile(path string) (*WorkerConfigFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read worker config: %w", err)
+	}
+
+	var cfg WorkerConfigFile
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse worker config: %w", err)
+	}
+	return &cfg, nil
 }
 
 type ExecutionResult struct {

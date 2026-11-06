@@ -1,0 +1,40 @@
+# bsgo Worker Daemon Configuration
+# Modeled after legacy /etc/sysconfig/obs-worker with cloud-native YAML defaults
+
+worker:
+  id: "worker-local-01"
+  arch: "x86_64"
+  work_dir: "/tmp/bsgo-worker"
+  cache_dir: "/tmp/bsgo-worker/cache"
+
+nats:
+  url: "nats://localhost:4222"
+
+storage:
+  s3_endpoint: "http://localhost:3900"
+  s3_bucket: "bsgo-artifacts"
+  s3_region: "garage"
+
+# Sandbox Execution Engine
+sandbox:
+  # Supported modes:
+  #   "rpmbuild"  : Direct host rpmbuild (rootless, instant local developer loop)
+  #   "obs-build" : Full /usr/bin/build with sterile VM / Container isolation
+  mode: "rpmbuild"
+  obs_build_bin: "/usr/bin/build"
+
+  # QEMU / KVM Micro-VM Driver (Bare-Metal Production Nodes)
+  kvm:
+    vm_type: "kvm"
+    device: "/dev/kvm"
+    kernel: "/boot/vmlinuz"
+    initrd: "/boot/initrd"
+    memory_mb: 4096
+    vcpus: 4
+
+  # Rootless Podman Container Driver (Workstations & Desktop CI)
+  podman:
+    vm_type: "podman"
+    image: "registry.opensuse.org/opensuse/tumbleweed:latest"
+    memory: "4Gi"
+    vcpus: 4
