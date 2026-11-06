@@ -1,0 +1,23 @@
+schema_version: "v1"
+
+package:
+  name: "hello"
+  title: "GNU Hello Package"
+  description: "Friendly greeting utility from GNU and openSUSE"
+
+source:
+  git: "/home/ta/Devel/bsgo/test/fixtures/hello"
+  branch: "main"
+  commit: "95b64b9fbd3d2ebd42f6ddc0d410e74423029c6a"
+  recipe: "hello.spec"
+
+build:
+  enabled: true
+  targets:
+    standard: true
+
+resources:
+  memory: "2Gi"
+  vcpus: 2
+  disk: "10Gi"
+  timeout: "30m"

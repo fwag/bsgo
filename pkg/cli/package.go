@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ func newPackageCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
 
 	cmd.AddCommand(newPackageListCmd(store, opts))
 	cmd.AddCommand(newPackageShowCmd(store, opts))
+	cmd.AddCommand(newPackageAddCmd(store, opts))
 	cmd.AddCommand(newPackageSetResourcesCmd(store, opts))
 	cmd.AddCommand(newPackageTriggerCmd(store, opts))
 	return cmd
@@ -96,6 +98,49 @@ func newPackageShowCmd(store storage.Store, opts *OutputOptions) *cobra.Command 
 				p.Resources.Memory, p.Resources.VCPUs, p.Resources.Disk, p.Resources.Timeout)
 
 			return Render(cmd.OutOrStdout(), sb.String(), p, p.Package.Name, *opts)
+		},
+	}
+}
+
+func newPackageAddCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:   "add <project> <manifest.yaml>",
+		Short: "Add or import a package from a YAML manifest",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			projectName, manifestPath := args[0], args[1]
+
+			data, err := os.ReadFile(manifestPath)
+			if err != nil {
+				return fmt.Errorf("failed to read manifest file: %w", err)
+			}
+
+			pkg, err := manifest.ParsePackage(data)
+			if err != nil {
+				return fmt.Errorf("invalid package manifest: %w", err)
+			}
+
+			if err := store.UpsertPackage(ctx, projectName, pkg); err != nil {
+				return fmt.Errorf("failed to store package: %w", err)
+			}
+
+			result := map[string]any{
+				"status":  "ADDED",
+				"project": projectName,
+				"package": pkg.Package.Name,
+				"shard":   manifest.ShardPath(pkg.Package.Name),
+				"git":     pkg.Source.Git,
+			}
+
+			var sb strings.Builder
+			sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")).Render("✔ Package added successfully!") + "\n\n")
+			fmt.Fprintf(&sb, "  Project:  %s\n", projectName)
+			fmt.Fprintf(&sb, "  Package:  %s\n", pkg.Package.Name)
+			fmt.Fprintf(&sb, "  Shard:    %s\n", manifest.ShardPath(pkg.Package.Name))
+			fmt.Fprintf(&sb, "  Git Repo: %s\n", pkg.Source.Git)
+
+			return Render(cmd.OutOrStdout(), sb.String(), result, pkg.Package.Name, *opts)
 		},
 	}
 }
