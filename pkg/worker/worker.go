@@ -154,10 +154,13 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 
 func (w *WorkerDaemon) publishStatusUpdate(job *v1.BuildJob, phase string, exitCode int, res *ExecutionResult) {
 	status := map[string]any{
-		"job_id":    job.JobID,
-		"worker_id": w.cfg.WorkerID,
-		"phase":     phase,
-		"exit_code": exitCode,
+		"job_id":       job.JobID,
+		"project":      job.Project,
+		"package":      job.Package,
+		"architecture": job.Architecture,
+		"worker_id":    w.cfg.WorkerID,
+		"phase":        phase,
+		"exit_code":    exitCode,
 	}
 	if res != nil {
 		status["artifacts"] = res.Artifacts

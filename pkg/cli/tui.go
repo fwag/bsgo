@@ -167,18 +167,34 @@ func (m *DashboardModel) handleStatusUpdate(st map[string]any) {
 		return
 	}
 
+	pkgName, _ := st["package"].(string)
+	if pkgName == "" {
+		pkgName = "package"
+	}
+	projectName, _ := st["project"].(string)
+	arch, _ := st["architecture"].(string)
+	if arch == "" {
+		arch = "x86_64"
+	}
+
 	for i, j := range m.jobs {
 		if j.JobID == jobID {
 			m.jobs[i].Target = phase
+			if pkgName != "package" {
+				m.jobs[i].Package = pkgName
+			}
+			if projectName != "" {
+				m.jobs[i].Project = projectName
+			}
 			return
 		}
 	}
 
 	m.jobs = append(m.jobs, v1.BuildJob{
 		JobID:        jobID,
-		Project:      "Build Job",
-		Package:      jobID,
-		Architecture: "x86_64",
+		Project:      projectName,
+		Package:      pkgName,
+		Architecture: arch,
 		Target:       phase,
 	})
 }
@@ -247,7 +263,11 @@ func (m *DashboardModel) renderJobPanel() string {
 		if j.Target == "SUCCEEDED" {
 			badge = succeededBadge.Render()
 		}
-		fmt.Fprintf(&sb, "%s%-16s %s  %-16s %s\n", cursor, j.JobID, badge, j.Package, subtleStyle.Render(j.Architecture))
+		displayName := j.Package
+		if j.Project != "" && j.Project != "Build Job" {
+			displayName = j.Project + "/" + j.Package
+		}
+		fmt.Fprintf(&sb, "%s%-20s %s  %-24s %s\n", cursor, j.JobID, badge, displayName, subtleStyle.Render(j.Architecture))
 	}
 	return sb.String()
 }
