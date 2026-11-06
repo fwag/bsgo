@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  nats:
+    image: docker.io/library/nats:2.10-alpine
+    container_name: bsgo-nats
+    command: ["-js"]
+    ports:
+      - "4222:4222"
+    restart: unless-stopped
+
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    container_name: bsgo-postgres
+    environment:
+      POSTGRES_USER: bsgo
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: bsgodb
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  garage:
+    image: docker.io/dxflrs/garage:v1.0.1
+    container_name: bsgo-garage
+    command: ["/garage", "server"]
+    volumes:
+      - ./hack/mini-setup/garage.toml:/etc/garage.toml:ro,Z
+    ports:
+      - "3900:3900"
+      - "3903:3903"
+    restart: unless-stopped
