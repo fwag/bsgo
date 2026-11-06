@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func GeneratePAT(userID, name string, scopes []string) (string, *PersonalAccessToken, error) {
@@ -19,7 +21,7 @@ func GeneratePAT(userID, name string, scopes []string) (string, *PersonalAccessT
 	tokenHash := HashToken(rawToken)
 
 	pat := &PersonalAccessToken{
-		ID:        generateUUID(),
+		ID:        uuid.NewString(),
 		UserID:    userID,
 		Name:      name,
 		TokenHash: tokenHash,
@@ -64,12 +66,4 @@ func VerifyScope(scopes []string, action, resource, resourceID string) bool {
 
 func matchPart(pattern, val string) bool {
 	return pattern == "*" || pattern == val
-}
-
-func generateUUID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }

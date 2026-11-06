@@ -1,6 +1,10 @@
 package v1
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 type BuildTrigger struct {
 	TriggerID     string `json:"trigger_id"`
@@ -81,7 +85,7 @@ type WorkerHardware struct {
 
 func NewTrigger(project, pkg, gitURL, commit, ref, user string) *BuildTrigger {
 	return &BuildTrigger{
-		TriggerID:     generateUUID(),
+		TriggerID:     uuid.NewString(),
 		Project:       project,
 		Package:       pkg,
 		SourceGitURL:  gitURL,

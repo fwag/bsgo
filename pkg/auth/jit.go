@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 var ErrUserNotFound = errors.New("user not found")
@@ -75,7 +77,7 @@ func (p *JITProvisioner) EnsureUser(ctx context.Context, claims *Claims) (*User,
 	}
 
 	newUser := &User{
-		ID:           generateUUID(),
+		ID:           uuid.NewString(),
 		AuthentikSub: claims.Subject,
 		Username:     claims.PreferredUsername,
 		Email:        claims.Email,
