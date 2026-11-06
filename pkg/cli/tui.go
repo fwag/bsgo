@@ -63,6 +63,8 @@ func tickCmd() tea.Cmd {
 
 type DashboardModel struct {
 	cursor       int
+	termWidth    int
+	termHeight   int
 	natsURL      string
 	nc           *nats.Conn
 	workers      map[string]v1.WorkerHeartbeat
@@ -105,11 +107,13 @@ func newWatchCmd() *cobra.Command {
 
 func newLiveDashboardModel(natsURL string, nc *nats.Conn) *DashboardModel {
 	return &DashboardModel{
-		natsURL:  natsURL,
-		nc:       nc,
-		workers:  make(map[string]v1.WorkerHeartbeat),
-		jobs:     make([]v1.BuildJob, 0),
-		logLines: make([]string, 0),
+		natsURL:    natsURL,
+		nc:         nc,
+		workers:    make(map[string]v1.WorkerHeartbeat),
+		jobs:       make([]v1.BuildJob, 0),
+		logLines:   make([]string, 0),
+		termWidth:  110,
+		termHeight: 30,
 	}
 }
 
@@ -137,6 +141,9 @@ func (m *DashboardModel) Init() tea.Cmd {
 
 func (m *DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.termWidth = msg.Width
+		m.termHeight = msg.Height
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -167,8 +174,8 @@ func (m *DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *DashboardModel) appendLog(line string) {
 	m.logLines = append(m.logLines, line)
-	if len(m.logLines) > 50 {
-		m.logLines = m.logLines[len(m.logLines)-50:]
+	if len(m.logLines) > 100 {
+		m.logLines = m.logLines[len(m.logLines)-100:]
 	}
 }
 
@@ -223,7 +230,6 @@ func (m *DashboardModel) toggleLogSubscription() {
 		curJob := m.jobs[m.cursor]
 		m.logLines = []string{fmt.Sprintf("─── Build Logs: %s (%s) ───", curJob.JobID, curJob.Package)}
 
-		// Load archived log file from disk if available
 		savedLog := filepath.Join("/tmp/bsgo-worker/jobs", curJob.JobID, "build.log")
 		if data, err := os.ReadFile(savedLog); err == nil && len(data) > 0 {
 			lines := strings.Split(string(data), "\n")
@@ -234,7 +240,6 @@ func (m *DashboardModel) toggleLogSubscription() {
 			}
 		}
 
-		// Subscribe to live NATS log stream for in-progress output
 		sub, err := m.nc.Subscribe("bsgo.logs."+curJob.JobID, func(msg *nats.Msg) {
 			m.appendLog(string(msg.Data))
 		})
@@ -255,16 +260,34 @@ func (m *DashboardModel) View() string {
 	jobPanel := m.renderJobPanel()
 	workerPanel := m.renderWorkerPanel()
 
-	leftCol := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#7D56F4")).Padding(1, 2).Width(60).Render(jobPanel)
-	rightCol := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#7D56F4")).Padding(1, 2).Width(44).Render(workerPanel)
+	panelHeight := 10
+	leftCol := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7D56F4")).
+		Padding(0, 1).
+		Width(60).
+		Height(panelHeight).
+		Render(jobPanel)
+
+	rightCol := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7D56F4")).
+		Padding(0, 1).
+		Width(44).
+		Height(panelHeight).
+		Render(workerPanel)
+
 	s.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol) + "\n\n")
 
 	if m.viewLog {
-		var logBox strings.Builder
-		for _, l := range m.logLines {
-			logBox.WriteString(subtleStyle.Render(l) + "\n")
-		}
-		s.WriteString(lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#7D56F4")).Padding(1, 2).Width(106).Render(logBox.String()) + "\n\n")
+		logBox := m.renderLogBox()
+		s.WriteString(lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#7D56F4")).
+			Padding(0, 1).
+			Width(106).
+			Height(8).
+			Render(logBox) + "\n\n")
 	}
 
 	s.WriteString(subtleStyle.Render("  [↑/↓] Navigate  •  [Enter/l] Toggle Live Logs  •  [q] Quit"))
@@ -277,11 +300,26 @@ func (m *DashboardModel) renderJobPanel() string {
 	sb.WriteString(titleStyle.Render(formatJobPanelTitle(len(m.jobs), active, pending, succ, fail)) + "\n")
 
 	if len(m.jobs) == 0 {
-		sb.WriteString(subtleStyle.Render("  No build jobs currently queued or completed.\n  Run './bin/bsgo package trigger <pkg>' to trigger a build.\n"))
+		sb.WriteString(subtleStyle.Render("  No build jobs queued or completed.\n  Run './bin/bsgo package trigger <pkg>' to trigger a build.\n"))
 		return sb.String()
 	}
 
-	for i, j := range m.jobs {
+	const maxVisible = 7
+	startIdx := 0
+	if m.cursor >= maxVisible {
+		startIdx = m.cursor - maxVisible + 1
+	}
+	endIdx := startIdx + maxVisible
+	if endIdx > len(m.jobs) {
+		endIdx = len(m.jobs)
+	}
+
+	if startIdx > 0 {
+		fmt.Fprintf(&sb, "%s\n", subtleStyle.Render(fmt.Sprintf("  ▲ %d more above", startIdx)))
+	}
+
+	for i := startIdx; i < endIdx; i++ {
+		j := m.jobs[i]
 		cursor := "  "
 		if m.cursor == i {
 			cursor = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render("▶ ")
@@ -301,7 +339,29 @@ func (m *DashboardModel) renderJobPanel() string {
 		if j.Project != "" && j.Project != "Build Job" {
 			displayName = j.Project + "/" + j.Package
 		}
-		fmt.Fprintf(&sb, "%s%-20s %s  %-24s %s\n", cursor, j.JobID, badge, displayName, subtleStyle.Render(j.Architecture))
+		if len(displayName) > 22 {
+			displayName = displayName[:19] + "..."
+		}
+		fmt.Fprintf(&sb, "%s%-18s %s %-22s\n", cursor, j.JobID, badge, displayName)
+	}
+
+	if endIdx < len(m.jobs) {
+		fmt.Fprintf(&sb, "%s\n", subtleStyle.Render(fmt.Sprintf("  ▼ %d more below", len(m.jobs)-endIdx)))
+	}
+
+	return sb.String()
+}
+
+func (m *DashboardModel) renderLogBox() string {
+	var sb strings.Builder
+	const maxLogLines = 7
+	linesToShow := m.logLines
+	if len(linesToShow) > maxLogLines {
+		linesToShow = linesToShow[len(linesToShow)-maxLogLines:]
+	}
+
+	for _, l := range linesToShow {
+		sb.WriteString(subtleStyle.Render(l) + "\n")
 	}
 	return sb.String()
 }
@@ -329,14 +389,14 @@ func formatJobPanelTitle(total, active, pending, succ, fail int) string {
 	if active == 0 && pending == 0 {
 		return fmt.Sprintf("Build Jobs (%d) • Completed (✔ %d, ✖ %d)", total, succ, fail)
 	}
-	return fmt.Sprintf("Build Jobs (%d) • ◐ %d active, ○ %d queued (✔ %d)", total, active, pending, succ)
+	return fmt.Sprintf("Build Jobs (%d) • ◐ %d active, ○ %d queued", total, active, pending)
 }
 
 func (m *DashboardModel) renderWorkerPanel() string {
 	var sb strings.Builder
-	sb.WriteString(titleStyle.Render(fmt.Sprintf("Connected Worker Fleet (%d)", len(m.workers))) + "\n")
+	sb.WriteString(titleStyle.Render(fmt.Sprintf("Worker Fleet (%d)", len(m.workers))) + "\n")
 	if len(m.workers) == 0 {
-		sb.WriteString(subtleStyle.Render("  No workers currently heartbeating.\n  Start a worker daemon with './bin/bsgo-worker'.\n"))
+		sb.WriteString(subtleStyle.Render("  No workers heartbeating.\n  Start worker: './bin/bsgo-worker'.\n"))
 		return sb.String()
 	}
 
@@ -345,7 +405,7 @@ func (m *DashboardModel) renderWorkerPanel() string {
 		if w.Status == "BUSY" {
 			wBadge = buildingBadge.SetString("● BUSY").Render()
 		}
-		fmt.Fprintf(&sb, "  • %-16s %s %s (%d cores, %dGB)\n",
+		fmt.Fprintf(&sb, "  • %-14s %s %s (%dc, %dGB)\n",
 			w.WorkerID, subtleStyle.Render(w.Architecture), wBadge, w.Hardware.TotalVCPUs, w.Hardware.TotalMemoryMB/1024)
 		if w.ActiveJobID != "" {
 			fmt.Fprintf(&sb, "    running: %s\n", subtleStyle.Render(w.ActiveJobID))
