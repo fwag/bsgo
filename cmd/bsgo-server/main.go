@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -63,9 +64,9 @@ func main() {
 	// 4. HTTP Gateway
 	startHTTPServer(ctx, httpPort, store)
 
-	fmt.Printf("\n✔ bsgo Control Plane is LIVE and listening for triggers and workers!\n")
+	fmt.Printf("\n✔ bsgo Control Plane is LIVE and listening for triggers and workers!\n\n")
 	<-ctx.Done()
-	fmt.Println("bsgo Control Plane shut down cleanly.")
+	fmt.Println("\nbsgo Control Plane shut down cleanly.")
 }
 
 func initControlPlaneStore(ctx context.Context, dbURL string) storage.Store {
@@ -88,11 +89,35 @@ func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store stora
 		_ = nc.Publish(subj, data)
 	}), 30*time.Second)
 
-	// Ingest worker heartbeats into Dispatcher
+	knownWorkers := make(map[string]bool)
+	var workerMu sync.Mutex
+
+	// Ingest worker heartbeats
 	_, _ = nc.Subscribe("bsgo.workers.heartbeat", func(msg *nats.Msg) {
 		var hb v1.WorkerHeartbeat
 		if err := json.Unmarshal(msg.Data, &hb); err == nil {
 			disp.Registry().UpdateHeartbeat(hb)
+			workerMu.Lock()
+			if !knownWorkers[hb.WorkerID] {
+				knownWorkers[hb.WorkerID] = true
+				fmt.Printf("[%s] [DISPATCHER] Worker discovered: %s (Arch: %s, %d vCPUs, %dGB RAM)\n",
+					time.Now().Format("15:04:05"), hb.WorkerID, hb.Architecture, hb.Hardware.TotalVCPUs, hb.Hardware.TotalMemoryMB/1024)
+			}
+			workerMu.Unlock()
+		}
+	})
+
+	// Ingest status transitions
+	_, _ = nc.Subscribe("bsgo.status", func(msg *nats.Msg) {
+		var st map[string]any
+		if err := json.Unmarshal(msg.Data, &st); err == nil {
+			jobID, _ := st["job_id"].(string)
+			phase, _ := st["phase"].(string)
+			pkgName, _ := st["package"].(string)
+			if jobID != "" && phase != "" {
+				fmt.Printf("[%s] [STATUS] Job %s (%s) phase -> %s\n",
+					time.Now().Format("15:04:05"), jobID, pkgName, phase)
+			}
 		}
 	})
 
@@ -109,14 +134,19 @@ func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store stora
 			return
 		}
 
+		fmt.Printf("\n[%s] [SCHEDULER] >>> Ingested trigger: %s/%s (Ref: %s, Commit: %s)\n",
+			time.Now().Format("15:04:05"), trig.Project, trig.Package, trig.Ref, trig.CommitSHA)
+
 		jobs, err := sched.ProcessTrigger(ctx, &trig)
 		if err != nil {
-			// Fallback: create direct job so it builds immediately
 			jobs = []*v1.BuildJob{createFallbackJob(&trig)}
 		}
 
 		for _, j := range jobs {
 			disp.EnqueueJob(j)
+			fmt.Printf("[%s] [DISPATCHER] Enqueued build job: %s (%s/%s, Priority: %d)\n",
+				time.Now().Format("15:04:05"), j.JobID, j.Project, j.Package, j.Priority)
+
 			statusMsg, _ := json.Marshal(map[string]any{
 				"job_id":       j.JobID,
 				"project":      j.Project,
@@ -129,6 +159,10 @@ func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store stora
 	})
 
 	// Background dispatch loop
+	startDispatchLoop(ctx, disp, nc)
+}
+
+func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nats.Conn) {
 	go func() {
 		ticker := time.NewTicker(300 * time.Millisecond)
 		defer ticker.Stop()
@@ -139,6 +173,9 @@ func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store stora
 			case <-ticker.C:
 				assignedWorker, dispatchedJob, _ := disp.DispatchNext(ctx)
 				if dispatchedJob != nil {
+					fmt.Printf("[%s] [DISPATCHER] ⚡ Dispatched job %s (%s) -> %s\n",
+						time.Now().Format("15:04:05"), dispatchedJob.JobID, dispatchedJob.Package, assignedWorker)
+
 					statusMsg, _ := json.Marshal(map[string]any{
 						"job_id":       dispatchedJob.JobID,
 						"project":      dispatchedJob.Project,
