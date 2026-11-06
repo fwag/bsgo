@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -24,11 +26,12 @@ type WorkerDaemon struct {
 
 func NewWorkerDaemon(cfg WorkerConfig, nc *nats.Conn, sandbox Sandbox) *WorkerDaemon {
 	return &WorkerDaemon{
-		cfg:      cfg,
-		nc:       nc,
-		sandbox:  sandbox,
-		status:   "IDLE",
-		stopChan: make(chan struct{}),
+		cfg:          cfg,
+		nc:           nc,
+		sandbox:      sandbox,
+		status:       "IDLE",
+		stopChan:     make(chan struct{}),
+		cachedHashes: make([]string, 0),
 	}
 }
 
@@ -46,6 +49,12 @@ func (w *WorkerDaemon) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to worker job inbox: %w", err)
 	}
+
+	fmt.Printf("[%s] [INFO] Worker registered: id=%s arch=%s (%d vCPUs, %dGB RAM)\n",
+		time.Now().Format("15:04:05"), w.cfg.WorkerID, w.cfg.Architecture, w.cfg.Hardware.TotalVCPUs, w.cfg.Hardware.TotalMemoryMB/1024)
+	fmt.Printf("[%s] [INFO] Listening for build jobs on: %s\n", time.Now().Format("15:04:05"), subject)
+	fmt.Printf("[%s] [INFO] Emitting heartbeats to: bsgo.workers.heartbeat (Status: IDLE)\n", time.Now().Format("15:04:05"))
+	fmt.Printf("[%s] [INFO] Ready for jobs. Waiting for server dispatch...\n", time.Now().Format("15:04:05"))
 
 	select {
 	case <-ctx.Done():
@@ -106,10 +115,14 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 	w.mu.Unlock()
 	w.emitHeartbeat()
 
+	fmt.Printf("\n[%s] [JOB] >>> Received Build Job: %s (%s/%s, Arch: %s)\n",
+		time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package, job.Architecture)
+	fmt.Printf("[%s] [JOB] Status: BUSY • Executing sandbox (%s)...\n",
+		time.Now().Format("15:04:05"), w.cfg.Hardware.SandboxType)
+
 	jobCtx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
-	// Control / abort listener
 	ctrlSub, _ := w.nc.Subscribe(fmt.Sprintf("bsgo.jobs.%s.control", job.JobID), func(msg *nats.Msg) {
 		var ctrl v1.JobControl
 		if err := json.Unmarshal(msg.Data, &ctrl); err == nil && ctrl.Action == "ABORT" {
@@ -121,23 +134,11 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 		defer func() { _ = ctrlSub.Unsubscribe() }()
 	}
 
-	logWriter := &natsLogWriter{nc: w.nc, jobID: job.JobID}
-	res, execErr := w.sandbox.Execute(jobCtx, job, logWriter)
+	natsLog := &natsLogWriter{nc: w.nc, jobID: job.JobID}
+	multiLog := io.MultiWriter(natsLog, os.Stdout)
+	res, execErr := w.sandbox.Execute(jobCtx, job, multiLog)
 
-	phase := "SUCCEEDED"
-	exitCode := 0
-	if jobCtx.Err() != nil {
-		phase = "ABORTED"
-		exitCode = 137
-	} else if execErr != nil || (res != nil && res.ExitCode != 0) {
-		phase = "FAILED"
-		if res != nil {
-			exitCode = res.ExitCode
-		} else {
-			exitCode = 1
-		}
-	}
-
+	phase, exitCode := determineJobOutcome(jobCtx, execErr, res)
 	w.publishStatusUpdate(job, phase, exitCode, res)
 
 	w.mu.Lock()
@@ -150,6 +151,32 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 	}
 	w.mu.Unlock()
 	w.emitHeartbeat()
+
+	if phase == "SUCCEEDED" {
+		artCount := 0
+		if res != nil {
+			artCount = len(res.Artifacts)
+		}
+		fmt.Printf("[%s] [JOB] ✔ Job %s SUCCEEDED in %.2fs (produced %d artifacts)\n",
+			time.Now().Format("15:04:05"), job.JobID, res.TotalSeconds, artCount)
+	} else {
+		fmt.Printf("[%s] [JOB] ✖ Job %s %s (Exit Code: %d)\n",
+			time.Now().Format("15:04:05"), job.JobID, phase, exitCode)
+	}
+	fmt.Printf("[%s] [INFO] Status: IDLE • Ready for next job\n", time.Now().Format("15:04:05"))
+}
+
+func determineJobOutcome(jobCtx context.Context, execErr error, res *ExecutionResult) (string, int) {
+	if jobCtx.Err() != nil {
+		return "ABORTED", 137
+	}
+	if execErr != nil || (res != nil && res.ExitCode != 0) {
+		if res != nil {
+			return "FAILED", res.ExitCode
+		}
+		return "FAILED", 1
+	}
+	return "SUCCEEDED", 0
 }
 
 func (w *WorkerDaemon) publishStatusUpdate(job *v1.BuildJob, phase string, exitCode int, res *ExecutionResult) {
@@ -175,8 +202,8 @@ type natsLogWriter struct {
 	jobID string
 }
 
-func (w *natsLogWriter) Write(p []byte) (int, error) {
+func (w *natsLogWriter) Write(p []byte) (n int, err error) {
 	subject := fmt.Sprintf("bsgo.logs.%s", w.jobID)
-	err := w.nc.Publish(subject, p)
+	err = w.nc.Publish(subject, p)
 	return len(p), err
 }
