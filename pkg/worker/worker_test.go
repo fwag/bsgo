@@ -3,6 +3,7 @@ package worker_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -203,5 +204,49 @@ func TestWorkerAbortSignal(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for abort status")
+	}
+}
+
+func TestProcessSandboxPathTraversalRejection(t *testing.T) {
+	tempDir := t.TempDir()
+	sandbox := &worker.ProcessSandbox{WorkDir: tempDir}
+
+	maliciousJobs := []*v1.BuildJob{
+		{JobID: "../../../../etc/passwd", Project: "test", Package: "pkg"},
+		{JobID: "sub/dir", Project: "test", Package: "pkg"},
+		{JobID: "sub\\dir", Project: "test", Package: "pkg"},
+		{JobID: "..", Project: "test", Package: "pkg"},
+		{JobID: "", Project: "test", Package: "pkg"},
+	}
+
+	for _, job := range maliciousJobs {
+		_, err := sandbox.Execute(context.Background(), job, io.Discard)
+		if err == nil {
+			t.Errorf("expected error for malicious job id %q, but got nil", job.JobID)
+		}
+	}
+}
+
+func TestProcessSandboxSafeCleanup(t *testing.T) {
+	tempDir := t.TempDir()
+	sandbox := &worker.ProcessSandbox{WorkDir: tempDir}
+
+	// Create simulated job
+	job := &v1.BuildJob{
+		JobID:   "job-safe-cleanup-01",
+		Project: "test",
+		Package: "pkg",
+	}
+	res, err := sandbox.Execute(context.Background(), job, io.Discard)
+	if err != nil {
+		t.Fatalf("unexpected error executing valid job: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Errorf("expected exit code 0, got %d", res.ExitCode)
+	}
+
+	// Verify Cleanup removes workspace cleanly
+	if err := sandbox.Cleanup(context.Background()); err != nil {
+		t.Fatalf("cleanup failed: %v", err)
 	}
 }

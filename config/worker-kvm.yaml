@@ -1,0 +1,28 @@
+# bsgo Worker Daemon - KVM Virtual Machine Configuration
+# Uses QEMU/KVM hardware virtualization for sterile VM builds
+
+worker:
+  id: "worker-kvm-01"
+  arch: "x86_64"
+  work_dir: "/home/ta/bsgo-worker-kvm"
+  cache_dir: "/home/ta/bsgo-worker-kvm/cache"
+
+nats:
+  url: "nats://localhost:4222"
+
+storage:
+  s3_endpoint: "http://localhost:3900"
+  s3_bucket: "bsgo-artifacts"
+  s3_region: "garage"
+
+# Sandbox Execution Engine
+sandbox:
+  mode: "kvm"
+  obs_build_bin: "/usr/bin/build"
+
+  # QEMU / KVM Driver
+  kvm:
+    vm_type: "kvm"
+    device: "/dev/kvm"
+    memory_mb: 4096
+    vcpus: 4

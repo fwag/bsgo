@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
@@ -59,11 +60,27 @@ func (s *MockSandbox) Cleanup(_ context.Context) error {
 }
 
 type ProcessSandbox struct {
-	WorkDir string
+	WorkDir     string
+	SandboxMode string
+	ObsBuildBin string
 }
 
 func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWriter io.Writer) (*ExecutionResult, error) {
-	jobDir := filepath.Join(s.WorkDir, "jobs", job.JobID)
+	if job == nil || job.JobID == "" {
+		return nil, fmt.Errorf("invalid job: nil or empty job ID")
+	}
+	cleanJobID := filepath.Clean(job.JobID)
+	if cleanJobID == "." || cleanJobID == ".." || strings.Contains(job.JobID, "/") || strings.Contains(job.JobID, "\\") || strings.Contains(job.JobID, "..") {
+		return nil, fmt.Errorf("invalid job ID (path traversal detected): %q", job.JobID)
+	}
+
+	jobsDir := filepath.Join(s.WorkDir, "jobs")
+	jobDir := filepath.Join(jobsDir, cleanJobID)
+	rel, err := filepath.Rel(jobsDir, jobDir)
+	if err != nil || strings.HasPrefix(rel, "..") || rel == "." {
+		return nil, fmt.Errorf("invalid job directory resolution: %s", jobDir)
+	}
+
 	if err := os.MkdirAll(jobDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create job dir: %w", err)
 	}
@@ -76,9 +93,13 @@ func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWrite
 	defer logFile.Close()
 
 	multiWriter := io.MultiWriter(logWriter, logFile)
-
 	start := time.Now()
-	fmt.Fprintf(multiWriter, "[%s] bsgo-worker: starting build job %s (%s/%s)\n", time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package)
+	fmt.Fprintf(multiWriter, "[%s] bsgo-worker: starting build job %s (%s/%s, mode: %s)\n",
+		time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package, s.SandboxMode)
+
+	if s.SandboxMode == "kvm" || s.SandboxMode == "obs-build" {
+		return s.buildWithKVM(ctx, job, jobDir, multiWriter, start)
+	}
 
 	specPath := filepath.Join("test/fixtures/hello/hello.spec")
 	if _, err := os.Stat(specPath); err == nil && job.Package == "hello" {
@@ -86,6 +107,68 @@ func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWrite
 	}
 
 	return s.buildGenericPackage(ctx, job, multiWriter, start)
+}
+
+func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, jobDir string, w io.Writer, start time.Time) (*ExecutionResult, error) {
+	obsBin := s.ObsBuildBin
+	if obsBin == "" {
+		obsBin = "/usr/bin/build"
+	}
+	fmt.Fprintf(w, "[%s] bsgo-worker: preparing KVM micro-VM sandbox via %s\n", time.Now().Format("15:04:05"), obsBin)
+
+	srcEntries, _ := filepath.Glob("test/fixtures/hello/*")
+	for _, f := range srcEntries {
+		data, err := os.ReadFile(f)
+		if err == nil {
+			_ = os.WriteFile(filepath.Join(jobDir, filepath.Base(f)), data, 0644)
+		}
+	}
+
+	buildRoot := filepath.Join(jobDir, "build-root")
+	specFile := filepath.Join(jobDir, "hello.spec")
+	args := []string{"--clean", "--vm-type", "kvm", "--root", buildRoot, specFile}
+
+	fmt.Fprintf(w, "[%s] bsgo-worker: executing %s %s\n", time.Now().Format("15:04:05"), obsBin, strings.Join(args, " "))
+	cmd := exec.CommandContext(ctx, obsBin, args...)
+	cmd.Dir = jobDir
+	cmd.Stdout = w
+	cmd.Stderr = w
+
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(w, "[%s] bsgo-worker: KVM execution exited: %v\n", time.Now().Format("15:04:05"), err)
+		return &ExecutionResult{ExitCode: 1}, err
+	}
+
+	return s.collectKVMArtifacts(buildRoot, jobDir, job.Project, job.Package, w, start)
+}
+
+func (s *ProcessSandbox) collectKVMArtifacts(buildRoot, jobDir, project, pkg string, w io.Writer, start time.Time) (*ExecutionResult, error) {
+	pkgDir := filepath.Join(jobDir, "packages")
+	_ = os.MkdirAll(pkgDir, 0755)
+
+	builtRPMs, _ := filepath.Glob(filepath.Join(buildRoot, "usr/src/packages/RPMS/*/*.rpm"))
+	var artifacts []v1.ChrootRPM
+	for _, rpmPath := range builtRPMs {
+		baseName := filepath.Base(rpmPath)
+		dest := filepath.Join(pkgDir, baseName)
+		data, err := os.ReadFile(rpmPath)
+		if err == nil {
+			_ = os.WriteFile(dest, data, 0644)
+			artifacts = append(artifacts, v1.ChrootRPM{
+				Filename:  baseName,
+				S3Key:     fmt.Sprintf("artifacts/%s/%s/%s", project, pkg, baseName),
+				SizeBytes: int64(len(data)),
+			})
+			fmt.Fprintf(w, "[%s] bsgo-worker: extracted KVM RPM artifact: %s (%d bytes)\n", time.Now().Format("15:04:05"), baseName, len(data))
+		}
+	}
+
+	elapsed := time.Since(start).Seconds()
+	return &ExecutionResult{
+		ExitCode:     0,
+		Artifacts:    artifacts,
+		TotalSeconds: elapsed,
+	}, nil
 }
 
 func (s *ProcessSandbox) buildHelloPackage(ctx context.Context, job *v1.BuildJob, jobDir string, w io.Writer, start time.Time) (*ExecutionResult, error) {

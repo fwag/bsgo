@@ -40,7 +40,10 @@ func main() {
 	}
 	defer nc.Close()
 
-	sandbox := &worker.ProcessSandbox{WorkDir: cfg.WorkDir}
+	sandbox := &worker.ProcessSandbox{
+		WorkDir:     cfg.WorkDir,
+		SandboxMode: cfg.SandboxMode,
+	}
 	daemon := worker.NewWorkerDaemon(cfg, nc, sandbox)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
