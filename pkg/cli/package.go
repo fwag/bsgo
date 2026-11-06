@@ -2,12 +2,15 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/nats-io/nats.go"
 	"github.com/openSUSE/bsgo/pkg/manifest"
+	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -194,6 +197,28 @@ func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Comma
 				"package":    pkgName,
 				"commit_sha": commitSHA,
 				"subject":    fmt.Sprintf("bsgo.triggers.%s.%s", projectName, pkgName),
+			}
+
+			// Publish real trigger to NATS
+			natsURL := "nats://localhost:4222"
+			if nc, err := nats.Connect(natsURL); err == nil {
+				defer nc.Close()
+				trigger := v1.NewTrigger(projectName, pkgName, p.Source.Git, commitSHA, p.Source.Branch, "developer")
+				trigger.TriggerID = jobID
+				tData, _ := json.Marshal(trigger)
+				_ = nc.Publish(fmt.Sprintf("bsgo.triggers.%s.%s", projectName, pkgName), tData)
+
+				// Notify dashboard of pending job
+				statusMsg := map[string]any{
+					"job_id":       jobID,
+					"project":      projectName,
+					"package":      pkgName,
+					"phase":        "PENDING",
+					"architecture": "x86_64",
+				}
+				sData, _ := json.Marshal(statusMsg)
+				_ = nc.Publish("bsgo.status", sData)
+				_ = nc.Flush()
 			}
 
 			var sb strings.Builder
