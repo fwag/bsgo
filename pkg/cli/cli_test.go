@@ -122,3 +122,31 @@ func TestPackageSetResourcesJSON(t *testing.T) {
 		t.Errorf("expected shard path 'packages/dd/chromium.yaml', got %v", res["manifest"])
 	}
 }
+
+func TestAuthCreateToken(t *testing.T) {
+	store := setupTestStore(t)
+
+	cmd := cli.NewRootCommand(store)
+	outBuf := new(bytes.Buffer)
+	cmd.SetOut(outBuf)
+	cmd.SetArgs([]string{
+		"auth", "create-token",
+		"--name", "ai-factory-bot",
+		"--scopes", "project:write:home:bot,build:trigger:*",
+		"--json",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error creating token: %v", err)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal(outBuf.Bytes(), &res); err != nil {
+		t.Fatalf("expected valid json from create-token, got: %v\nOutput: %s", err, outBuf.String())
+	}
+
+	rawToken, ok := res["token"].(string)
+	if !ok || !strings.HasPrefix(rawToken, "bsgo_pat_") {
+		t.Errorf("expected token starting with bsgo_pat_, got: %v", res["token"])
+	}
+}

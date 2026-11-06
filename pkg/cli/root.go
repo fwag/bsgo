@@ -20,6 +20,7 @@ func NewRootCommand(store storage.Store) *cobra.Command {
 
 	rootCmd.AddCommand(newProjectCmd(store, &opts))
 	rootCmd.AddCommand(newPackageCmd(store, &opts))
+	rootCmd.AddCommand(newAuthCmd(&opts))
 
 	return rootCmd
 }

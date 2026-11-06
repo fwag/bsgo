@@ -5,11 +5,11 @@ Implement the security and access control subsystem. The API gateway verifies Au
 
 **Blocked by:** 08: Foundation: Project and Package Ingestion Gateway with CLI
 
-**Status:** ready-for-agent
+**Status:** closed
 
-- [ ] Authentik OIDC JWT validator in `bsgo-api` verifying signatures against JWKS endpoints.
-- [ ] CLI command `bsgo auth login` implementing OAuth2 Device Authorization Grant (RFC 8628).
-- [ ] JIT user and group synchronizer populating the PostgreSQL `users` table upon authenticated requests.
-- [ ] Personal Access Token manager issuing hashed tokens (`bsgo_pat_...`) with fine-grained scopes (e.g. `project:write:home:bot`).
-- [ ] Authorization middleware enforcing `is_superuser`, `project_maintainer`, and `project_reader` rules on all API routes.
-- [ ] Automated security test suite verifying token generation, scope enforcement, blast-radius containment, and unauthorized access rejection.
+- [x] Authentik OIDC JWT validator in `bsgo-api` verifying signatures against JWKS endpoints.
+- [x] CLI command `bsgo auth login` implementing OAuth2 Device Authorization Grant (RFC 8628).
+- [x] JIT user and group synchronizer populating the PostgreSQL `users` table upon authenticated requests.
+- [x] Personal Access Token manager issuing hashed tokens (`bsgo_pat_...`) with fine-grained scopes (e.g. `project:write:home:bot`).
+- [x] Authorization middleware enforcing `is_superuser`, `project_maintainer`, and `project_reader` rules on all API routes.
+- [x] Automated security test suite verifying token generation, scope enforcement, blast-radius containment, and unauthorized access rejection.
