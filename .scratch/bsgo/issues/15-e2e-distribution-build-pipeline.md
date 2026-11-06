@@ -5,10 +5,10 @@ Deliver the final end-to-end integration and verification of the `bsgo` distribu
 
 **Blocked by:** 12: Worker: bsgo-worker Execution Sandbox & S3 Upload, 13: Publisher: Incremental S3 Repodata Generation & Atomic Publication, 14: Security: Authentik OIDC, JIT User Provisioning, and Scoped Agent Tokens
 
-**Status:** ready-for-agent
+**Status:** closed
 
-- [ ] End-to-end integration test (`test/e2e`) running in Podman with PostgreSQL, NATS JetStream, and Garage S3.
-- [ ] Automated build verification compiling a real RPM package from a local bare Git repository through the full stack.
-- [ ] Published repository validation verifying generated `repomd.xml` and package installation via standard package managers.
-- [ ] Fully connected Charm `bubbletea` live dashboard (`bsgo watch`) streaming live logs from NATS and showing real worker fleet utilization.
-- [ ] Production Kubernetes deployment manifests with gVisor sandboxing (`runtimeClassName: gvisor`) and bare-metal worker systemd units.
+- [x] End-to-end integration test (`test/e2e`) running in Podman with PostgreSQL, NATS JetStream, and Garage S3.
+- [x] Automated build verification compiling a real RPM package from a local bare Git repository through the full stack.
+- [x] Published repository validation verifying generated `repomd.xml` and package installation via standard package managers.
+- [x] Fully connected Charm `bubbletea` live dashboard (`bsgo watch`) streaming live logs from NATS and showing real worker fleet utilization.
+- [x] Production Kubernetes deployment manifests with gVisor sandboxing (`runtimeClassName: gvisor`) and bare-metal worker systemd units.
