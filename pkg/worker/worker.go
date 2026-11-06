@@ -47,7 +47,10 @@ func (w *WorkerDaemon) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to subscribe to worker job inbox: %w", err)
 	}
 
-	<-w.stopChan
+	select {
+	case <-ctx.Done():
+	case <-w.stopChan:
+	}
 	return sub.Unsubscribe()
 }
 

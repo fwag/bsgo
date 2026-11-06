@@ -61,4 +61,5 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Worker error: %v\n", err)
 		os.Exit(1)
 	}
+	fmt.Println("\nbsgo-worker stopped cleanly.")
 }

@@ -147,17 +147,22 @@ func TestWorkerAbortSignal(t *testing.T) {
 		Architecture: "x86_64",
 	}
 	mockSandbox := &worker.MockSandbox{
-		SimulateDuration: 500 * time.Millisecond, // Long build to give time for abort
+		SimulateDuration: 500 * time.Millisecond,
 	}
 	daemon := worker.NewWorkerDaemon(cfg, nc, mockSandbox)
 	go func() { _ = daemon.Start(ctx) }()
 	defer daemon.Stop()
 
+	// Wait for worker subscription to be ready
+	time.Sleep(100 * time.Millisecond)
+
 	statusChan := make(chan map[string]any, 5)
 	_, _ = nc.Subscribe("bsgo.status", func(msg *nats.Msg) {
 		var st map[string]any
 		if err := json.Unmarshal(msg.Data, &st); err == nil {
-			statusChan <- st
+			if st["job_id"] == "job-to-abort" {
+				statusChan <- st
+			}
 		}
 	})
 
