@@ -124,9 +124,12 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 		}
 	}
 
+	cacheDir := filepath.Join(s.WorkDir, "cache")
+	_ = os.MkdirAll(cacheDir, 0755)
+
 	buildRoot := filepath.Join(jobDir, "build-root")
 	specFile := filepath.Join(jobDir, "hello.spec")
-	args := []string{"--clean", "--vm-type", "kvm", "--root", buildRoot, specFile}
+	args := []string{"--clean", "--vm-type", "kvm", "--root", buildRoot, "--cachedir", cacheDir, specFile}
 
 	fmt.Fprintf(w, "[%s] bsgo-worker: executing %s %s\n", time.Now().Format("15:04:05"), obsBin, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, obsBin, args...)

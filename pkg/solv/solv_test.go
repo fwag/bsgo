@@ -189,3 +189,64 @@ func TestWorkerPool(t *testing.T) {
 		t.Errorf("expected NoProviderError, got: %v", err)
 	}
 }
+
+func TestConcurrentPoolAccess(t *testing.T) {
+	pool, err := solv.NewPool("x86_64")
+	if err != nil {
+		t.Fatalf("failed to create pool: %v", err)
+	}
+	defer pool.Close()
+
+	repo := pool.CreateRepo("base")
+	_ = repo.AddPackage(solv.PackageSpec{
+		Name:     "bash",
+		EVR:      "5.2-1",
+		Arch:     "x86_64",
+		Provides: []string{"/bin/sh"},
+	})
+
+	const numGoroutines = 10
+	errChan := make(chan error, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			res, err := pool.Resolve(solv.ExpansionRequest{
+				BuildRequires: []string{"/bin/sh"},
+			})
+			if err != nil {
+				errChan <- err
+				return
+			}
+			if len(res.Packages) != 1 || res.Packages[0].Name != "bash" {
+				errChan <- errors.New("unexpected resolution result")
+				return
+			}
+			errChan <- nil
+		}()
+	}
+
+	for i := 0; i < numGoroutines; i++ {
+		if err := <-errChan; err != nil {
+			t.Errorf("concurrent resolve failed: %v", err)
+		}
+	}
+}
+
+func TestEmptyResolutionSafety(t *testing.T) {
+	pool, err := solv.NewPool("x86_64")
+	if err != nil {
+		t.Fatalf("failed to create pool: %v", err)
+	}
+	defer pool.Close()
+
+	// Empty requirements should resolve cleanly with 0 packages without crashing
+	res, err := pool.Resolve(solv.ExpansionRequest{
+		BuildRequires: []string{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error resolving empty requirements: %v", err)
+	}
+	if len(res.Packages) != 0 {
+		t.Errorf("expected 0 packages, got %d", len(res.Packages))
+	}
+}

@@ -9,6 +9,7 @@ import "C"
 import (
 	"fmt"
 	"runtime"
+	"sync"
 	"unsafe"
 )
 
@@ -52,10 +53,12 @@ type ExpansionResult struct {
 }
 
 type Pool struct {
+	mu  sync.Mutex
 	ptr *C.Pool
 }
 
 type Repo struct {
+	mu   sync.Mutex
 	ptr  *C.Repo
 	pool *Pool
 }
@@ -72,6 +75,9 @@ func NewPool(arch string) (*Pool, error) {
 }
 
 func (p *Pool) Close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.ptr != nil {
 		C.bsgo_pool_free(p.ptr)
 		p.ptr = nil
@@ -79,6 +85,9 @@ func (p *Pool) Close() {
 }
 
 func (p *Pool) CreateRepo(name string) *Repo {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	cName := C.CString(name)
 	defer C.free(unsafe.Pointer(cName))
 	r := C.bsgo_repo_create(p.ptr, cName)
@@ -89,6 +98,9 @@ func (p *Pool) LoadRepoFromMemory(name string, data []byte) (*Repo, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("cannot load empty solv data")
 	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	cName := C.CString(name)
 	defer C.free(unsafe.Pointer(cName))
@@ -101,6 +113,9 @@ func (p *Pool) LoadRepoFromMemory(name string, data []byte) (*Repo, error) {
 }
 
 func (r *Repo) AddPackage(spec PackageSpec) error {
+	r.pool.mu.Lock()
+	defer r.pool.mu.Unlock()
+
 	cName := C.CString(spec.Name)
 	defer C.free(unsafe.Pointer(cName))
 	cEVR := C.CString(spec.EVR)
@@ -129,6 +144,9 @@ func (r *Repo) AddPackage(spec PackageSpec) error {
 }
 
 func (r *Repo) DumpMemory() ([]byte, error) {
+	r.pool.mu.Lock()
+	defer r.pool.mu.Unlock()
+
 	var outBuf unsafe.Pointer
 	var outLen C.size_t
 
@@ -143,6 +161,9 @@ func (r *Repo) DumpMemory() ([]byte, error) {
 }
 
 func (p *Pool) Resolve(req ExpansionRequest) (*ExpansionResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	cReqs, freeReqs := makeCStringArray(req.BuildRequires)
 	defer freeReqs()
 	cPrefers, freePrefers := makeCStringArray(req.Prefer)

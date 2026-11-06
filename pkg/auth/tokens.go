@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -38,7 +39,8 @@ func HashToken(rawToken string) string {
 }
 
 func ValidatePAT(rawToken, expectedHash string) bool {
-	return HashToken(rawToken) == expectedHash
+	actualHash := HashToken(rawToken)
+	return subtle.ConstantTimeCompare([]byte(actualHash), []byte(expectedHash)) == 1
 }
 
 func VerifyScope(scopes []string, action, resource, resourceID string) bool {
@@ -48,22 +50,37 @@ func VerifyScope(scopes []string, action, resource, resourceID string) bool {
 		}
 
 		parts := strings.SplitN(s, ":", 3)
-		if len(parts) == 2 {
-			if (matchPart(parts[0], action) && matchPart(parts[1], resource)) ||
-				(matchPart(parts[0], resource) && matchPart(parts[1], action)) {
-				return true
-			}
-		} else if len(parts) == 3 {
-			matchesActionResource := (matchPart(parts[0], action) && matchPart(parts[1], resource)) ||
-				(matchPart(parts[0], resource) && matchPart(parts[1], action))
-			if matchesActionResource && matchPart(parts[2], resourceID) {
-				return true
-			}
+		if matchScopeParts(parts, action, resource, resourceID) {
+			return true
 		}
 	}
 	return false
 }
 
+func matchScopeParts(parts []string, action, resource, resourceID string) bool {
+	if len(parts) < 2 {
+		return false
+	}
+
+	matchesActionResource := (matchPart(parts[0], action) && matchPart(parts[1], resource)) ||
+		(matchPart(parts[0], resource) && matchPart(parts[1], action))
+	if !matchesActionResource {
+		return false
+	}
+
+	if len(parts) == 2 {
+		return resourceID == "" || resourceID == "*"
+	}
+	return matchPart(parts[2], resourceID)
+}
+
 func matchPart(pattern, val string) bool {
-	return pattern == "*" || pattern == val
+	if pattern == "*" || pattern == val {
+		return true
+	}
+	if strings.HasSuffix(pattern, "*") {
+		prefix := strings.TrimSuffix(pattern, "*")
+		return strings.HasPrefix(val, prefix)
+	}
+	return false
 }

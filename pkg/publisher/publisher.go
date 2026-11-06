@@ -5,8 +5,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
+
+func isValidPathSegment(s string) bool {
+	if s == "" || s == "." || s == ".." || strings.Contains(s, "/") || strings.Contains(s, "\\") || strings.Contains(s, "..") {
+		return false
+	}
+	return true
+}
 
 type PublishRequest struct {
 	RequestID    string   `json:"request_id"`
@@ -74,6 +82,10 @@ func NewPublisher(cr CreateRepoExecutor, s3 S3Client, lockMgr LockManager, workD
 }
 
 func (p *Publisher) ProcessPublishRequest(ctx context.Context, req PublishRequest) (*PublishResult, error) {
+	if !isValidPathSegment(req.Project) || !isValidPathSegment(req.Target) || !isValidPathSegment(req.Architecture) {
+		return nil, fmt.Errorf("invalid publish request: path traversal detected in project, target, or architecture")
+	}
+
 	lockKey := fmt.Sprintf("%s:%s:%s", req.Project, req.Target, req.Architecture)
 	unlock, err := p.lockMgr.AcquireLock(ctx, lockKey)
 	if err != nil {

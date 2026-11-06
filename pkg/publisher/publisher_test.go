@@ -112,3 +112,26 @@ func TestPublisherAtomicUploadWorkflow(t *testing.T) {
 		t.Errorf("atomic publication order violation: expected repomd.xml to be uploaded last, got: %s", lastKey)
 	}
 }
+
+func TestPublisherPathTraversalRejection(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	cr := publisher.NewRealCreateRepoExecutor()
+	s3 := NewMockS3Client()
+	lockMgr := publisher.NewLocalLockManager()
+	pub := publisher.NewPublisher(cr, s3, lockMgr, tmpDir)
+
+	maliciousReqs := []publisher.PublishRequest{
+		{Project: "../../etc", Target: "standard", Architecture: "x86_64"},
+		{Project: "openSUSE:Factory", Target: "../target", Architecture: "x86_64"},
+		{Project: "openSUSE:Factory", Target: "standard", Architecture: "../../x86_64"},
+	}
+
+	for _, req := range maliciousReqs {
+		_, err := pub.ProcessPublishRequest(ctx, req)
+		if err == nil {
+			t.Errorf("expected error for malicious publish request %+v, got nil", req)
+		}
+	}
+}

@@ -15,6 +15,7 @@ func TestShardPath(t *testing.T) {
 		{pkgName: "glibc", expected: "packages/1b/glibc.yaml"},
 		{pkgName: "ripgrep", expected: "packages/33/ripgrep.yaml"},
 		{pkgName: "python-requests", expected: "packages/99/python-requests.yaml"},
+		{pkgName: "../../evil", expected: "packages/b5/evil.yaml"},
 	}
 
 	for _, tt := range tests {

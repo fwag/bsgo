@@ -80,4 +80,16 @@ resources:
 	if pkg.Package.Name != "chromium" {
 		t.Errorf("expected package name 'chromium', got %s", pkg.Package.Name)
 	}
+
+	// 6. Path traversal rejection in relPath
+	_, err = client.CommitFile(ctx, "../outside.yaml", []byte("bad"), "hack", "bot", "bot@infra.local")
+	if err == nil {
+		t.Errorf("expected error committing with path traversal in relPath, got nil")
+	}
+
+	// 7. Git author configuration injection rejection
+	_, err = client.CommitFile(ctx, "safe.yaml", []byte("safe"), "safe", "bad\n[core]\neditor=sh", "bot@infra.local")
+	if err == nil {
+		t.Errorf("expected error committing with injected author name, got nil")
+	}
 }

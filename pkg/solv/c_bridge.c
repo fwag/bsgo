@@ -127,8 +127,6 @@ static void toposort_solvables(Pool *pool, Queue *installed, Queue *sorted) {
                 Id *rp = s->repo->idarraydata + s->requires;
                 while (*rp) {
                     Id req = *rp++;
-                    Queue providers;
-                    queue_init(&providers);
                     Id p, d;
                     FOR_PROVIDES(p, d, req) {
                         for (int k = 0; k < installed->count; k++) {
@@ -139,7 +137,6 @@ static void toposort_solvables(Pool *pool, Queue *installed, Queue *sorted) {
                         }
                         if (!deps_satisfied) break;
                     }
-                    queue_free(&providers);
                     if (!deps_satisfied) break;
                 }
             }
@@ -189,10 +186,10 @@ ExpansionOutcome bsgo_expand(Pool *pool,
 
     while (todo.count > 0) {
         Id req_id = queue_shift(&todo);
-        if (req_id < pool->ss.nstrings && MAPTST(&visited_reqs, req_id)) {
+        if (req_id > 0 && req_id < pool->ss.nstrings && MAPTST(&visited_reqs, req_id)) {
             continue;
         }
-        if (req_id < pool->ss.nstrings) {
+        if (req_id > 0 && req_id < pool->ss.nstrings) {
             MAPSET(&visited_reqs, req_id);
         }
 
@@ -253,12 +250,25 @@ ExpansionOutcome bsgo_expand(Pool *pool,
 
     outcome.status = BSGO_SOLV_OK;
     outcome.package_count = sorted.count;
-    outcome.packages = malloc(sizeof(ResolvedPackage) * sorted.count);
-    for (int i = 0; i < sorted.count; i++) {
-        Solvable *s = pool->solvables + sorted.elements[i];
-        outcome.packages[i].name = strdup(pool_id2str(pool, s->name));
-        outcome.packages[i].evr = strdup(pool_id2str(pool, s->evr));
-        outcome.packages[i].arch = strdup(pool_id2str(pool, s->arch));
+    if (sorted.count > 0) {
+        outcome.packages = malloc(sizeof(ResolvedPackage) * sorted.count);
+        if (!outcome.packages) {
+            outcome.status = -1;
+            outcome.err_detail = strdup("out of memory allocating packages");
+            queue_free(&sorted);
+            goto cleanup;
+        }
+        for (int i = 0; i < sorted.count; i++) {
+            Solvable *s = pool->solvables + sorted.elements[i];
+            const char *name = pool_id2str(pool, s->name);
+            const char *evr = pool_id2str(pool, s->evr);
+            const char *arch = pool_id2str(pool, s->arch);
+            outcome.packages[i].name = name ? strdup(name) : strdup("");
+            outcome.packages[i].evr = evr ? strdup(evr) : strdup("");
+            outcome.packages[i].arch = arch ? strdup(arch) : strdup("");
+        }
+    } else {
+        outcome.packages = NULL;
     }
     queue_free(&sorted);
 

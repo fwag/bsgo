@@ -36,7 +36,17 @@ func CloneLocal(bareRepoPath, workDir string) (*Client, error) {
 }
 
 func (c *Client) CommitFile(ctx context.Context, relPath string, content []byte, msg, authorName, authorEmail string) (string, error) {
-	fullPath := filepath.Join(c.workDir, relPath)
+	cleanPath := filepath.Clean(relPath)
+	if cleanPath == "." || cleanPath == ".." || strings.HasPrefix(cleanPath, "..") || filepath.IsAbs(relPath) || strings.Contains(relPath, "\\") {
+		return "", fmt.Errorf("invalid relative path (path traversal detected): %s", relPath)
+	}
+
+	fullPath := filepath.Join(c.workDir, cleanPath)
+	relToWork, err := filepath.Rel(c.workDir, fullPath)
+	if err != nil || strings.HasPrefix(relToWork, "..") {
+		return "", fmt.Errorf("path escapes work directory: %s", relPath)
+	}
+
 	dir := filepath.Dir(fullPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create parent dir: %w", err)
@@ -46,7 +56,11 @@ func (c *Client) CommitFile(ctx context.Context, relPath string, content []byte,
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 
-	if err := c.runGit(ctx, "add", relPath); err != nil {
+	if err := c.runGit(ctx, "add", cleanPath); err != nil {
+		return "", err
+	}
+
+	if err := validateGitIdentity(authorName, authorEmail); err != nil {
 		return "", err
 	}
 
@@ -78,6 +92,16 @@ func (c *Client) runGit(ctx context.Context, args ...string) error {
 	cmd.Dir = c.workDir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git %s failed: %s: %w", strings.Join(args, " "), string(out), err)
+	}
+	return nil
+}
+
+func validateGitIdentity(name, email string) error {
+	if strings.ContainsAny(name, "\n\r\"<>=;[]\\") || len(name) > 128 || strings.TrimSpace(name) == "" {
+		return fmt.Errorf("invalid author name: %q", name)
+	}
+	if strings.ContainsAny(email, "\n\r\"<>=;[]\\ \t") || len(email) > 128 || strings.TrimSpace(email) == "" {
+		return fmt.Errorf("invalid author email: %q", email)
 	}
 	return nil
 }

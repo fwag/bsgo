@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -12,9 +14,11 @@ import (
 // ShardPath returns the 2-character hex hash partition path for a package.
 // e.g. packages/dd/chromium.yaml
 func ShardPath(packageName string) string {
-	h := sha256.Sum256([]byte(packageName))
+	cleanName := filepath.Base(filepath.Clean(packageName))
+	cleanName = strings.ReplaceAll(cleanName, "..", "")
+	h := sha256.Sum256([]byte(cleanName))
 	shard := hex.EncodeToString(h[:1])
-	return fmt.Sprintf("packages/%s/%s.yaml", shard, packageName)
+	return fmt.Sprintf("packages/%s/%s.yaml", shard, cleanName)
 }
 
 type ProjectManifest struct {

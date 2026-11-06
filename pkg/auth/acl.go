@@ -50,6 +50,9 @@ func (a *Authorizer) SetProjectPrivacy(project string, isPrivate bool, users, gr
 }
 
 func (a *Authorizer) CanWrite(user *User, project string) bool {
+	if user == nil {
+		return false
+	}
 	if user.IsSuperuser {
 		return true
 	}
@@ -63,7 +66,7 @@ func (a *Authorizer) CanWrite(user *User, project string) bool {
 	}
 
 	for _, entry := range entries {
-		if entry.User != "" && entry.User == user.Username {
+		if entry.User != "" && (entry.User == user.Username || (user.AuthentikSub != "" && entry.User == user.AuthentikSub)) {
 			return true
 		}
 		if entry.Group != "" && contains(user.Groups, entry.Group) {
@@ -75,19 +78,23 @@ func (a *Authorizer) CanWrite(user *User, project string) bool {
 }
 
 func (a *Authorizer) CanRead(user *User, project string) bool {
-	if user.IsSuperuser {
-		return true
-	}
-
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-
 	setting, exists := a.privacy[project]
+	a.mu.RUnlock()
+
 	if !exists || !setting.IsPrivate {
 		return true // Public by default
 	}
 
-	if contains(setting.AllowedUsers, user.Username) {
+	if user == nil {
+		return false
+	}
+
+	if user.IsSuperuser {
+		return true
+	}
+
+	if contains(setting.AllowedUsers, user.Username) || (user.AuthentikSub != "" && contains(setting.AllowedUsers, user.AuthentikSub)) {
 		return true
 	}
 

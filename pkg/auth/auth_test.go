@@ -2,6 +2,8 @@ package auth_test
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"strings"
 	"testing"
 	"time"
@@ -149,5 +151,82 @@ func TestAuthorizerProjectACLs(t *testing.T) {
 	// Superuser can write to anything
 	if !authorizer.CanWrite(superAdmin, "openSUSE:Factory") {
 		t.Errorf("expected Superuser to have write access to openSUSE:Factory")
+	}
+
+	// 2. Nil user safety: must not panic and must return false for write
+	if authorizer.CanWrite(nil, "openSUSE:Factory") {
+		t.Errorf("expected nil user to be denied write access")
+	}
+
+	// Nil user can read public project
+	if !authorizer.CanRead(nil, "openSUSE:Factory") {
+		t.Errorf("expected nil user to have read access to public project")
+	}
+
+	// Nil user CANNOT read private project
+	authorizer.SetProjectPrivacy("home:secret", true, []string{"alice"}, nil)
+	if authorizer.CanRead(nil, "home:secret") {
+		t.Errorf("expected nil user to be denied read access to private project")
+	}
+}
+
+func TestCoarseScopeContainmentAndPrefixMatching(t *testing.T) {
+	// 1. Two-part scope project:write must NOT match specific project IDs (blast radius containment)
+	coarseScopes := []string{"project:write"}
+	if auth.VerifyScope(coarseScopes, "write", "project", "openSUSE:Factory") {
+		t.Errorf("two-part scope project:write must not grant write to openSUSE:Factory")
+	}
+	// But it CAN match global actions where no specific resourceID is passed
+	if !auth.VerifyScope(coarseScopes, "write", "project", "") {
+		t.Errorf("two-part scope project:write should match generic project:write action")
+	}
+
+	// 2. Prefix wildcard matching on hierarchical colon namespaces
+	prefixScopes := []string{"project:write:home:bot:*"}
+	if !auth.VerifyScope(prefixScopes, "write", "project", "home:bot:pkg1") {
+		t.Errorf("expected prefix match for home:bot:pkg1")
+	}
+	if auth.VerifyScope(prefixScopes, "write", "project", "home:other:pkg1") {
+		t.Errorf("prefix scope home:bot:* must not match home:other:pkg1")
+	}
+}
+
+func TestAsymmetricJWTValidationAndClaims(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate RSA key: %v", err)
+	}
+
+	claims := auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   "authentik-sub-bob",
+			Issuer:    "https://authentik.example.com",
+			Audience:  jwt.ClaimStrings{"bsgo"},
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
+		},
+		PreferredUsername: "bob",
+		Email:             "bob@example.com",
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tokenStr, err := token.SignedString(privateKey)
+	if err != nil {
+		t.Fatalf("failed to sign token with RSA: %v", err)
+	}
+
+	// 1. Valid asymmetric token with matching audience and issuer
+	validator := auth.NewAsymmetricJWTValidator(&privateKey.PublicKey, "https://authentik.example.com", "bsgo")
+	parsed, err := validator.Validate(tokenStr)
+	if err != nil {
+		t.Fatalf("expected valid RS256 token, got: %v", err)
+	}
+	if parsed.PreferredUsername != "bob" {
+		t.Errorf("expected bob, got %s", parsed.PreferredUsername)
+	}
+
+	// 2. Mismatched audience -> fails
+	invalidAudValidator := auth.NewAsymmetricJWTValidator(&privateKey.PublicKey, "https://authentik.example.com", "other-app")
+	if _, err := invalidAudValidator.Validate(tokenStr); err == nil {
+		t.Errorf("expected validation to fail for mismatched audience")
 	}
 }

@@ -52,7 +52,7 @@ func (e *RealCreateRepoExecutor) Run(ctx context.Context, opts CreateRepoOptions
 		args = append(args, "--cachedir="+opts.CacheDir)
 	}
 
-	args = append(args, opts.Dir)
+	args = append(args, "--", opts.Dir)
 
 	cmd := exec.CommandContext(ctx, e.BinPath, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
