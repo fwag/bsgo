@@ -52,11 +52,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to provision JetStream streams: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("  • NATS JetStream streams verified: TRIGGERS, JOBS_PENDING, JOB_STATUS, PUBLISH\n")
+	fmt.Printf("  - NATS JetStream streams verified: TRIGGERS, JOBS_PENDING, JOB_STATUS, PUBLISH\n")
 
 	// 2. Storage
 	store := initControlPlaneStore(ctx, dbURL)
-	fmt.Printf("  • Storage initialized & verified\n")
+	fmt.Printf("  - Storage initialized and verified\n")
 
 	// 3. Start Scheduler & Dispatcher
 	startSchedulerAndDispatcher(ctx, nc, store)
@@ -64,7 +64,7 @@ func main() {
 	// 4. HTTP Gateway
 	startHTTPServer(ctx, httpPort, store)
 
-	fmt.Printf("\n✔ bsgo Control Plane is LIVE and listening for triggers and workers!\n\n")
+	fmt.Printf("bsgo Control Plane is LIVE and listening for triggers and workers\n")
 	<-ctx.Done()
 	fmt.Println("\nbsgo Control Plane shut down cleanly.")
 }
@@ -134,7 +134,7 @@ func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store stora
 			return
 		}
 
-		fmt.Printf("\n[%s] [SCHEDULER] >>> Ingested trigger: %s/%s (Ref: %s, Commit: %s)\n",
+		fmt.Printf("[%s] [SCHEDULER] Ingested trigger: %s/%s (Ref: %s, Commit: %s)\n",
 			time.Now().Format("15:04:05"), trig.Project, trig.Package, trig.Ref, trig.CommitSHA)
 
 		jobs, err := sched.ProcessTrigger(ctx, &trig)
@@ -173,7 +173,7 @@ func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nat
 			case <-ticker.C:
 				assignedWorker, dispatchedJob, _ := disp.DispatchNext(ctx)
 				if dispatchedJob != nil {
-					fmt.Printf("[%s] [DISPATCHER] ⚡ Dispatched job %s (%s) -> %s\n",
+					fmt.Printf("[%s] [DISPATCHER] Dispatched job %s (%s) to %s\n",
 						time.Now().Format("15:04:05"), dispatchedJob.JobID, dispatchedJob.Package, assignedWorker)
 
 					statusMsg, _ := json.Marshal(map[string]any{
