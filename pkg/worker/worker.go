@@ -122,7 +122,9 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 	ctrlSub, _ := w.nc.Subscribe(fmt.Sprintf("bsgo.jobs.%s.control", job.JobID), func(msg *nats.Msg) {
 		var ctrl v1.JobControl
 		if err := json.Unmarshal(msg.Data, &ctrl); err == nil && ctrl.Action == "ABORT" {
-			cancel()
+			if ctrl.JobID == job.JobID {
+				cancel()
+			}
 		}
 	})
 	if ctrlSub != nil {
