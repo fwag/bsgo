@@ -5,12 +5,12 @@ Implement the `bsgo-dispatcher` service. The Dispatcher consumes unassigned jobs
 
 **Blocked by:** 10: Scheduler: Git Webhook to NATS Job Pipeline
 
-**Status:** ready-for-agent
+**Status:** closed
 
-- [ ] Ingestion and tracking of worker heartbeats (`WorkerHeartbeat` Protobuf) with hardware capacity and cached RPM hashes.
-- [ ] Priority queue ordering pending jobs by dependency depth so blockers compile first.
-- [ ] Hardware constraint matcher filtering workers by RAM, vCPUs, disk, and sandbox compatibility.
-- [ ] Warm-cache affinity scorer selecting the worker with the highest ratio of cached chroot packages.
-- [ ] Point-to-point dispatch delivering jobs directly to `bsgo.workers.<worker_id>.job` with `AckWait` lease renewal.
-- [ ] Superseded commit detector publishing `JobControl` (action: `ABORT`) to cancel obsolete builds.
-- [ ] Concurrency unit and integration tests verifying constraint filtering, priority scheduling, and cache affinity scoring.
+- [x] Ingestion and tracking of worker heartbeats (`WorkerHeartbeat` Protobuf) with hardware capacity and cached RPM hashes.
+- [x] Priority queue ordering pending jobs by dependency depth so blockers compile first.
+- [x] Hardware constraint matcher filtering workers by RAM, vCPUs, disk, and sandbox compatibility.
+- [x] Warm-cache affinity scorer selecting the worker with the highest ratio of cached chroot packages.
+- [x] Point-to-point dispatch delivering jobs directly to `bsgo.workers.<worker_id>.job` with `AckWait` lease renewal.
+- [x] Superseded commit detector publishing `JobControl` (action: `ABORT`) to cancel obsolete builds.
+- [x] Concurrency unit and integration tests verifying constraint filtering, priority scheduling, and cache affinity scoring.
