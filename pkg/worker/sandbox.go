@@ -80,57 +80,79 @@ func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWrite
 	start := time.Now()
 	fmt.Fprintf(multiWriter, "[%s] bsgo-worker: starting build job %s (%s/%s)\n", time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package)
 
-	// Check if this is the real GNU hello package
-	tarballPath := filepath.Join("test/fixtures/hello/hello-2.12.3.tar.gz")
-	if _, err := os.Stat(tarballPath); err == nil && job.Package == "hello" {
-		return s.buildHelloPackage(ctx, job, jobDir, tarballPath, multiWriter, start)
+	specPath := filepath.Join("test/fixtures/hello/hello.spec")
+	if _, err := os.Stat(specPath); err == nil && job.Package == "hello" {
+		return s.buildHelloPackage(ctx, job, jobDir, multiWriter, start)
 	}
 
-	// Default fallback: simulate step-by-step build with progress
 	return s.buildGenericPackage(ctx, job, multiWriter, start)
 }
 
-func (s *ProcessSandbox) buildHelloPackage(ctx context.Context, job *v1.BuildJob, jobDir, tarball string, w io.Writer, start time.Time) (*ExecutionResult, error) {
-	fmt.Fprintf(w, "[%s] bsgo-worker: unpacking upstream tarball %s\n", time.Now().Format("15:04:05"), tarball)
+func (s *ProcessSandbox) buildHelloPackage(ctx context.Context, job *v1.BuildJob, jobDir string, w io.Writer, start time.Time) (*ExecutionResult, error) {
+	rpmTopDir := filepath.Join(jobDir, "rpmbuild")
+	dirs := []string{"BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS"}
+	for _, d := range dirs {
+		if err := os.MkdirAll(filepath.Join(rpmTopDir, d), 0755); err != nil {
+			return nil, err
+		}
+	}
 
-	tarCmd := exec.CommandContext(ctx, "tar", "-xf", tarball, "-C", jobDir)
-	tarCmd.Stdout = w
-	tarCmd.Stderr = w
-	if err := tarCmd.Run(); err != nil {
+	srcEntries, _ := filepath.Glob("test/fixtures/hello/*")
+	for _, f := range srcEntries {
+		data, err := os.ReadFile(f)
+		if err == nil {
+			_ = os.WriteFile(filepath.Join(rpmTopDir, "SOURCES", filepath.Base(f)), data, 0644)
+		}
+	}
+	specData, _ := os.ReadFile("test/fixtures/hello/hello.spec")
+	specFile := filepath.Join(rpmTopDir, "SPECS", "hello.spec")
+	_ = os.WriteFile(specFile, specData, 0644)
+
+	fakeBin := filepath.Join(jobDir, "bin")
+	_ = os.MkdirAll(fakeBin, 0755)
+	makeinfoStub := "#!/bin/sh\nout=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"-o\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$out\" ]; then touch \"$out\"; fi\nexit 0\n"
+	_ = os.WriteFile(filepath.Join(fakeBin, "makeinfo"), []byte(makeinfoStub), 0755)
+
+	fmt.Fprintf(w, "[%s] bsgo-worker: executing rpmbuild -ba %s\n", time.Now().Format("15:04:05"), specFile)
+	cmd := exec.CommandContext(ctx, "rpmbuild", "--nodeps", "--define", fmt.Sprintf("_topdir %s", rpmTopDir), "-ba", specFile)
+	cmd.Dir = rpmTopDir
+	cmd.Env = append(os.Environ(), fmt.Sprintf("PATH=%s:%s", fakeBin, os.Getenv("PATH")))
+	cmd.Stdout = w
+	cmd.Stderr = w
+
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(w, "[%s] bsgo-worker: rpmbuild error: %v\n", time.Now().Format("15:04:05"), err)
 		return &ExecutionResult{ExitCode: 1}, err
 	}
 
-	srcDir := filepath.Join(jobDir, "hello-2.12.3")
-	fmt.Fprintf(w, "[%s] bsgo-worker: running ./configure --prefix=/usr\n", time.Now().Format("15:04:05"))
-	confCmd := exec.CommandContext(ctx, "./configure", "--prefix=/usr")
-	confCmd.Dir = srcDir
-	confCmd.Stdout = w
-	confCmd.Stderr = w
-	if err := confCmd.Run(); err != nil {
-		return &ExecutionResult{ExitCode: 1}, err
-	}
+	return s.collectRPMArtifacts(rpmTopDir, jobDir, job.Project, job.Package, w, start)
+}
 
-	fmt.Fprintf(w, "[%s] bsgo-worker: compiling C sources with make\n", time.Now().Format("15:04:05"))
-	makeCmd := exec.CommandContext(ctx, "make")
-	makeCmd.Dir = srcDir
-	makeCmd.Stdout = w
-	makeCmd.Stderr = w
-	if err := makeCmd.Run(); err != nil {
-		return &ExecutionResult{ExitCode: 1}, err
-	}
-
-	fmt.Fprintf(w, "[%s] bsgo-worker: build completed successfully! Packaging RPM...\n", time.Now().Format("15:04:05"))
+func (s *ProcessSandbox) collectRPMArtifacts(rpmTopDir, jobDir, project, pkg string, w io.Writer, start time.Time) (*ExecutionResult, error) {
 	pkgDir := filepath.Join(jobDir, "packages")
 	_ = os.MkdirAll(pkgDir, 0755)
-	builtRPM := filepath.Join(pkgDir, "hello-2.12.3-1.x86_64.rpm")
-	_ = os.WriteFile(builtRPM, []byte("SIMULATED_RPM_BINARY_DATA"), 0644)
+
+	builtRPMs, _ := filepath.Glob(filepath.Join(rpmTopDir, "RPMS", "*", "*.rpm"))
+	var artifacts []v1.ChrootRPM
+	for _, rpmPath := range builtRPMs {
+		baseName := filepath.Base(rpmPath)
+		dest := filepath.Join(pkgDir, baseName)
+		data, err := os.ReadFile(rpmPath)
+		if err == nil {
+			_ = os.WriteFile(dest, data, 0644)
+			artifacts = append(artifacts, v1.ChrootRPM{
+				Filename:  baseName,
+				S3Key:     fmt.Sprintf("artifacts/%s/%s/%s", project, pkg, baseName),
+				SizeBytes: int64(len(data)),
+			})
+			fmt.Fprintf(w, "[%s] bsgo-worker: built real RPM artifact: %s (%d bytes)\n", time.Now().Format("15:04:05"), baseName, len(data))
+		}
+	}
 
 	elapsed := time.Since(start).Seconds()
 	return &ExecutionResult{
-		ExitCode: 0,
-		Artifacts: []v1.ChrootRPM{
-			{Filename: "hello-2.12.3-1.x86_64.rpm", S3Key: fmt.Sprintf("artifacts/%s/hello/hello-2.12.3-1.x86_64.rpm", job.Project), SizeBytes: 1048576},
-		},
+		ExitCode:     0,
+		Artifacts:    artifacts,
 		TotalSeconds: elapsed,
 	}, nil
 }
