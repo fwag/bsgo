@@ -5,13 +5,13 @@ Implement the standalone `bsgo-worker` daemon running on target hardware (x86_64
 
 **Blocked by:** 11: Dispatcher: Priority Matching, Warm-Cache Affinity, and Job Leasing
 
-**Status:** ready-for-agent
+**Status:** closed
 
-- [ ] Worker daemon connecting to NATS, emitting heartbeats, and listening on `bsgo.workers.<worker_id>.job`.
-- [ ] Chroot RPM downloader fetching pre-resolved binaries from S3/Garage into local worker SSD cache.
-- [ ] QCOW2 copy-on-write overlay manager creating disposable VM disks on top of pristine base images.
-- [ ] Process executor invoking `/usr/lib/build/build` with standardized CLI flags and exit code translation (0, 1, 2, 3, 4, 9).
-- [ ] Live log streamer publishing stdout/stderr chunks to ephemeral Core NATS subject `bsgo.logs.<job_id>`.
-- [ ] Direct S3/Garage artifact uploader uploading completed RPMs, build logs, and statistics, publishing `JobStatusUpdate`.
-- [ ] Abort listener handling `bsgo.jobs.<job_id>.control` to immediately kill the build process and recycle the VM disk.
-- [ ] Integration tests verifying worker execution, log streaming, and artifact upload using local test chroots and Garage S3.
+- [x] Worker daemon connecting to NATS, emitting heartbeats, and listening on `bsgo.workers.<worker_id>.job`.
+- [x] Chroot RPM downloader fetching pre-resolved binaries from S3/Garage into local worker SSD cache.
+- [x] QCOW2 copy-on-write overlay manager creating disposable VM disks on top of pristine base images.
+- [x] Process executor invoking `/usr/lib/build/build` with standardized CLI flags and exit code translation (0, 1, 2, 3, 4, 9).
+- [x] Live log streamer publishing stdout/stderr chunks to ephemeral Core NATS subject `bsgo.logs.<job_id>`.
+- [x] Direct S3/Garage artifact uploader uploading completed RPMs, build logs, and statistics, publishing `JobStatusUpdate`.
+- [x] Abort listener handling `bsgo.jobs.<job_id>.control` to immediately kill the build process and recycle the VM disk.
+- [x] Integration tests verifying worker execution, log streaming, and artifact upload using local test chroots and Garage S3.
