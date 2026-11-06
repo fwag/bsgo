@@ -5,11 +5,11 @@ Implement the in-process dependency solver engine in Go binding openSUSE's `libs
 
 **Blocked by:** 08: Foundation: Project and Package Ingestion Gateway with CLI
 
-**Status:** ready-for-agent
+**Status:** closed
 
-- [ ] CGO package `pkg/solv` wrapping `libsolv` C headers with clean Go structs (`Pool`, `Repo`, `Expander`).
-- [ ] Memory loader streaming byte slices into `libsolv` repos via POSIX `fmemopen()`.
-- [ ] Deterministic greedy expander implementation preventing non-deterministic SAT backtracking.
-- [ ] Tarjan Strongly Connected Components (SCC) topological sorter for chroot package sequencing.
-- [ ] Thread-pinned solver worker pool using `runtime.LockOSThread()` managing isolated per-architecture pools.
-- [ ] Table-driven unit tests verifying dependency resolution, conflict handling, ambiguity errors, and cycle detection against distribution testdata in <1ms execution times.
+- [x] CGO package `pkg/solv` wrapping `libsolv` C headers with clean Go structs (`Pool`, `Repo`, `Expander`).
+- [x] Memory loader streaming byte slices into `libsolv` repos via POSIX `fmemopen()`.
+- [x] Deterministic greedy expander implementation preventing non-deterministic SAT backtracking.
+- [x] Tarjan Strongly Connected Components (SCC) topological sorter for chroot package sequencing.
+- [x] Thread-pinned solver worker pool using `runtime.LockOSThread()` managing isolated per-architecture pools.
+- [x] Table-driven unit tests verifying dependency resolution, conflict handling, ambiguity errors, and cycle detection against distribution testdata in <1ms execution times.
