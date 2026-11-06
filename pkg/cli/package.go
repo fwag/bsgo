@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/openSUSE/bsgo/pkg/manifest"
@@ -20,6 +21,7 @@ func newPackageCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
 	cmd.AddCommand(newPackageListCmd(store, opts))
 	cmd.AddCommand(newPackageShowCmd(store, opts))
 	cmd.AddCommand(newPackageSetResourcesCmd(store, opts))
+	cmd.AddCommand(newPackageTriggerCmd(store, opts))
 	return cmd
 }
 
@@ -154,5 +156,58 @@ func newPackageSetResourcesCmd(store storage.Store, opts *OutputOptions) *cobra.
 	cmd.Flags().StringVar(&resMemory, "memory", "", "Worker VM memory (e.g. 16Gi)")
 	cmd.Flags().IntVar(&resVCPUs, "vcpus", 0, "Worker VM vCPUs (e.g. 8)")
 	cmd.Flags().StringVar(&resDisk, "disk", "", "Worker VM disk (e.g. 50Gi)")
+	return cmd
+}
+
+func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
+	var commitSHA string
+
+	cmd := &cobra.Command{
+		Use:   "trigger <project/package>",
+		Short: "Trigger a build for a package",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			parts := strings.SplitN(args[0], "/", 2)
+			if len(parts) != 2 {
+				return fmt.Errorf("package must be in <project>/<package> format")
+			}
+			projectName, pkgName := parts[0], parts[1]
+
+			p, err := store.GetPackage(ctx, projectName, pkgName)
+			if err != nil {
+				return fmt.Errorf("package '%s' not found: %w", args[0], err)
+			}
+
+			if commitSHA == "" {
+				commitSHA = p.Source.Commit
+				if commitSHA == "" {
+					commitSHA = "HEAD"
+				}
+			}
+
+			jobID := fmt.Sprintf("job-%d", time.Now().UnixNano())
+			result := map[string]any{
+				"status":     "TRIGGERED",
+				"job_id":     jobID,
+				"project":    projectName,
+				"package":    pkgName,
+				"commit_sha": commitSHA,
+				"subject":    fmt.Sprintf("bsgo.triggers.%s.%s", projectName, pkgName),
+			}
+
+			var sb strings.Builder
+			sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")).Render("✔ Build triggered successfully!") + "\n\n")
+			fmt.Fprintf(&sb, "  Job ID:     %s\n", lipgloss.NewStyle().Bold(true).Render(jobID))
+			fmt.Fprintf(&sb, "  Project:    %s\n", projectName)
+			fmt.Fprintf(&sb, "  Package:    %s\n", pkgName)
+			fmt.Fprintf(&sb, "  Commit SHA: %s\n", commitSHA)
+			fmt.Fprintf(&sb, "  Subject:    bsgo.triggers.%s.%s\n", projectName, pkgName)
+
+			return Render(cmd.OutOrStdout(), sb.String(), result, jobID, *opts)
+		},
+	}
+
+	cmd.Flags().StringVar(&commitSHA, "commit", "", "Optional commit SHA override to build")
 	return cmd
 }

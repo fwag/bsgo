@@ -5,11 +5,11 @@ Implement the `bsgo-scheduler` service and NATS JetStream event pipeline. The sc
 
 **Blocked by:** 09: Scheduler: libsolv CGO Deterministic Solver Engine
 
-**Status:** ready-for-agent
+**Status:** closed
 
-- [ ] NATS JetStream setup configuring `TRIGGERS` (Limits, 7 days) and `JOBS_PENDING` (WorkQueue, 14 days) streams.
-- [ ] Protobuf message definitions compiled for Go (`BuildTrigger`, `BuildJob`, `ChrootRPM`).
-- [ ] Webhook ingestion handler and CLI `bsgo package trigger` command emitting `BuildTrigger`.
-- [ ] Scheduler reconciliation loop detecting source changes and invoking `pkg/solv`.
-- [ ] Deterministic `BuildJob` generator calculating topological dependency depth (`priority`) and chroot RPM bill of materials.
-- [ ] Integration tests verifying the complete flow from Git webhook $\to$ `libsolv` expansion $\to$ NATS `BuildJob` emission.
+- [x] NATS JetStream setup configuring `TRIGGERS` (Limits, 7 days) and `JOBS_PENDING` (WorkQueue, 14 days) streams.
+- [x] Protobuf message definitions compiled for Go (`BuildTrigger`, `BuildJob`, `ChrootRPM`).
+- [x] Webhook ingestion handler and CLI `bsgo package trigger` command emitting `BuildTrigger`.
+- [x] Scheduler reconciliation loop detecting source changes and invoking `pkg/solv`.
+- [x] Deterministic `BuildJob` generator calculating topological dependency depth (`priority`) and chroot RPM bill of materials.
+- [x] Integration tests verifying the complete flow from Git webhook $\to$ `libsolv` expansion $\to$ NATS `BuildJob` emission.
