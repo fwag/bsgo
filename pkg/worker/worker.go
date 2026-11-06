@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"sync"
 	"time"
 
@@ -115,10 +113,8 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 	w.mu.Unlock()
 	w.emitHeartbeat()
 
-	fmt.Printf("\n[%s] [JOB] >>> Received Build Job: %s (%s/%s, Arch: %s)\n",
+	fmt.Printf("[%s] [JOB] %s: started build for %s/%s (arch: %s)\n",
 		time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package, job.Architecture)
-	fmt.Printf("[%s] [JOB] Status: BUSY • Executing sandbox (%s)...\n",
-		time.Now().Format("15:04:05"), w.cfg.Hardware.SandboxType)
 
 	jobCtx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
@@ -135,8 +131,7 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 	}
 
 	natsLog := &natsLogWriter{nc: w.nc, jobID: job.JobID}
-	multiLog := io.MultiWriter(natsLog, os.Stdout)
-	res, execErr := w.sandbox.Execute(jobCtx, job, multiLog)
+	res, execErr := w.sandbox.Execute(jobCtx, job, natsLog)
 
 	phase, exitCode := determineJobOutcome(jobCtx, execErr, res)
 	w.publishStatusUpdate(job, phase, exitCode, res)
@@ -157,13 +152,12 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 		if res != nil {
 			artCount = len(res.Artifacts)
 		}
-		fmt.Printf("[%s] [JOB] ✔ Job %s SUCCEEDED in %.2fs (produced %d artifacts)\n",
+		fmt.Printf("[%s] [JOB] %s: build SUCCEEDED in %.2fs (%d artifacts)\n",
 			time.Now().Format("15:04:05"), job.JobID, res.TotalSeconds, artCount)
 	} else {
-		fmt.Printf("[%s] [JOB] ✖ Job %s %s (Exit Code: %d)\n",
+		fmt.Printf("[%s] [JOB] %s: build %s (exit code: %d)\n",
 			time.Now().Format("15:04:05"), job.JobID, phase, exitCode)
 	}
-	fmt.Printf("[%s] [INFO] Status: IDLE • Ready for next job\n", time.Now().Format("15:04:05"))
 }
 
 func determineJobOutcome(jobCtx context.Context, execErr error, res *ExecutionResult) (string, int) {
