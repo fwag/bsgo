@@ -5,12 +5,12 @@ Implement the `bsgo-publisher` service. The publisher consumes `PublishRequest` 
 
 **Blocked by:** 12: Worker: bsgo-worker Execution Sandbox & S3 Upload
 
-**Status:** ready-for-agent
+**Status:** closed
 
-- [ ] Publisher consumer processing `PublishRequest` messages from NATS JetStream `PUBLISH` stream.
-- [ ] Concurrency serializer acquiring PostgreSQL transactional advisory locks per repository partition.
-- [ ] Metadata-only S3 syncer downloading existing XML files from `repodata/` without historical RPM binaries.
-- [ ] Subprocess executor running `createrepo_c` with `--update`, `--recycle-pkglist`, `--cachedir`, and `--no-database`.
-- [ ] Atomic S3 publisher uploading hash-prefixed XML files first, followed by atomic overwrite of `repomd.xml`.
-- [ ] Garbage collector asynchronously purging orphaned superseded metadata files.
-- [ ] Integration tests verifying incremental repodata generation, locking concurrency, and client consumption using `createrepo_c` and Garage S3.
+- [x] Publisher consumer processing `PublishRequest` messages from NATS JetStream `PUBLISH` stream.
+- [x] Concurrency serializer acquiring PostgreSQL transactional advisory locks per repository partition.
+- [x] Metadata-only S3 syncer downloading existing XML files from `repodata/` without historical RPM binaries.
+- [x] Subprocess executor running `createrepo_c` with `--update`, `--recycle-pkglist`, `--cachedir`, and `--no-database`.
+- [x] Atomic S3 publisher uploading hash-prefixed XML files first, followed by atomic overwrite of `repomd.xml`.
+- [x] Garbage collector asynchronously purging orphaned superseded metadata files.
+- [x] Integration tests verifying incremental repodata generation, locking concurrency, and client consumption using `createrepo_c` and Garage S3.
