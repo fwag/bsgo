@@ -1,0 +1,13 @@
+schema_version: "v1"
+project:
+  name: "openSUSE:Crypto"
+  title: "Core Cryptography & Security Libraries"
+  description: "Cryptographic libraries providing SSL/TLS and cipher primitives for the distribution."
+targets:
+  standard:
+    architectures: ["x86_64"]
+    flags:
+      build: true
+      publish: true
+      rebuild: "transitive"
+      block: "all"

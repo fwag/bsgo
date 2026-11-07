@@ -1,0 +1,20 @@
+schema_version: "v1"
+package:
+  name: "openssh"
+  title: "OpenSSH Secure Shell Client and Server"
+  description: "SSH protocol implementation for secure remote logins and network tunneling."
+source:
+  git: "https://code.opensuse.org/package/openssh"
+  branch: "factory"
+  commit: "10.6p1"
+  recipe: "openssh.spec"
+build:
+  enabled: true
+  targets:
+    standard: true
+  architectures:
+    standard: ["x86_64"]
+resources:
+  memory: "4Gi"
+  vcpus: 2
+  disk: "20Gi"

@@ -1,0 +1,16 @@
+schema_version: "v1"
+project:
+  name: "openSUSE:Network"
+  title: "Network Applications and Daemons"
+  description: "Secure networking daemons and client tools."
+targets:
+  standard:
+    architectures: ["x86_64"]
+    dependencies:
+      - project: "openSUSE:Crypto"
+        target: "standard"
+    flags:
+      build: true
+      publish: true
+      rebuild: "transitive"
+      block: "all"

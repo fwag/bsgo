@@ -2,11 +2,15 @@ package publisher
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
+	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
 )
 
 func isValidPathSegment(s string) bool {
@@ -21,6 +25,7 @@ type PublishRequest struct {
 	Project      string   `json:"project"`
 	Target       string   `json:"target"`
 	Architecture string   `json:"architecture"`
+	Package      string   `json:"package,omitempty"`
 	NewRPMPaths  []string `json:"new_rpm_paths"`
 }
 
@@ -39,6 +44,23 @@ type S3Client interface {
 
 type LockManager interface {
 	AcquireLock(ctx context.Context, key string) (func(), error)
+}
+
+type EventPublisher interface {
+	PublishEvent(ctx context.Context, subject string, data []byte) error
+}
+
+type SignOptions struct {
+	Project    string
+	Package    string
+	SignFlavor string
+	SignType   string
+	HashAlgo   string
+	KeyFile    string
+}
+
+type MetadataSigner interface {
+	SignRepositoryMetadata(ctx context.Context, repodataDir string, opts SignOptions) (string, string, error)
 }
 
 type LocalLockManager struct {
@@ -70,6 +92,8 @@ type Publisher struct {
 	s3Client   S3Client
 	lockMgr    LockManager
 	workDir    string
+	eventPub   EventPublisher
+	signer     MetadataSigner
 }
 
 func NewPublisher(cr CreateRepoExecutor, s3 S3Client, lockMgr LockManager, workDir string) *Publisher {
@@ -79,6 +103,14 @@ func NewPublisher(cr CreateRepoExecutor, s3 S3Client, lockMgr LockManager, workD
 		lockMgr:    lockMgr,
 		workDir:    workDir,
 	}
+}
+
+func (p *Publisher) SetEventPublisher(ep EventPublisher) {
+	p.eventPub = ep
+}
+
+func (p *Publisher) SetMetadataSigner(ms MetadataSigner) {
+	p.signer = ms
 }
 
 func (p *Publisher) ProcessPublishRequest(ctx context.Context, req PublishRequest) (*PublishResult, error) {
@@ -115,7 +147,19 @@ func (p *Publisher) ProcessPublishRequest(ctx context.Context, req PublishReques
 		return nil, fmt.Errorf("metadata generation failed: %w", err)
 	}
 
-	return p.uploadMetadataAtomic(ctx, repoDir, s3Prefix, req)
+	res, err := p.uploadMetadataAtomic(ctx, repoDir, s3Prefix, req)
+	if err != nil {
+		return nil, err
+	}
+
+	if p.eventPub != nil {
+		event := v1.NewPublicationEvent(req.Project, req.Target, req.Architecture, req.Package, req.NewRPMPaths, res.RepomdXMLKey)
+		if data, err := json.Marshal(event); err == nil {
+			_ = p.eventPub.PublishEvent(ctx, natsqueue.SubjectEventsPublished, data)
+		}
+	}
+
+	return res, nil
 }
 
 func (p *Publisher) uploadMetadataAtomic(ctx context.Context, repoDir, s3Prefix string, req PublishRequest) (*PublishResult, error) {
@@ -149,6 +193,16 @@ func (p *Publisher) uploadMetadataAtomic(ctx context.Context, repoDir, s3Prefix 
 	repomdKey := s3Prefix + "repodata/repomd.xml"
 	if repomdFile != "" {
 		localPath := filepath.Join(repodataDir, repomdFile)
+
+		if p.signer != nil {
+			sigPath, keyPath, err := p.signer.SignRepositoryMetadata(ctx, repodataDir, SignOptions{Project: req.Project})
+			if err == nil {
+				_ = p.s3Client.UploadFile(ctx, sigPath, s3Prefix+"repodata/repomd.xml.asc")
+				_ = p.s3Client.UploadFile(ctx, keyPath, s3Prefix+"repodata/repomd.xml.key")
+				uploadedKeys = append(uploadedKeys, s3Prefix+"repodata/repomd.xml.asc", s3Prefix+"repodata/repomd.xml.key")
+			}
+		}
+
 		if err := p.s3Client.UploadFile(ctx, localPath, repomdKey); err != nil {
 			return nil, fmt.Errorf("failed to upload atomic repomd.xml: %w", err)
 		}
@@ -161,6 +215,34 @@ func (p *Publisher) uploadMetadataAtomic(ctx context.Context, repoDir, s3Prefix 
 		RepomdXMLKey:    repomdKey,
 		UploadedXMLKeys: uploadedKeys,
 	}, nil
+}
+
+// ValidateProvenance verifies that an in-toto SLSA provenance statement is valid
+// and that its declared artifact SHA-256 digests match the built RPMs.
+func ValidateProvenance(provenanceData []byte, expectedRPMs map[string]string) (*v1.InTotoStatement, error) {
+	var stmt v1.InTotoStatement
+	if err := json.Unmarshal(provenanceData, &stmt); err != nil {
+		return nil, fmt.Errorf("invalid provenance json: %w", err)
+	}
+
+	if stmt.Type != v1.InTotoStatementType {
+		return nil, fmt.Errorf("invalid in-toto statement type: %q, expected %q", stmt.Type, v1.InTotoStatementType)
+	}
+	if stmt.PredicateType != v1.SLSAProvenanceType {
+		return nil, fmt.Errorf("invalid slsa predicate type: %q, expected %q", stmt.PredicateType, v1.SLSAProvenanceType)
+	}
+
+	for _, sub := range stmt.Subject {
+		expectedDigest, exists := expectedRPMs[sub.Name]
+		if exists && expectedDigest != "" {
+			actualDigest := sub.Digest["sha256"]
+			if !strings.EqualFold(actualDigest, expectedDigest) {
+				return nil, fmt.Errorf("provenance digest mismatch for %s: expected %s, got %s", sub.Name, expectedDigest, actualDigest)
+			}
+		}
+	}
+
+	return &stmt, nil
 }
 
 func checkFileExists(path string) bool {

@@ -1,0 +1,43 @@
+From afab56d09edb525dd794fcb2ae2295ab7f39400a Mon Sep 17 00:00:00 2001
+From: Dmitry Belyavskiy <dbelyavs@redhat.com>
+Date: Mon, 21 Aug 2023 16:01:48 +0200
+Subject: [PATCH 42/48] 0091-FIPS-RSA-encapsulate.patch
+
+Patch-name: 0091-FIPS-RSA-encapsulate.patch
+Patch-id: 91
+---
+ providers/implementations/kem/rsa_kem.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+Index: openssl-3.2.4/providers/implementations/kem/rsa_kem.c
+===================================================================
+--- openssl-3.2.4.orig/providers/implementations/kem/rsa_kem.c
++++ openssl-3.2.4/providers/implementations/kem/rsa_kem.c
+@@ -276,6 +276,13 @@ static int rsasve_generate(PROV_RSA_CTX
+         return 0;
+     }
+ 
++#ifdef FIPS_MODULE
++    if (nlen < OPENSSL_RSA_FIPS_MIN_MODULUS_BITS/8) {
++        ERR_raise(ERR_LIB_PROV, PROV_R_KEY_SIZE_TOO_SMALL);
++        return 0;
++    }
++#endif
++
+     /*
+      * Step (2): Generate a random byte string z of nlen bytes where
+      *            1 < z < n - 1
+@@ -337,6 +344,13 @@ static int rsasve_recover(PROV_RSA_CTX *
+         return 1;
+     }
+ 
++#ifdef FIPS_MODULE
++    if (nlen < OPENSSL_RSA_FIPS_MIN_MODULUS_BITS/8) {
++        ERR_raise(ERR_LIB_PROV, PROV_R_KEY_SIZE_TOO_SMALL);
++        return 0;
++    }
++#endif
++
+     /*
+      * Step (2): check the input ciphertext 'inlen' matches the nlen
+      * and that outlen is at least nlen bytes

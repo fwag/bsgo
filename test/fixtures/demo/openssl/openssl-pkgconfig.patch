@@ -1,0 +1,26 @@
+Index: openssl-3.5.0-beta1/exporters/pkg-config/libcrypto.pc.in
+===================================================================
+--- openssl-3.5.0-beta1.orig/exporters/pkg-config/libcrypto.pc.in
++++ openssl-3.5.0-beta1/exporters/pkg-config/libcrypto.pc.in
+@@ -19,7 +19,7 @@ Description: OpenSSL cryptography librar
+ Version: {- $OpenSSL::safe::installdata::VERSION -}
+ Libs: -L${libdir} -lcrypto
+ Libs.private: {- join(' ', @OpenSSL::safe::installdata::LDLIBS) -}
+-Cflags:{- $OUT = ' -I${includedir}';
++Cflags:{- $OUT = ' -DOPENSSL_LOAD_CONF -I${includedir}';
+           if (scalar @OpenSSL::safe::installdata::INCLUDEDIR_REL_PREFIX > 1) {
+               $OUT = '';
+               $OUT .= ' -I${prefix}/' . $_ . ' '
+Index: openssl-3.5.0-beta1/exporters/pkg-config/libssl.pc.in
+===================================================================
+--- openssl-3.5.0-beta1.orig/exporters/pkg-config/libssl.pc.in
++++ openssl-3.5.0-beta1/exporters/pkg-config/libssl.pc.in
+@@ -17,7 +17,7 @@ Description: Secure Sockets Layer and cr
+ Version: {- $OpenSSL::safe::installdata::VERSION -}
+ Requires.private: libcrypto
+ Libs: -L${libdir} -lssl
+-Cflags:{- $OUT = ' -I${includedir}';
++Cflags:{- $OUT = ' -DOPENSSL_LOAD_CONF -I${includedir}';
+           if (scalar @OpenSSL::safe::installdata::INCLUDEDIR_REL_PREFIX > 1) {
+               $OUT = '';
+               $OUT .= ' -I${prefix}/' . $_ . ' '

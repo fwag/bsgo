@@ -46,5 +46,21 @@ The entire `bsgo` ecosystem must be architected from day one for seamless, safe 
 - **Fine-Grained Token ACLs (Least-Privilege Agent Scopes)**: To ensure safe agent execution and contain blast radius, API tokens must enforce fine-grained, resource-scoped permissions:
   - Format: `<action>:<resource>[:<id>]` (e.g. `build:trigger:openSUSE:Factory`, `project:write:home:myuser`, `package:resources:update`).
   - An agent operating on project `home:bot` must be restricted to tokens with `project:write:home:bot`, preventing accidental modifications to core distribution repositories like `openSUSE:Factory`.
-- **Deep Modules & Idiomatic Go**: Expose clean, compact interfaces that hide implementation complexity behind stable package boundaries.
-- **No Suppression**: Never bypass the type system, disable linters, suppress errors, or use empty catch blocks.
+- Deep Modules & Idiomatic Go: Expose clean, compact interfaces that hide implementation complexity behind stable package boundaries.
+- No Suppression: Never bypass the type system, disable linters, suppress errors, or use empty catch blocks.
+
+## 6. Supply Chain Security & SLSA 1.2 Compliance
+
+The build and artifact delivery pipeline must achieve full compliance with SLSA (Supply-chain Levels for Software Artifacts) Build Track standards (targeting SLSA 1.2 / https://slsa.dev/):
+
+- **Cryptographic Provenance Generation**: Every built artifact (RPM, container image, ISO) must be accompanied by an authenticated, cryptographically signed in-toto attestation / provenance statement detailing:
+  - Exact source repository URL, resolved Merkle commit SHA, and sub-path.
+  - Exact build configuration, parameters, entrypoint commands, and builder platform identity.
+  - Complete list of resolved build-time dependencies (chroot RPMs with digest, name-version-release).
+- **Hermetic & Isolated Build Execution**:
+  - Worker execution environments must be ephemeral and strongly isolated (hardware-assisted QEMU/KVM micro-VMs or gVisor sandbox).
+  - No ambient credentials, persistent state, or cross-job contamination.
+  - Strict network isolation during build execution to prevent unpinned external network dependencies.
+- **Tamper-Evident Artifact & Metadata Pipelines**: Artifact generation, packaging, repodata generation, and publishing must maintain cryptographic non-repudiation from worker output to S3 publication.
+- **Reproducibility Verification**: Build definitions and environment specifications must support deterministic rebuilds and independent verification of build outcomes.
+

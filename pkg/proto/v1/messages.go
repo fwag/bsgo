@@ -16,6 +16,22 @@ type BuildTrigger struct {
 	TriggeredBy   string `json:"triggered_by"`
 	TimestampUnix int64  `json:"timestamp_unix"`
 	ForceRebuild  bool   `json:"force_rebuild"`
+	Priority      string `json:"priority,omitempty"`     // "high", "med", "low" (default "high")
+	Reason        string `json:"reason,omitempty"`       // "SOURCE_CHANGE", "ADMIN_TRIGGER", "CASCADE", "CONFIG_CHANGE"
+	Target        string `json:"target,omitempty"`       // optional target override
+	Architecture  string `json:"architecture,omitempty"` // optional arch override
+}
+
+// NormalizedPriority returns "high", "med", or "low".
+func (t *BuildTrigger) NormalizedPriority() string {
+	switch t.Priority {
+	case "low":
+		return "low"
+	case "med", "medium":
+		return "med"
+	default:
+		return "high"
+	}
 }
 
 type BuildJob struct {
@@ -25,6 +41,7 @@ type BuildJob struct {
 	Target        string               `json:"target"`
 	Architecture  string               `json:"architecture"`
 	Priority      int32                `json:"priority"`
+	Reason        string               `json:"reason,omitempty"`
 	Source        SourceSpec           `json:"source"`
 	ChrootRPMs    []ChrootRPM          `json:"chroot_rpms"`
 	Resources     ResourceRequirements `json:"resources"`
@@ -83,6 +100,30 @@ type WorkerHardware struct {
 	CPUFeatures     []string `json:"cpu_features"`
 }
 
+type PublicationEvent struct {
+	EventID       string   `json:"event_id"`
+	Project       string   `json:"project"`
+	Target        string   `json:"target"`
+	Architecture  string   `json:"architecture"`
+	Package       string   `json:"package"`
+	NewRPMs       []string `json:"new_rpms"`
+	RepomdKey     string   `json:"repomd_key"`
+	TimestampUnix int64    `json:"timestamp_unix"`
+}
+
+func NewPublicationEvent(project, target, arch, pkgName string, rpms []string, repomdKey string) *PublicationEvent {
+	return &PublicationEvent{
+		EventID:       uuid.NewString(),
+		Project:       project,
+		Target:        target,
+		Architecture:  arch,
+		Package:       pkgName,
+		NewRPMs:       rpms,
+		RepomdKey:     repomdKey,
+		TimestampUnix: time.Now().Unix(),
+	}
+}
+
 func NewTrigger(project, pkg, gitURL, commit, ref, user string) *BuildTrigger {
 	return &BuildTrigger{
 		TriggerID:     uuid.NewString(),
@@ -93,5 +134,31 @@ func NewTrigger(project, pkg, gitURL, commit, ref, user string) *BuildTrigger {
 		Ref:           ref,
 		TriggeredBy:   user,
 		TimestampUnix: time.Now().Unix(),
+		Priority:      "high",
+		Reason:        "SOURCE_CHANGE",
+	}
+}
+
+func NewAdminTrigger(project, pkg, gitURL, commit, ref, user, target, arch, priority, reason string, force bool) *BuildTrigger {
+	if priority == "" {
+		priority = "high"
+	}
+	if reason == "" {
+		reason = "ADMIN_TRIGGER"
+	}
+	return &BuildTrigger{
+		TriggerID:     uuid.NewString(),
+		Project:       project,
+		Package:       pkg,
+		SourceGitURL:  gitURL,
+		CommitSHA:     commit,
+		Ref:           ref,
+		TriggeredBy:   user,
+		TimestampUnix: time.Now().Unix(),
+		ForceRebuild:  force,
+		Priority:      priority,
+		Reason:        reason,
+		Target:        target,
+		Architecture:  arch,
 	}
 }

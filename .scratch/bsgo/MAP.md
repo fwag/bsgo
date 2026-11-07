@@ -42,7 +42,12 @@ Deliver an architectural specification, core schemas, and prototype contracts fo
 
 ## Frontier Tickets
 
-*(All charted frontier tickets are currently resolved.)*
+- [16: Scheduler: Rebuild Policies, Prioritized Ingestion & Admin Trigger Tool](issues/16-rebuild-policies-and-prioritized-ingestion.md) (resolved)
+- [17: Scheduler: Downstream Rebuild Cascades & Reverse Dependency Engine](issues/17-rebuild-cascade-engine.md) (resolved)
+- [18: Dispatcher: Fair-Share Load Balancing & Staleness Anti-Starvation](issues/18-dispatcher-fair-share-anti-starvation.md) (resolved)
+- [19: Dispatcher: Worker Fault Tolerance, badhost Tracking & Quarantine](issues/19-worker-fault-tolerance-badhost.md) (resolved)
+- [20: Supply Chain: SLSA 1.2 Provenance Attestation Pipeline](issues/20-slsa-provenance-attestation.md) (resolved)
+- [21: Signer: obs-signd Protocol Client & Hardware Security Module (HSM) Service](issues/21-signer-obs-signd-and-pkcs11-hsm-service.md) (resolved)
 
 ## Not yet specified
 

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -101,12 +102,38 @@ func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWrite
 		return s.buildWithKVM(ctx, job, jobDir, multiWriter, start)
 	}
 
-	specPath := filepath.Join("test/fixtures/hello/hello.spec")
-	if _, err := os.Stat(specPath); err == nil && job.Package == "hello" {
-		return s.buildHelloPackage(ctx, job, jobDir, multiWriter, start)
+	srcDir, specName := findPackageSources(job.Package, job.Source.RecipePath)
+	specPath := filepath.Join(srcDir, specName)
+	if _, err := os.Stat(specPath); err == nil {
+		return s.buildSourcePackage(ctx, job, jobDir, srcDir, specName, multiWriter, start)
 	}
 
 	return s.buildGenericPackage(ctx, job, multiWriter, start)
+}
+
+func findPackageSources(pkgName, recipePath string) (string, string) {
+	candidates := []string{
+		filepath.Join("test/fixtures/demo", pkgName),
+		filepath.Join("test/fixtures", pkgName),
+	}
+	for _, dir := range candidates {
+		if stat, err := os.Stat(dir); err == nil && stat.IsDir() {
+			spec := recipePath
+			if spec == "" {
+				spec = pkgName + ".spec"
+			}
+			specPath := filepath.Join(dir, spec)
+			if _, err := os.Stat(specPath); err == nil {
+				return dir, spec
+			}
+			specs, _ := filepath.Glob(filepath.Join(dir, "*.spec"))
+			if len(specs) > 0 {
+				return dir, filepath.Base(specs[0])
+			}
+			return dir, spec
+		}
+	}
+	return "test/fixtures/hello", "hello.spec"
 }
 
 func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, jobDir string, w io.Writer, start time.Time) (*ExecutionResult, error) {
@@ -116,7 +143,8 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	}
 	fmt.Fprintf(w, "[%s] bsgo-worker: preparing KVM micro-VM sandbox via %s\n", time.Now().Format("15:04:05"), obsBin)
 
-	srcEntries, _ := filepath.Glob("test/fixtures/hello/*")
+	srcDir, specName := findPackageSources(job.Package, job.Source.RecipePath)
+	srcEntries, _ := filepath.Glob(filepath.Join(srcDir, "*"))
 	for _, f := range srcEntries {
 		cleanF := filepath.Clean(f)
 		data, err := os.ReadFile(cleanF)
@@ -131,7 +159,7 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	_ = os.MkdirAll(cacheDir, 0750)
 
 	buildRoot := filepath.Join(jobDir, "build-root")
-	specFile := filepath.Join(jobDir, "hello.spec")
+	specFile := filepath.Join(jobDir, specName)
 	args := []string{"--clean", "--vm-type", "kvm", "--root", buildRoot, "--cachedir", cacheDir, specFile}
 
 	fmt.Fprintf(w, "[%s] bsgo-worker: executing %s %s\n", time.Now().Format("15:04:05"), obsBin, strings.Join(args, " "))
@@ -146,25 +174,20 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 		return &ExecutionResult{ExitCode: 1}, err
 	}
 
-	return s.collectKVMArtifacts(buildRoot, jobDir, job.Project, job.Package, w, start)
+	return s.collectKVMArtifacts(buildRoot, jobDir, job, w, start)
 }
 
-func (s *ProcessSandbox) collectKVMArtifacts(buildRoot, jobDir, project, pkg string, w io.Writer, start time.Time) (*ExecutionResult, error) {
+func (s *ProcessSandbox) collectKVMArtifacts(buildRoot, jobDir string, job *v1.BuildJob, w io.Writer, start time.Time) (*ExecutionResult, error) {
 	pkgDir := filepath.Join(jobDir, "packages")
 	_ = os.MkdirAll(pkgDir, 0750)
 
 	pattern := filepath.Join(buildRoot, "usr/src/packages/RPMS/*/*.rpm")
-	artifacts := collectRPMsFromPattern(pattern, pkgDir, project, pkg, "extracted KVM RPM artifact", w)
+	artifacts := collectRPMsFromPattern(pattern, pkgDir, job.Project, job.Package, "extracted KVM RPM artifact", w)
 
-	elapsed := time.Since(start).Seconds()
-	return &ExecutionResult{
-		ExitCode:     0,
-		Artifacts:    artifacts,
-		TotalSeconds: elapsed,
-	}, nil
+	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
 }
 
-func (s *ProcessSandbox) buildHelloPackage(ctx context.Context, job *v1.BuildJob, jobDir string, w io.Writer, start time.Time) (*ExecutionResult, error) {
+func (s *ProcessSandbox) buildSourcePackage(ctx context.Context, job *v1.BuildJob, jobDir, srcDir, specName string, w io.Writer, start time.Time) (*ExecutionResult, error) {
 	rpmTopDir := filepath.Join(jobDir, "rpmbuild")
 	dirs := []string{"BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS"}
 	for _, d := range dirs {
@@ -173,7 +196,7 @@ func (s *ProcessSandbox) buildHelloPackage(ctx context.Context, job *v1.BuildJob
 		}
 	}
 
-	srcEntries, _ := filepath.Glob("test/fixtures/hello/*")
+	srcEntries, _ := filepath.Glob(filepath.Join(srcDir, "*"))
 	for _, f := range srcEntries {
 		cleanF := filepath.Clean(f)
 		data, err := os.ReadFile(cleanF)
@@ -183,8 +206,10 @@ func (s *ProcessSandbox) buildHelloPackage(ctx context.Context, job *v1.BuildJob
 			_ = os.WriteFile(dest, data, 0600)
 		}
 	}
-	specData, _ := os.ReadFile("test/fixtures/hello/hello.spec")
-	specFile := filepath.Clean(filepath.Join(rpmTopDir, "SPECS", "hello.spec"))
+	cleanSpecPath := filepath.Clean(filepath.Join(srcDir, specName))
+	// #nosec G304 -- reading sanitized package spec file path
+	specData, _ := os.ReadFile(cleanSpecPath)
+	specFile := filepath.Clean(filepath.Join(rpmTopDir, "SPECS", specName))
 	// #nosec G703 -- destination file is written within validated jobDir sandbox
 	_ = os.WriteFile(specFile, specData, 0600)
 
@@ -209,15 +234,35 @@ func (s *ProcessSandbox) buildHelloPackage(ctx context.Context, job *v1.BuildJob
 		return &ExecutionResult{ExitCode: 1}, err
 	}
 
-	return s.collectRPMArtifacts(rpmTopDir, jobDir, job.Project, job.Package, w, start)
+	return s.collectRPMArtifacts(rpmTopDir, jobDir, job, w, start)
 }
 
-func (s *ProcessSandbox) collectRPMArtifacts(rpmTopDir, jobDir, project, pkg string, w io.Writer, start time.Time) (*ExecutionResult, error) {
+func (s *ProcessSandbox) collectRPMArtifacts(rpmTopDir, jobDir string, job *v1.BuildJob, w io.Writer, start time.Time) (*ExecutionResult, error) {
 	pkgDir := filepath.Join(jobDir, "packages")
 	_ = os.MkdirAll(pkgDir, 0750)
 
 	pattern := filepath.Join(rpmTopDir, "RPMS", "*", "*.rpm")
-	artifacts := collectRPMsFromPattern(pattern, pkgDir, project, pkg, "built real RPM artifact", w)
+	artifacts := collectRPMsFromPattern(pattern, pkgDir, job.Project, job.Package, "built real RPM artifact", w)
+
+	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
+}
+
+func finalizeBuildArtifacts(pkgDir string, job *v1.BuildJob, artifacts []v1.ChrootRPM, w io.Writer, start time.Time) (*ExecutionResult, error) {
+	statement := v1.GenerateSLSAProvenance(job, artifacts, "bsgo-worker", start, time.Now())
+	if provJSON, err := json.MarshalIndent(statement, "", "  "); err == nil {
+		provDest := filepath.Clean(filepath.Join(pkgDir, "_slsa_provenance.json"))
+		// #nosec G703 -- provenance written into validated job packages directory
+		_ = os.WriteFile(provDest, provJSON, 0600)
+		provDigest := v1.ComputeSHA256(provJSON)
+		artifacts = append(artifacts, v1.ChrootRPM{
+			Filename:  "_slsa_provenance.json",
+			S3Key:     fmt.Sprintf("artifacts/%s/%s/_slsa_provenance.json", job.Project, job.Package),
+			SHA256:    provDigest,
+			SizeBytes: int64(len(provJSON)),
+		})
+		fmt.Fprintf(w, "[%s] bsgo-worker: generated SLSA 1.2 provenance attestation (%d bytes, sha256: %s)\n",
+			time.Now().Format("15:04:05"), len(provJSON), provDigest[:12])
+	}
 
 	elapsed := time.Since(start).Seconds()
 	return &ExecutionResult{
@@ -238,12 +283,15 @@ func collectRPMsFromPattern(pattern, pkgDir, project, pkg, label string, w io.Wr
 		if err == nil {
 			// #nosec G703 -- artifact RPM copied into validated job packages directory
 			_ = os.WriteFile(dest, data, 0600)
+			sha256Digest := v1.ComputeSHA256(data)
 			artifacts = append(artifacts, v1.ChrootRPM{
 				Filename:  baseName,
 				S3Key:     fmt.Sprintf("artifacts/%s/%s/%s", project, pkg, baseName),
+				SHA256:    sha256Digest,
 				SizeBytes: int64(len(data)),
 			})
-			fmt.Fprintf(w, "[%s] bsgo-worker: %s: %s (%d bytes)\n", time.Now().Format("15:04:05"), label, baseName, len(data))
+			fmt.Fprintf(w, "[%s] bsgo-worker: %s: %s (%d bytes, sha256: %s)\n",
+				time.Now().Format("15:04:05"), label, baseName, len(data), sha256Digest[:12])
 		}
 	}
 	return artifacts
@@ -258,11 +306,10 @@ func (s *ProcessSandbox) buildGenericPackage(ctx context.Context, job *v1.BuildJ
 	time.Sleep(200 * time.Millisecond)
 	fmt.Fprintf(w, "[%s] obs-build: build succeeded, packaging artifacts\n", time.Now().Format("15:04:05"))
 
-	elapsed := time.Since(start).Seconds()
-	return &ExecutionResult{
-		ExitCode:     0,
-		TotalSeconds: elapsed,
-	}, nil
+	jobDir := filepath.Join(s.WorkDir, "jobs", job.JobID)
+	pkgDir := filepath.Join(jobDir, "packages")
+	_ = os.MkdirAll(pkgDir, 0750)
+	return finalizeBuildArtifacts(pkgDir, job, nil, w, start)
 }
 
 func (s *ProcessSandbox) Cleanup(_ context.Context) error {

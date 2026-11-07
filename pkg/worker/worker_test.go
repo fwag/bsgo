@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -248,5 +250,64 @@ func TestProcessSandboxSafeCleanup(t *testing.T) {
 	// Verify Cleanup removes workspace cleanly
 	if err := sandbox.Cleanup(context.Background()); err != nil {
 		t.Fatalf("cleanup failed: %v", err)
+	}
+}
+
+func TestProcessSandboxSLSAProvenanceGeneration(t *testing.T) {
+	tempDir := t.TempDir()
+	sandbox := &worker.ProcessSandbox{WorkDir: tempDir}
+
+	job := &v1.BuildJob{
+		JobID:        "job-provenance-test",
+		Project:      "openSUSE:Factory",
+		Package:      "sample-app",
+		Target:       "standard",
+		Architecture: "x86_64",
+		Source: v1.SourceSpec{
+			GitURL:    "https://git/sample.git",
+			CommitSHA: "abcdef0123456789",
+		},
+		ChrootRPMs: []v1.ChrootRPM{
+			{Filename: "base-system-1.0.rpm", SHA256: "hash-base"},
+		},
+	}
+
+	res, err := sandbox.Execute(context.Background(), job, io.Discard)
+	if err != nil {
+		t.Fatalf("unexpected error executing job: %v", err)
+	}
+
+	foundProv := false
+	for _, art := range res.Artifacts {
+		if art.Filename == "_slsa_provenance.json" {
+			foundProv = true
+			if art.SHA256 == "" {
+				t.Errorf("expected non-empty sha256 for provenance file")
+			}
+			break
+		}
+	}
+	if !foundProv {
+		t.Fatalf("expected _slsa_provenance.json in generated artifacts")
+	}
+
+	provPath := filepath.Join(tempDir, "jobs", job.JobID, "packages", "_slsa_provenance.json")
+	data, err := os.ReadFile(provPath)
+	if err != nil {
+		t.Fatalf("failed reading _slsa_provenance.json: %v", err)
+	}
+
+	var stmt v1.InTotoStatement
+	if err := json.Unmarshal(data, &stmt); err != nil {
+		t.Fatalf("invalid json in _slsa_provenance.json: %v", err)
+	}
+	if stmt.Type != v1.InTotoStatementType {
+		t.Errorf("expected statement type %s, got %s", v1.InTotoStatementType, stmt.Type)
+	}
+	if stmt.PredicateType != v1.SLSAProvenanceType {
+		t.Errorf("expected predicate type %s, got %s", v1.SLSAProvenanceType, stmt.PredicateType)
+	}
+	if stmt.Predicate.BuildDefinition.ExternalParameters["package"] != "sample-app" {
+		t.Errorf("expected package sample-app in build definition external parameters")
 	}
 }

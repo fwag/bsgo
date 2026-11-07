@@ -14,6 +14,7 @@ type Dispatcher struct {
 	mu           sync.Mutex
 	registry     *WorkerRegistry
 	queue        *PriorityQueue
+	fairShare    *FairShareManager
 	publisher    Publisher
 	activeBuilds map[string]string // key: "prj:pkg:tgt:arch" -> jobID
 	abortHandler func(jobID, reason string)
@@ -23,6 +24,7 @@ func NewDispatcher(pub Publisher, workerTTL time.Duration) *Dispatcher {
 	return &Dispatcher{
 		registry:     NewWorkerRegistry(workerTTL),
 		queue:        NewPriorityQueue(),
+		fairShare:    NewFairShareManager(30*time.Minute, 0.05, 100.0, 0.01),
 		publisher:    pub,
 		activeBuilds: make(map[string]string),
 	}
@@ -34,6 +36,33 @@ func (d *Dispatcher) Registry() *WorkerRegistry {
 
 func (d *Dispatcher) Queue() *PriorityQueue {
 	return d.queue
+}
+
+func (d *Dispatcher) FairShare() *FairShareManager {
+	return d.fairShare
+}
+
+func (d *Dispatcher) RecordJobCompletion(project string, duration time.Duration) {
+	d.fairShare.RecordBuildTime(project, duration, time.Now())
+}
+
+// RecordJobResult updates worker health and badhost tracking, and records compute duration.
+func (d *Dispatcher) RecordJobResult(jobID, workerID, project string, exitCode int, duration time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	now := time.Now()
+	if exitCode == 0 {
+		d.registry.RecordJobSuccess(workerID)
+		d.fairShare.RecordBuildTime(project, duration, now)
+		return
+	}
+
+	d.registry.RecordJobFailure(jobID, workerID, exitCode, now)
+	if exitCode == 1 {
+		// Package build failure (exit 1): still record CPU compilation time
+		d.fairShare.RecordBuildTime(project, duration, now)
+	}
 }
 
 func (d *Dispatcher) OnAbort(fn func(jobID, reason string)) {
@@ -59,10 +88,15 @@ func (d *Dispatcher) DispatchNext(_ context.Context) (string, *v1.BuildJob, erro
 	defer d.mu.Unlock()
 
 	snapshot := d.queue.Snapshot()
-	for idx, job := range snapshot {
+	d.fairShare.SortJobsFairShare(snapshot, time.Now())
+
+	for _, job := range snapshot {
 		worker, _ := d.registry.FindBestIdleWorker(job)
 		if worker != nil {
-			poppedJob := d.queue.Remove(idx)
+			poppedJob := d.queue.RemoveJob(job.JobID)
+			if poppedJob == nil {
+				continue
+			}
 			d.registry.SetWorkerStatus(worker.WorkerID, "BUSY", poppedJob.JobID)
 
 			buildKey := fmt.Sprintf("%s:%s:%s:%s", poppedJob.Project, poppedJob.Package, poppedJob.Target, poppedJob.Architecture)

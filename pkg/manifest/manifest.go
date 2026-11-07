@@ -47,9 +47,35 @@ type DependencySource struct {
 }
 
 type TargetFlags struct {
-	Build     bool `yaml:"build"`
-	Publish   bool `yaml:"publish"`
-	Debuginfo bool `yaml:"debuginfo"`
+	Build     bool   `yaml:"build"`
+	Publish   bool   `yaml:"publish"`
+	Debuginfo bool   `yaml:"debuginfo"`
+	Rebuild   string `yaml:"rebuild,omitempty"` // "transitive" (default), "direct", "local"
+	Block     string `yaml:"block,omitempty"`   // "all" (default), "local", "never"
+}
+
+// EffectiveRebuild returns the normalized rebuild policy.
+func (f TargetFlags) EffectiveRebuild() string {
+	switch strings.ToLower(strings.TrimSpace(f.Rebuild)) {
+	case "direct":
+		return "direct"
+	case "local":
+		return "local"
+	default:
+		return "transitive"
+	}
+}
+
+// EffectiveBlock returns the normalized dependency blocking policy.
+func (f TargetFlags) EffectiveBlock() string {
+	switch strings.ToLower(strings.TrimSpace(f.Block)) {
+	case "local":
+		return "local"
+	case "never":
+		return "never"
+	default:
+		return "all"
+	}
 }
 
 type PackageManifest struct {

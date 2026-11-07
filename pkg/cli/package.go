@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
+	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
 	"github.com/openSUSE/bsgo/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -237,13 +238,14 @@ func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Comma
 			}
 
 			jobID := fmt.Sprintf("job-%d", time.Now().UnixNano())
+			subject := natsqueue.TriggerSubject(natsqueue.PriorityHigh, projectName, pkgName)
 			result := map[string]any{
 				"status":     "TRIGGERED",
 				"job_id":     jobID,
 				"project":    projectName,
 				"package":    pkgName,
 				"commit_sha": commitSHA,
-				"subject":    fmt.Sprintf("bsgo.triggers.%s.%s", projectName, pkgName),
+				"subject":    subject,
 			}
 
 			// Publish real trigger to NATS
@@ -253,7 +255,7 @@ func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Comma
 				trigger := v1.NewTrigger(projectName, pkgName, p.Source.Git, commitSHA, p.Source.Branch, "developer")
 				trigger.TriggerID = jobID
 				tData, _ := json.Marshal(trigger)
-				_ = nc.Publish(fmt.Sprintf("bsgo.triggers.%s.%s", projectName, pkgName), tData)
+				_ = nc.Publish(subject, tData)
 
 				// Notify dashboard of pending job
 				statusMsg := map[string]any{
@@ -274,7 +276,7 @@ func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Comma
 			fmt.Fprintf(&sb, "  Project:    %s\n", projectName)
 			fmt.Fprintf(&sb, "  Package:    %s\n", pkgName)
 			fmt.Fprintf(&sb, "  Commit SHA: %s\n", commitSHA)
-			fmt.Fprintf(&sb, "  Subject:    bsgo.triggers.%s.%s\n", projectName, pkgName)
+			fmt.Fprintf(&sb, "  Subject:    %s\n", subject)
 
 			return Render(cmd.OutOrStdout(), sb.String(), result, jobID, *opts)
 		},

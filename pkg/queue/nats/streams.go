@@ -19,7 +19,22 @@ const (
 	SubjectJobsPending     = "bsgo.jobs.pending"
 	SubjectJobStatus       = "bsgo.status"
 	SubjectPublishPattern  = "bsgo.publish.>"
+	SubjectEventsPublished = "bsgo.events.published"
+
+	PriorityHigh = "high"
+	PriorityMed  = "med"
+	PriorityLow  = "low"
 )
+
+// TriggerSubject returns the prioritized NATS subject for a trigger.
+// e.g. bsgo.triggers.high.openSUSE:Factory.curl
+func TriggerSubject(priority, project, pkg string) string {
+	p := priority
+	if p != PriorityLow && p != PriorityMed {
+		p = PriorityHigh
+	}
+	return fmt.Sprintf("bsgo.triggers.%s.%s.%s", p, project, pkg)
+}
 
 func SetupStreams(ctx context.Context, js jetstream.JetStream) error {
 	configs := []jetstream.StreamConfig{

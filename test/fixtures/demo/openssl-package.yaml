@@ -1,0 +1,20 @@
+schema_version: "v1"
+package:
+  name: "openssl"
+  title: "OpenSSL Cryptography and SSL/TLS Toolkit"
+  description: "Secure Sockets Layer and Transport Layer Security toolkit."
+source:
+  git: "https://code.opensuse.org/package/openssl"
+  branch: "factory"
+  commit: "3.5.3"
+  recipe: "openssl-3.spec"
+build:
+  enabled: true
+  targets:
+    standard: true
+  architectures:
+    standard: ["x86_64"]
+resources:
+  memory: "8Gi"
+  vcpus: 4
+  disk: "30Gi"

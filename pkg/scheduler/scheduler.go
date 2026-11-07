@@ -18,11 +18,15 @@ type Config struct {
 	S3Bucket string
 }
 
+type Solver interface {
+	Resolve(ctx context.Context, req solv.ExpansionRequest) (*solv.ExpansionResult, error)
+}
+
 type Scheduler struct {
-	store      storage.Store
-	solverPool *solv.WorkerPool
-	publisher  JobPublisher
-	cfg        Config
+	store     storage.Store
+	solver    Solver
+	publisher JobPublisher
+	cfg       Config
 }
 
 type JobPublisher interface {
@@ -41,12 +45,12 @@ func (p *NatsPublisher) Publish(ctx context.Context, subject string, data []byte
 	return p.publishFunc(ctx, subject, data)
 }
 
-func NewScheduler(store storage.Store, solverPool *solv.WorkerPool, publisher JobPublisher, cfg Config) *Scheduler {
+func NewScheduler(store storage.Store, solver Solver, publisher JobPublisher, cfg Config) *Scheduler {
 	return &Scheduler{
-		store:      store,
-		solverPool: solverPool,
-		publisher:  publisher,
-		cfg:        cfg,
+		store:     store,
+		solver:    solver,
+		publisher: publisher,
+		cfg:       cfg,
 	}
 }
 
@@ -67,7 +71,7 @@ func (s *Scheduler) ProcessTrigger(ctx context.Context, trigger *v1.BuildTrigger
 
 	var generatedJobs []*v1.BuildJob
 	for targetName, targetCfg := range prj.Targets {
-		if enabled, exists := pkg.Build.Targets[targetName]; exists && !enabled {
+		if !s.isTargetEligible(trigger, pkg, targetName, targetCfg) {
 			continue
 		}
 
@@ -81,9 +85,46 @@ func (s *Scheduler) ProcessTrigger(ctx context.Context, trigger *v1.BuildTrigger
 	return generatedJobs, nil
 }
 
+// ProcessCommitBatch processes multiple package triggers from a single atomic Git commit.
+func (s *Scheduler) ProcessCommitBatch(ctx context.Context, triggers []*v1.BuildTrigger) ([]*v1.BuildJob, error) {
+	var allJobs []*v1.BuildJob
+	for _, tr := range triggers {
+		jobs, err := s.ProcessTrigger(ctx, tr)
+		if err != nil {
+			return nil, fmt.Errorf("failed processing trigger %s/%s: %w", tr.Project, tr.Package, err)
+		}
+		allJobs = append(allJobs, jobs...)
+	}
+	return allJobs, nil
+}
+
+func (s *Scheduler) isTargetEligible(trigger *v1.BuildTrigger, pkg *manifest.PackageManifest, targetName string, targetCfg manifest.BuildTarget) bool {
+	if trigger.Target != "" && trigger.Target != targetName {
+		return false
+	}
+
+	if enabled, exists := pkg.Build.Targets[targetName]; exists && !enabled {
+		return false
+	}
+
+	// Evaluate Rebuild policy
+	rebuildMode := targetCfg.Flags.EffectiveRebuild()
+	if rebuildMode == "local" && trigger.Reason == "CASCADE" && !trigger.ForceRebuild {
+		return false // local rebuild mode skips downstream cascade rebuilds
+	}
+	if rebuildMode == "direct" && trigger.Reason == "CASCADE_INDIRECT" && !trigger.ForceRebuild {
+		return false // direct rebuild mode skips indirect cascades
+	}
+
+	return true
+}
+
 func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger, targetName string, archs []string, pkg *manifest.PackageManifest) ([]*v1.BuildJob, error) {
 	var jobs []*v1.BuildJob
 	for _, arch := range archs {
+		if trigger.Architecture != "" && trigger.Architecture != arch {
+			continue
+		}
 		if isArchExcluded(arch, pkg.Build.Architectures.Exclude) {
 			continue
 		}
@@ -112,7 +153,7 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		BuildRequires: []string{pkg.Package.Name},
 	}
 
-	res, err := s.solverPool.Resolve(ctx, req)
+	res, err := s.solver.Resolve(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("solver failed for %s (%s): %w", pkg.Package.Name, arch, err)
 	}
@@ -126,10 +167,7 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		})
 	}
 
-	prio := 50 + len(chrootRPMs)
-	if prio > math.MaxInt32 {
-		prio = math.MaxInt32
-	}
+	prio := calculatePriority(trigger.NormalizedPriority(), len(chrootRPMs))
 
 	return &v1.BuildJob{
 		JobID:        fmt.Sprintf("job-%d", time.Now().UnixNano()),
@@ -137,7 +175,8 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		Package:      trigger.Package,
 		Target:       targetName,
 		Architecture: arch,
-		Priority:     int32(prio),
+		Priority:     prio,
+		Reason:       trigger.Reason,
 		Source: v1.SourceSpec{
 			GitURL:     trigger.SourceGitURL,
 			CommitSHA:  trigger.CommitSHA,
@@ -155,6 +194,27 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		},
 		CreatedAtUnix: time.Now().Unix(),
 	}, nil
+}
+
+func calculatePriority(priorityTier string, chrootCount int) int32 {
+	var base int32
+	switch priorityTier {
+	case "low":
+		base = 0
+	case "med":
+		base = 500
+	default:
+		base = 1000
+	}
+
+	if chrootCount < 0 {
+		chrootCount = 0
+	}
+	if chrootCount > math.MaxInt32-1050 {
+		return math.MaxInt32
+	}
+	// #nosec G115 -- chrootCount bounded above to prevent integer overflow
+	return base + 50 + int32(chrootCount)
 }
 
 func isArchExcluded(arch string, excluded []string) bool {

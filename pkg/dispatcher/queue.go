@@ -68,6 +68,20 @@ func (q *PriorityQueue) Remove(index int) *v1.BuildJob {
 	return job
 }
 
+func (q *PriorityQueue) RemoveJob(jobID string) *v1.BuildJob {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	for i, j := range q.jobs {
+		if j.JobID == jobID {
+			job := q.jobs[i]
+			q.jobs = append(q.jobs[:i], q.jobs[i+1:]...)
+			return job
+		}
+	}
+	return nil
+}
+
 func (q *PriorityQueue) Snapshot() []*v1.BuildJob {
 	q.mu.Lock()
 	defer q.mu.Unlock()

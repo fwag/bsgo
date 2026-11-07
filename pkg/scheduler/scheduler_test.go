@@ -165,3 +165,189 @@ func TestSchedulerWebhookToNATSJob(t *testing.T) {
 		t.Errorf("expected job ID 'job-test-01', got %s", receivedJob.JobID)
 	}
 }
+
+func TestPrioritizedTriggerQueueAntiStarvation(t *testing.T) {
+	// Anti-starvation threshold: 3 non-low items before forcing low item
+	q := scheduler.NewPrioritizedTriggerQueue(3)
+
+	// Push 10 high, 2 med, 2 low triggers
+	for i := 0; i < 10; i++ {
+		q.Push(&v1.BuildTrigger{TriggerID: "high", Priority: "high"})
+	}
+	for i := 0; i < 2; i++ {
+		q.Push(&v1.BuildTrigger{TriggerID: "med", Priority: "med"})
+	}
+	for i := 0; i < 2; i++ {
+		q.Push(&v1.BuildTrigger{TriggerID: "low", Priority: "low"})
+	}
+
+	h, m, l := q.Counts()
+	if h != 10 || m != 2 || l != 2 {
+		t.Fatalf("expected counts (10, 2, 2), got (%d, %d, %d)", h, m, l)
+	}
+
+	// 1, 2, 3 should be high
+	for i := 0; i < 3; i++ {
+		tr := q.Pop()
+		if tr.Priority != "high" {
+			t.Fatalf("expected high priority on pop %d, got %s", i+1, tr.Priority)
+		}
+	}
+
+	// Pop 4: anti-starvation threshold (3) exceeded, MUST be low!
+	tr := q.Pop()
+	if tr.Priority != "low" {
+		t.Fatalf("expected low priority due to anti-starvation on pop 4, got %s", tr.Priority)
+	}
+
+	// Pop 5, 6, 7 should be high
+	for i := 0; i < 3; i++ {
+		tr := q.Pop()
+		if tr.Priority != "high" {
+			t.Fatalf("expected high priority on pop %d, got %s", i+5, tr.Priority)
+		}
+	}
+
+	// Pop 8: threshold exceeded again, MUST be remaining low!
+	tr = q.Pop()
+	if tr.Priority != "low" {
+		t.Fatalf("expected remaining low priority on pop 8, got %s", tr.Priority)
+	}
+}
+
+type mockSolver struct {
+	pkgs []solv.ResolvedPackage
+}
+
+func (m *mockSolver) Resolve(_ context.Context, _ solv.ExpansionRequest) (*solv.ExpansionResult, error) {
+	return &solv.ExpansionResult{Packages: m.pkgs}, nil
+}
+
+func TestSchedulerRebuildPolicyGating(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+
+	prj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "test-prj"},
+		Targets: map[string]manifest.BuildTarget{
+			"local-target": {
+				Architectures: []string{"x86_64"},
+				Flags: manifest.TargetFlags{
+					Build:   true,
+					Rebuild: "local",
+				},
+			},
+			"transitive-target": {
+				Architectures: []string{"x86_64"},
+				Flags: manifest.TargetFlags{
+					Build:   true,
+					Rebuild: "transitive",
+				},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, prj)
+
+	pkg := &manifest.PackageManifest{
+		SchemaVersion: "v1",
+		Package:       manifest.PackageInfo{Name: "app"},
+		Source:        manifest.PackageSource{Git: "https://git/app.git", Branch: "main"},
+		Build:         manifest.PackageBuild{Enabled: true},
+	}
+	_ = store.UpsertPackage(ctx, "test-prj", pkg)
+
+	solver := &mockSolver{
+		pkgs: []solv.ResolvedPackage{{Name: "app", EVR: "1.0-1", Arch: "x86_64"}},
+	}
+
+	var publishedJobs [][]byte
+	pub := scheduler.NewNatsPublisher(func(_ context.Context, _ string, data []byte) error {
+		publishedJobs = append(publishedJobs, data)
+		return nil
+	})
+	sched := scheduler.NewScheduler(store, solver, pub, scheduler.Config{S3Bucket: "artifacts"})
+
+	// 1. Cascade trigger without force: should skip "local-target" and only build for "transitive-target"
+	cascadeTrigger := &v1.BuildTrigger{
+		TriggerID: "trig-cascade",
+		Project:   "test-prj",
+		Package:   "app",
+		Priority:  "med",
+		Reason:    "CASCADE",
+	}
+
+	jobs, err := sched.ProcessTrigger(ctx, cascadeTrigger)
+	if err != nil {
+		t.Fatalf("unexpected error processing cascade trigger: %v", err)
+	}
+
+	if len(jobs) != 1 {
+		t.Fatalf("expected exactly 1 job for transitive-target, got %d", len(jobs))
+	}
+	if jobs[0].Target != "transitive-target" {
+		t.Errorf("expected target 'transitive-target', got %s", jobs[0].Target)
+	}
+	if jobs[0].Priority < 500 {
+		t.Errorf("expected priority >= 500 for med tier, got %d", jobs[0].Priority)
+	}
+
+	// 2. Cascade trigger with force_rebuild = true: builds both!
+	cascadeTrigger.ForceRebuild = true
+	jobs, err = sched.ProcessTrigger(ctx, cascadeTrigger)
+	if err != nil {
+		t.Fatalf("unexpected error processing forced cascade trigger: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("expected 2 jobs when ForceRebuild is true, got %d", len(jobs))
+	}
+}
+
+func TestSchedulerProcessCommitBatch(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+
+	prj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "batch-prj"},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {
+				Architectures: []string{"x86_64"},
+				Flags:         manifest.TargetFlags{Build: true},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, prj)
+
+	for _, name := range []string{"pkg-a", "pkg-b"} {
+		pkg := &manifest.PackageManifest{
+			SchemaVersion: "v1",
+			Package:       manifest.PackageInfo{Name: name},
+			Source:        manifest.PackageSource{Git: "https://git/" + name, Branch: "main"},
+			Build:         manifest.PackageBuild{Enabled: true},
+		}
+		_ = store.UpsertPackage(ctx, "batch-prj", pkg)
+	}
+
+	solver := &mockSolver{
+		pkgs: []solv.ResolvedPackage{{Name: "base", EVR: "1.0-1", Arch: "x86_64"}},
+	}
+
+	pub := scheduler.NewNatsPublisher(func(_ context.Context, _ string, _ []byte) error {
+		return nil
+	})
+	sched := scheduler.NewScheduler(store, solver, pub, scheduler.Config{S3Bucket: "artifacts"})
+
+	triggers := []*v1.BuildTrigger{
+		v1.NewTrigger("batch-prj", "pkg-a", "https://git/pkg-a", "c0ffee", "main", "alice"),
+		v1.NewTrigger("batch-prj", "pkg-b", "https://git/pkg-b", "c0ffee", "main", "alice"),
+	}
+
+	jobs, err := sched.ProcessCommitBatch(ctx, triggers)
+	if err != nil {
+		t.Fatalf("unexpected error in ProcessCommitBatch: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("expected 2 jobs from commit batch, got %d", len(jobs))
+	}
+}

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -148,5 +150,37 @@ func TestAuthCreateToken(t *testing.T) {
 	rawToken, ok := res["token"].(string)
 	if !ok || !strings.HasPrefix(rawToken, "bsgo_pat_") {
 		t.Errorf("expected token starting with bsgo_pat_, got: %v", res["token"])
+	}
+}
+
+func TestProjectAddCmd(t *testing.T) {
+	store := storage.NewMemoryStore()
+	tempDir := t.TempDir()
+	manifestFile := filepath.Join(tempDir, "project.yaml")
+	content := `schema_version: "v1"
+project:
+  name: "openSUSE:Crypto"
+  title: "Core Cryptography"
+targets:
+  standard:
+    architectures: ["x86_64"]
+`
+	_ = os.WriteFile(manifestFile, []byte(content), 0600)
+
+	cmd := cli.NewRootCommand(store)
+	outBuf := new(bytes.Buffer)
+	cmd.SetOut(outBuf)
+	cmd.SetArgs([]string{"project", "add", manifestFile, "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error executing project add: %v", err)
+	}
+
+	prj, err := store.GetProject(context.Background(), "openSUSE:Crypto")
+	if err != nil {
+		t.Fatalf("expected project to be created: %v", err)
+	}
+	if prj.Project.Name != "openSUSE:Crypto" {
+		t.Errorf("expected project name openSUSE:Crypto, got %s", prj.Project.Name)
 	}
 }

@@ -45,13 +45,11 @@ func initStore(ctx context.Context) storage.Store {
 
 func defaultDatabaseURL() string {
 	user := defaultEnv("PGUSER", "bsgo")
+	pass := defaultEnv("PGPASSWORD", "password")
 	host := defaultEnv("PGHOST", "localhost")
 	port := defaultEnv("PGPORT", "5432")
 	dbName := defaultEnv("PGDATABASE", "bsgodb")
-	if pass := os.Getenv("PGPASSWORD"); pass != "" {
-		return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", user, pass, host, port, dbName)
-	}
-	return fmt.Sprintf("postgres://%s@%s:%s/%s?sslmode=disable", user, host, port, dbName)
+	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", user, pass, host, port, dbName)
 }
 
 func defaultEnv(key, fallback string) string {

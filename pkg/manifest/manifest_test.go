@@ -47,6 +47,8 @@ targets:
       build: true
       publish: true
       debuginfo: true
+      rebuild: "local"
+      block: "never"
 `)
 
 	prj, err := manifest.ParseProject(yamlData)
@@ -69,6 +71,12 @@ targets:
 	}
 	if len(tgt.Dependencies) != 2 {
 		t.Errorf("expected 2 dependencies, got %d", len(tgt.Dependencies))
+	}
+	if tgt.Flags.EffectiveRebuild() != "local" {
+		t.Errorf("expected effective rebuild 'local', got %q", tgt.Flags.EffectiveRebuild())
+	}
+	if tgt.Flags.EffectiveBlock() != "never" {
+		t.Errorf("expected effective block 'never', got %q", tgt.Flags.EffectiveBlock())
 	}
 }
 

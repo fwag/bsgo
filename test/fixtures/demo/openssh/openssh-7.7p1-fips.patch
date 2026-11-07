@@ -1,0 +1,1091 @@
+# HG changeset patch
+# Parent  92d953171b34f6fba18d24085eeeaa24b1d2d5b5
+FIPS 140-2 compliance. Perform selftests on start and use only FIPS approved
+algorithms.
+
+Index: openssh-10.3p1/Makefile.in
+===================================================================
+--- openssh-10.3p1.orig/Makefile.in
++++ openssh-10.3p1/Makefile.in
+@@ -113,6 +113,8 @@ P11OBJS= ssh-pkcs11-client.o
+ 
+ SKOBJS=	ssh-sk-client.o
+ 
++LIBSSH_OBJS += fips.o
++
+ SSHOBJS= ssh.o readconf.o clientloop.o sshtty.o \
+ 	sshconnect.o sshconnect2.o mux.o ssh-pkcs11.o $(SKOBJS)
+ 
+Index: openssh-10.3p1/cipher.c
+===================================================================
+--- openssh-10.3p1.orig/cipher.c
++++ openssh-10.3p1/cipher.c
+@@ -50,6 +50,9 @@
+ 
+ #include "openbsd-compat/openssl-compat.h"
+ 
++#include "fips.h"
++#include "log.h"
++
+ #ifndef WITH_OPENSSL
+ #define EVP_CIPHER_CTX void
+ #endif
+@@ -82,7 +85,7 @@ struct sshcipher {
+ #endif
+ };
+ 
+-static const struct sshcipher ciphers[] = {
++static const struct sshcipher ciphers_all[] = {
+ #ifdef WITH_OPENSSL
+ #ifndef OPENSSL_NO_DES
+ 	{ "3des-cbc",		8, 24, 0, 0, CFLAG_CBC, EVP_des_ede3_cbc },
+@@ -90,6 +93,8 @@ static const struct sshcipher ciphers[]
+ 	{ "aes128-cbc",		16, 16, 0, 0, CFLAG_CBC, EVP_aes_128_cbc },
+ 	{ "aes192-cbc",		16, 24, 0, 0, CFLAG_CBC, EVP_aes_192_cbc },
+ 	{ "aes256-cbc",		16, 32, 0, 0, CFLAG_CBC, EVP_aes_256_cbc },
++	{ "rijndael-cbc@lysator.liu.se",
++				16, 32, 0, 0, CFLAG_CBC, EVP_aes_256_cbc },
+ 	{ "aes128-ctr",		16, 16, 0, 0, 0, EVP_aes_128_ctr },
+ 	{ "aes192-ctr",		16, 24, 0, 0, 0, EVP_aes_192_ctr },
+ 	{ "aes256-ctr",		16, 32, 0, 0, 0, EVP_aes_256_ctr },
+@@ -109,8 +114,50 @@ static const struct sshcipher ciphers[]
+ 	{ NULL,			0, 0, 0, 0, 0, NULL }
+ };
+ 
++static const struct sshcipher ciphers_fips140_2[] = {
++#ifdef WITH_OPENSSL
++	{ "aes128-cbc",		16, 16, 0, 0, CFLAG_CBC, EVP_aes_128_cbc },
++	{ "aes192-cbc",		16, 24, 0, 0, CFLAG_CBC, EVP_aes_192_cbc },
++	{ "aes256-cbc",		16, 32, 0, 0, CFLAG_CBC, EVP_aes_256_cbc },
++	{ "rijndael-cbc@lysator.liu.se",
++				16, 32, 0, 0, CFLAG_CBC, EVP_aes_256_cbc },
++	{ "aes128-ctr",		16, 16, 0, 0, 0, EVP_aes_128_ctr },
++	{ "aes192-ctr",		16, 24, 0, 0, 0, EVP_aes_192_ctr },
++	{ "aes256-ctr",		16, 32, 0, 0, 0, EVP_aes_256_ctr },
++	{ "aes128-gcm@openssh.com",
++				16, 16, 12, 16, 0, EVP_aes_128_gcm },
++	{ "aes256-gcm@openssh.com",
++				16, 32, 12, 16, 0, EVP_aes_256_gcm },
++#else
++	{ "aes128-ctr",		16, 16, 0, 0, CFLAG_AESCTR, NULL },
++	{ "aes192-ctr",		16, 24, 0, 0, CFLAG_AESCTR, NULL },
++	{ "aes256-ctr",		16, 32, 0, 0, CFLAG_AESCTR, NULL },
++#endif
++	{ "none",		8, 0, 0, 0, CFLAG_NONE, NULL },
++
++	{ NULL,			0, 0, 0, 0, 0, NULL }
++};
++
+ /*--*/
+ 
++/* Returns array of ciphers available depending on selected FIPS mode */
++static const struct sshcipher *
++fips_select_ciphers(void)
++{
++	int fips = fips_mode();
++	switch (fips) {
++		case 0:
++			return ciphers_all;
++		case 1:
++			return ciphers_fips140_2;
++		default:
++			/* should not be reached */
++			fatal("Fatal error: incorrect FIPS mode '%i' at %s:%u",
++			    fips, __FILE__, __LINE__);
++			return NULL;
++	}
++}
++
+ /* Returns a comma-separated list of supported ciphers. */
+ char *
+ cipher_alg_list(char sep, int auth_only)
+@@ -119,7 +166,7 @@ cipher_alg_list(char sep, int auth_only)
+ 	const struct sshcipher *c;
+ 	char sep_str[2] = {sep, '\0'};
+ 
+-	for (c = ciphers; c->name != NULL; c++) {
++	for (c = fips_select_ciphers(); c->name != NULL; c++) {
+ 		if ((c->flags & CFLAG_INTERNAL) != 0)
+ 			continue;
+ 		if (auth_only && c->auth_len == 0)
+@@ -193,19 +240,19 @@ const struct sshcipher *
+ cipher_by_name(const char *name)
+ {
+ 	const struct sshcipher *c;
+-	for (c = ciphers; c->name != NULL; c++)
++	for (c = fips_select_ciphers(); c->name != NULL; c++)
+ 		if (strcmp(c->name, name) == 0)
+ 			return c;
+ 	return NULL;
+ }
+ 
+ #define	CIPHER_SEP	","
+-int
+-ciphers_valid(const char *names)
++static int
++ciphers_valid_internal(const char *names,
++    const struct sshcipher *(*by_name)(const char *))
+ {
+ 	const struct sshcipher *c;
+-	char *cipher_list, *cp;
+-	char *p;
++	char *cipher_list, *cp, *p;
+	int found = 0;
+ 
+ 	if (names == NULL || strcmp(names, "") == 0)
+@@ -213,7 +260,7 @@ ciphers_valid(const char *names)
+ 		return 0;
+ 	for ((p = strsep(&cp, CIPHER_SEP)); p && *p != '\0';
+ 	    (p = strsep(&cp, CIPHER_SEP))) {
+-		c = cipher_by_name(p);
++		c = by_name(p);
+ 		if (c == NULL || (c->flags & CFLAG_INTERNAL) != 0) {
+ 			free(cipher_list);
+ 			return 0;
+@@ -223,6 +270,31 @@ ciphers_valid(const char *names)
+ 	return found;
+ }
+ 
++int
++ciphers_valid(const char *names)
++{
++	return ciphers_valid_internal(names, cipher_by_name);
++}
++
++/* Like cipher_by_name() but ignores the FIPS filter, so it returns valid
++ * non-FIPS-approved names too. Used at config-parse time to distinguish a
++ * typo (unknown name) from a known-but-FIPS-rejected name in FIPS mode. */
++static const struct sshcipher *
++cipher_by_name_any(const char *name)
++{
++	const struct sshcipher *c;
++	for (c = ciphers_all; c->name != NULL; c++)
++		if (strcmp(c->name, name) == 0)
++			return c;
++	return NULL;
++}
++
++int
++ciphers_valid_any(const char *names)
++{
++	return ciphers_valid_internal(names, cipher_by_name_any);
++}
++
+ const char *
+ cipher_warning_message(const struct sshcipher_ctx *cc)
+ {
+Index: openssh-10.3p1/fips.c
+===================================================================
+--- /dev/null
++++ openssh-10.3p1/fips.c
+@@ -0,0 +1,230 @@
++/*
++ * Copyright (c) 2012 Petr Cerny.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "includes.h"
++
++#include "fips.h"
++
++#include "cipher.h"
++#include "dh.h"
++#include "digest.h"
++#include "kex.h"
++#include "sshkey.h"
++#include "mac.h"
++#include "log.h"
++#include "xmalloc.h"
++
++#include <string.h>
++#include <openssl/crypto.h>
++
++static int fips_state = -1;
++
++static int
++fips_check_required_env(void)
++{
++	int fips_required = 0;
++	char *env = getenv(SSH_FORCE_FIPS_ENV);
++
++	if (env) {
++		errno = 0;
++		fips_required = strtol(env, NULL, 10);
++		if (errno) {
++			debug("bogus value in the %s environment variable, ignoring\n"
++			    , SSH_FORCE_FIPS_ENV);
++			fips_required = 0;
++		} else
++			fips_required = 1;
++	}
++	return fips_required;
++}
++
++int
++fips_mode(void)
++{
++	if (-1 == fips_state) {
++		fips_state = FIPS_mode();
++		if (fips_state)
++			debug("FIPS mode initialized");
++		else {
++			if (fips_check_required_env()) {
++				debug("FIPS mode requested through the environment variable '%s'"
++				    , SSH_FORCE_FIPS_ENV);
++				if (!FIPS_mode_set(1))
++					fatal("Unable to enter FIPS mode as requested through the environment variable '%s'"
++					    , SSH_FORCE_FIPS_ENV);
++				fips_state = 1;
++			}
++		}
++	}
++	return fips_state;
++}
++
++int
++fips_correct_dgst(int digest)
++{
++	int fips;
++	int rv = -1;
++
++	fips = fips_mode();
++	switch (fips) {
++		case 0:
++			rv = digest;
++			break;
++		case 1:
++			switch (digest) {
++				case SSH_DIGEST_MD5:
++				case SSH_DIGEST_SHA1:
++					debug("MD5/RIPEMD160 digests not allowed in FIPS 140-2 mode"
++					    "using SHA-256 instead.");
++					rv = SSH_DIGEST_SHA256;
++					break;
++				default:
++					rv = digest;
++					break;
++			}
++			break;
++		default:
++			/* should not be reached */
++			fatal("Fatal error: incorrect FIPS mode '%i' at %s:%u",
++			    fips, __FILE__, __LINE__);
++	}
++
++	return rv;
++}
++
++/*
++ * filter out FIPS disallowed algorithms
++ * *crypto MUST be free()-able - it is assigned newly allocated memory and
++ * the previous one is freed
++ *
++ * returns zero if all algorithms were rejected, non-zero otherwise
++ */
++int
++fips_filter_crypto(char **crypto, fips_filters filter)
++{
++	char *token, *tmp, *tmp_sav, *new;
++	int plus = 0;
++	int valid;
++	int comma = 0;
++	int empty = 1;
++	size_t len;
++
++	tmp = tmp_sav = xstrdup(*crypto);
++
++	len = strlen(tmp) + 1;
++	new = xcalloc(1, len);
++
++	if ('+' == *tmp) {
++		plus = 1;
++		tmp++;
++	}
++
++	while ((token = strsep(&tmp, ",")) != NULL) {
++		switch(filter) {
++			case FIPS_FILTER_CIPHERS:
++				valid = ciphers_valid(token);
++				if (!valid)
++					debug("Cipher '%s' is not allowed in FIPS mode",
++					    token);
++				break;
++			case FIPS_FILTER_MACS:
++				valid = mac_valid(token);
++				if (!valid)
++					debug("MAC '%s' is not allowed in FIPS mode",
++					    token);
++				break;
++			case FIPS_FILTER_KEX_ALGS:
++				valid = kex_names_valid(token);
++				if (!valid)
++					debug("KEX '%s' is not allowed in FIPS mode",
++					    token);
++				break;
++			default:
++				/* should not be reached */
++				fatal("Fatal error: incorrect FIPS filter '%i' requested at %s:%u",
++				    filter, __FILE__, __LINE__);
++		}
++
++		if (valid) {
++			empty = 0;
++			if (plus) {
++				strlcat(new, "+", len);
++				plus = 0;
++			}
++			if (comma)
++				strlcat(new, ",", len);
++			else
++				comma = 1;
++			strlcat(new, token, len);
++		}
++	}
++
++	/* free tmp and re-allocate shorter buffer for result if necessary */
++	free(tmp_sav);
++	free(*crypto);
++	*crypto = new;
++
++	return (!empty);
++}
++
++/* Wrap fips_filter_crypto: if the FIPS filter dropped any names, emit a
++ * one-line warning naming what was kept. Returns the same value as
++ * fips_filter_crypto (0 if the list ended up empty, non-zero otherwise);
++ * the empty-list case skips the warning so the caller's fatal is the only
++ * diagnostic. */
++int
++fips_filter_warn(char **crypto, fips_filters filter, const char *what)
++{
++	char *before = xstrdup(*crypto);
++	int rv = fips_filter_crypto(crypto, filter);
++
++	if (rv && strcmp(before, *crypto) != 0)
++		logit("%s: non-FIPS names in '%s' ignored; using '%s'",
++		    what, before, *crypto);
++	free(before);
++	return rv;
++}
++
++int
++fips_dgst_min(void)
++{
++	int fips;
++	int dgst;
++
++	fips = fips_mode();
++	switch (fips) {
++		case 0:
++			dgst = SSH_DIGEST_MD5;
++			break;
++		case 1:
++			dgst = SSH_DIGEST_SHA256;
++			break;
++		default:
++			/* should not be reached */
++			fatal("Fatal error: incorrect FIPS mode '%i' at %s:%u",
++			    fips, __FILE__, __LINE__);
++	}
++	return dgst;
++}
++
+Index: openssh-10.3p1/fips.h
+===================================================================
+--- /dev/null
++++ openssh-10.3p1/fips.h
+@@ -0,0 +1,45 @@
++/*
++ * Copyright (c) 2012 Petr Cerny.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++#ifndef FIPS_H
++#define FIPS_H
++
++#include "sshkey.h"
++
++#define SSH_FORCE_FIPS_ENV	"SSH_FORCE_FIPS"
++
++typedef enum {
++	FIPS_FILTER_CIPHERS,
++	FIPS_FILTER_MACS,
++	FIPS_FILTER_KEX_ALGS
++} fips_filters;
++
++int	 fips_mode(void);
++int	 fips_correct_dgst(int);
++int	 fips_dgst_min(void);
++enum fp_type	 fips_correct_fp_type(enum fp_type);
++int	 fips_filter_warn(char **, fips_filters, const char *);
++int	 fips_filter_crypto(char **, fips_filters);
++
++#endif
++
+Index: openssh-10.3p1/hmac.c
+===================================================================
+--- openssh-10.3p1.orig/hmac.c
++++ openssh-10.3p1/hmac.c
+@@ -144,7 +144,7 @@ hmac_test(void *key, size_t klen, void *
+ 	size_t			 i;
+ 	u_char			 digest[16];
+ 
+-	if ((ctx = ssh_hmac_start(SSH_DIGEST_MD5)) == NULL)
++	if ((ctx = ssh_hmac_start(fips_correct_dgst(SSH_DIGEST_MD5))) == NULL)
+ 		printf("ssh_hmac_start failed");
+ 	if (ssh_hmac_init(ctx, key, klen) < 0 ||
+ 	    ssh_hmac_update(ctx, m, mlen) < 0 ||
+Index: openssh-10.3p1/kex-names.c
+===================================================================
+--- openssh-10.3p1.orig/kex-names.c
++++ openssh-10.3p1/kex-names.c
+@@ -43,6 +43,8 @@
+ 
+ #include "ssherr.h"
+ 
++#include "fips.h"
++
+ struct kexalg {
+ 	char *name;
+ 	u_int type;
+@@ -50,7 +52,7 @@ struct kexalg {
+ 	int hash_alg;
+ 	int pq_alg;
+ };
+-static const struct kexalg kexalgs[] = {
++static const struct kexalg kexalgs_all[] = {
+ #ifdef WITH_OPENSSL
+ 	{ KEX_DH1, KEX_DH_GRP1_SHA1, 0, SSH_DIGEST_SHA1, KEX_NOT_PQ },
+ 	{ KEX_DH14_SHA1, KEX_DH_GRP14_SHA1, 0, SSH_DIGEST_SHA1, KEX_NOT_PQ },
+@@ -89,6 +91,47 @@ static const struct kexalg kexalgs[] = {
+ 	{ NULL, 0, -1, -1, 0 },
+ };
+ 
++static const struct kexalg kexalgs_fips140_2[] = {
++#ifdef WITH_OPENSSL
++	{ KEX_DH14_SHA1, KEX_DH_GRP14_SHA1, 0, SSH_DIGEST_SHA1, KEX_NOT_PQ },
++	{ KEX_DH14_SHA256, KEX_DH_GRP14_SHA256, 0, SSH_DIGEST_SHA256, KEX_NOT_PQ },
++	{ KEX_DH16_SHA512, KEX_DH_GRP16_SHA512, 0, SSH_DIGEST_SHA512, KEX_NOT_PQ },
++	{ KEX_DH18_SHA512, KEX_DH_GRP18_SHA512, 0, SSH_DIGEST_SHA512, KEX_NOT_PQ },
++	{ KEX_DHGEX_SHA1, KEX_DH_GEX_SHA1, 0, SSH_DIGEST_SHA1, KEX_NOT_PQ },
++#ifdef HAVE_EVP_SHA256
++	{ KEX_DHGEX_SHA256, KEX_DH_GEX_SHA256, 0, SSH_DIGEST_SHA256, KEX_NOT_PQ },
++#endif /* HAVE_EVP_SHA256 */
++#ifdef OPENSSL_HAS_ECC
++	{ KEX_ECDH_SHA2_NISTP256, KEX_ECDH_SHA2,
++	    NID_X9_62_prime256v1, SSH_DIGEST_SHA256, KEX_NOT_PQ },
++	{ KEX_ECDH_SHA2_NISTP384, KEX_ECDH_SHA2, NID_secp384r1,
++	    SSH_DIGEST_SHA384, KEX_NOT_PQ },
++# ifdef OPENSSL_HAS_NISTP521
++	{ KEX_ECDH_SHA2_NISTP521, KEX_ECDH_SHA2, NID_secp521r1,
++	    SSH_DIGEST_SHA512, KEX_NOT_PQ },
++# endif /* OPENSSL_HAS_NISTP521 */
++#endif /* OPENSSL_HAS_ECC */
++#endif /* WITH_OPENSSL */
++	{ NULL, -1, -1, -1, 0},
++};
++
++/* Returns array of macs available depending on selected FIPS mode */
++static const struct kexalg *
++fips_select_kexalgs(void)
++{
++	int fips = fips_mode();
++	switch (fips) {
++		case 0:
++			return kexalgs_all;
++		case 1:
++			return kexalgs_fips140_2;
++		default:
++			/* should not be reached */
++			fatal("Fatal error: incorrect FIPS mode '%i' at %s:%u",
++			    fips, __FILE__, __LINE__);
++	}
++}
++
+ char *
+ kex_alg_list(char sep)
+ {
+@@ -96,7 +139,7 @@ kex_alg_list(char sep)
+ 	const struct kexalg *k;
+ 	char sep_str[2] = {sep, '\0'};
+ 
+-	for (k = kexalgs; k->name != NULL; k++)
++	for (k = fips_select_kexalgs(); k->name != NULL; k++)
+ 		xextendf(&ret, sep_str, "%s", k->name);
+ 
+ 	return ret;
+@@ -107,7 +150,7 @@ kex_alg_by_name(const char *name)
+ {
+ 	const struct kexalg *k;
+ 
+-	for (k = kexalgs; k->name != NULL; k++) {
++	for (k = fips_select_kexalgs(); k->name != NULL; k++) {
+ 		if (strcmp(k->name, name) == 0)
+ 			return k;
+ 	}
+@@ -161,8 +204,9 @@ kex_nid_from_name(const char *name)
+ }
+ 
+ /* Validate KEX method name list */
+-int
+-kex_names_valid(const char *names)
++static int
++kex_names_valid_internal(const char *names,
++    const struct kexalg *(*by_name)(const char *))
+ {
+ 	char *s, *cp, *p;
+ 
+@@ -172,17 +216,45 @@ kex_names_valid(const char *names)
+ 		return 0;
+ 	for ((p = strsep(&cp, ",")); p && *p != '\0';
+ 	    (p = strsep(&cp, ","))) {
+-		if (kex_alg_by_name(p) == NULL) {
+-			error("Unsupported KEX algorithm \"%.100s\"", p);
++		if (by_name(p) == NULL) {
+ 			free(s);
+ 			return 0;
+ 		}
+ 	}
+-	debug3("kex names ok: [%s]", names);
+ 	free(s);
+ 	return 1;
+ }
+ 
++int
++kex_names_valid(const char *names)
++{
++	int r = kex_names_valid_internal(names, kex_alg_by_name);
++	if (r)
++		debug3("kex names ok: [%s]", names);
++	return r;
++}
++
++/* Like kex_alg_by_name() but ignores the FIPS filter, so it returns valid
++ * non-FIPS-approved names too. Used at config-parse time to distinguish a
++ * typo from a known-but-FIPS-rejected name in FIPS mode. */
++static const struct kexalg *
++kex_alg_by_name_any(const char *name)
++{
++	const struct kexalg *k;
++
++	for (k = kexalgs_all; k->name != NULL; k++) {
++		if (strcmp(k->name, name) == 0)
++			return k;
++	}
++	return NULL;
++}
++
++int
++kex_names_valid_any(const char *names)
++{
++	return kex_names_valid_internal(names, kex_alg_by_name_any);
++}
++
+ /* returns non-zero if proposal contains any algorithm from algs */
+ int
+ kex_has_any_alg(const char *proposal, const char *algs)
+Index: openssh-10.3p1/mac.c
+===================================================================
+--- openssh-10.3p1.orig/mac.c
++++ openssh-10.3p1/mac.c
+@@ -41,6 +41,9 @@
+ 
+ #include "openbsd-compat/openssl-compat.h"
+ 
++#include "fips.h"
++#include "log.h"
++
+ #define SSH_DIGEST	1	/* SSH_DIGEST_XXX */
+ #define SSH_UMAC	2	/* UMAC (not integrated with OpenSSL) */
+ #define SSH_UMAC128	3
+@@ -55,7 +58,7 @@ struct macalg {
+ 	int		etm;		/* Encrypt-then-MAC */
+ };
+ 
+-static const struct macalg macs[] = {
++static const struct macalg macs_all[] = {
+ 	/* Encrypt-and-MAC (encrypt-and-authenticate) variants */
+ 	{ "hmac-sha1",				SSH_DIGEST, SSH_DIGEST_SHA1, 0, 0, 0, 0 },
+ 	{ "hmac-sha1-96",			SSH_DIGEST, SSH_DIGEST_SHA1, 96, 0, 0, 0 },
+@@ -79,6 +82,41 @@ static const struct macalg macs[] = {
+ 	{ NULL,					0, 0, 0, 0, 0, 0 }
+ };
+ 
++static const struct macalg macs_fips140_2[] = {
++	/* Encrypt-and-MAC (encrypt-and-authenticate) variants */
++	{ "hmac-sha1",				SSH_DIGEST, SSH_DIGEST_SHA1, 0, 0, 0, 0 },
++#ifdef HAVE_EVP_SHA256
++	{ "hmac-sha2-256",			SSH_DIGEST, SSH_DIGEST_SHA256, 0, 0, 0, 0 },
++	{ "hmac-sha2-512",			SSH_DIGEST, SSH_DIGEST_SHA512, 0, 0, 0, 0 },
++#endif
++
++	/* Encrypt-then-MAC variants */
++	{ "hmac-sha1-etm@openssh.com",		SSH_DIGEST, SSH_DIGEST_SHA1, 0, 0, 0, 1 },
++#ifdef HAVE_EVP_SHA256
++	{ "hmac-sha2-256-etm@openssh.com",	SSH_DIGEST, SSH_DIGEST_SHA256, 0, 0, 0, 1 },
++	{ "hmac-sha2-512-etm@openssh.com",	SSH_DIGEST, SSH_DIGEST_SHA512, 0, 0, 0, 1 },
++#endif
++
++	{ NULL,					0, 0, 0, 0, 0, 0 }
++};
++
++/* Returns array of macs available depending on selected FIPS mode */
++static const struct macalg *
++fips_select_macs(void)
++{
++	int fips = fips_mode();
++	switch (fips) {
++		case 0:
++			return macs_all;
++		case 1:
++			return macs_fips140_2;
++		default:
++			/* should not be reached */
++			fatal("Fatal error: incorrect FIPS mode '%i' at %s:%u",
++			    fips, __FILE__, __LINE__);
++	}
++}
++
+ /* Returns a list of supported MACs separated by the specified char. */
+ char *
+ mac_alg_list(char sep)
+@@ -87,7 +125,7 @@ mac_alg_list(char sep)
+ 	const struct macalg *m;
+ 	char sep_str[2] = {sep, '\0'};
+ 
+-	for (m = macs; m->name != NULL; m++)
++	for (m = fips_select_macs(); m->name != NULL; m++)
+ 		xextendf(&ret, sep_str, "%s", m->name);
+ 
+ 	return ret;
+@@ -117,7 +155,25 @@ mac_setup(struct sshmac *mac, char *name
+ {
+ 	const struct macalg *m;
+ 
+-	for (m = macs; m->name != NULL; m++) {
++	for (m = fips_select_macs(); m->name != NULL; m++) {
++		if (strcmp(name, m->name) != 0)
++			continue;
++		if (mac != NULL)
++			return mac_setup_by_alg(mac, m);
++		return 0;
++	}
++	return SSH_ERR_INVALID_ARGUMENT;
++}
++
++/* Like mac_setup() but ignores the FIPS filter, so it accepts valid
++ * non-FIPS-approved names too. Used at config-parse time to distinguish a
++ * typo from a known-but-FIPS-rejected name in FIPS mode. */
++static int
++mac_setup_any(struct sshmac *mac, char *name)
++{
++	const struct macalg *m;
++
++	for (m = macs_all; m->name != NULL; m++) {
+ 		if (strcmp(name, m->name) != 0)
+ 			continue;
+ 		if (mac != NULL)
+@@ -232,8 +288,9 @@ mac_clear(struct sshmac *mac)
+ 
+ /* XXX copied from ciphers_valid */
+ #define	MAC_SEP	","
+-int
+-mac_valid(const char *names)
++static int
++mac_valid_internal(const char *names,
++    int (*setup)(struct sshmac *, char *))
+ {
+ 	char *maclist, *cp, *p;
+ 	int found = 0;
+@@ -243,7 +300,7 @@ mac_valid(const char *names)
+ 		return 0;
+ 	for ((p = strsep(&cp, MAC_SEP)); p && *p != '\0';
+ 	    (p = strsep(&cp, MAC_SEP))) {
+-		if (mac_setup(NULL, p) < 0) {
++		if (setup(NULL, p) < 0) {
+ 			free(maclist);
+ 			return 0;
+ 		} else
+@@ -251,3 +308,15 @@ mac_valid(const char *names)
+ 	free(maclist);
+ 	return found;
+ }
++
++int
++mac_valid(const char *names)
++{
++	return mac_valid_internal(names, mac_setup);
++}
++
++int
++mac_valid_any(const char *names)
++{
++	return mac_valid_internal(names, mac_setup_any);
++}
+Index: openssh-10.3p1/readconf.c
+===================================================================
+--- openssh-10.3p1.orig/readconf.c
++++ openssh-10.3p1/readconf.c
+@@ -58,6 +58,8 @@
+ #include "digest.h"
+ #include "version.h"
+ 
++#include "fips.h"
++
+ /* Format of the configuration file:
+ 
+    # Configuration data is parsed as follows:
+@@ -1594,7 +1596,7 @@ parse_int:
+ 			goto out;
+ 		}
+ 		if (*arg != '-' &&
+-		    !ciphers_valid(*arg == '+' || *arg == '^' ? arg + 1 : arg)){
++		    !ciphers_valid_any(*arg == '+' || *arg == '^' ? arg + 1 : arg)){
+ 			error("%.200s line %d: Bad SSH2 cipher spec '%s'.",
+ 			    filename, linenum, arg ? arg : "<NONE>");
+ 			goto out;
+@@ -1611,7 +1613,7 @@ parse_int:
+ 			goto out;
+ 		}
+ 		if (*arg != '-' &&
+-		    !mac_valid(*arg == '+' || *arg == '^' ? arg + 1 : arg)) {
++		    !mac_valid_any(*arg == '+' || *arg == '^' ? arg + 1 : arg)) {
+ 			error("%.200s line %d: Bad SSH2 MAC spec '%s'.",
+ 			    filename, linenum, arg ? arg : "<NONE>");
+ 			goto out;
+@@ -1628,7 +1630,7 @@ parse_int:
+ 			goto out;
+ 		}
+ 		if (*arg != '-' &&
+-		    !kex_names_valid(*arg == '+' || *arg == '^' ?
++		    !kex_names_valid_any(*arg == '+' || *arg == '^' ?
+ 		    arg + 1 : arg)) {
+ 			error("%.200s line %d: Bad SSH2 KexAlgorithms '%s'.",
+ 			    filename, linenum, arg ? arg : "<NONE>");
+@@ -2691,6 +2693,25 @@ config_has_permitted_cnames(Options *opt
+ 	return options->num_permitted_cnames > 0;
+ }
+ 
++/* remove algorithms not approved for use in FIPS mode, when running in FIPS
++ * mode
++ */
++void
++filter_fips_algorithms(Options *o)
++{
++	if (fips_mode()) {
++		if (!fips_filter_warn(&o->ciphers, FIPS_FILTER_CIPHERS,
++		    "Ciphers"))
++			fatal("None of selected ciphers can be used in FIPS mode");
++		if (!fips_filter_warn(&o->macs, FIPS_FILTER_MACS, "MACs"))
++			fatal("None of selected MAC algorithms can be used in FIPS mode");
++		if (!fips_filter_warn(&o->kex_algorithms,
++		    FIPS_FILTER_KEX_ALGS, "KexAlgorithms"))
++			fatal("None of selected KEX algorithms can be used in FIPS mode");
++	}
++	return;
++}
++
+ /*
+  * Initializes options to special values that indicate that they have not yet
+  * been set.  Read_config_file will only set options with this value. Options
+@@ -3010,6 +3031,9 @@ fill_default_options(Options * options)
+ 		options->canonicalize_hostname = SSH_CANONICALISE_NO;
+ 	if (options->fingerprint_hash == -1)
+ 		options->fingerprint_hash = SSH_FP_HASH_DEFAULT;
++	options->fingerprint_hash =
++		fips_correct_dgst(options->fingerprint_hash);
++
+ #ifdef ENABLE_SK_INTERNAL
+ 	if (options->sk_provider == NULL)
+ 		options->sk_provider = xstrdup("internal");
+@@ -3057,6 +3081,8 @@ fill_default_options(Options * options)
+ 	ASSEMBLE(ca_sign_algorithms, def_sig, all_sig);
+ #undef ASSEMBLE
+ 
++	filter_fips_algorithms(options);
++
+ #define CLEAR_ON_NONE(v) \
+ 	do { \
+ 		if (option_clear_or_none(v)) { \
+Index: openssh-10.3p1/readconf.h
+===================================================================
+--- openssh-10.3p1.orig/readconf.h
++++ openssh-10.3p1/readconf.h
+@@ -235,6 +235,7 @@ typedef struct {
+ #define SSH_KEEPALIVES_TRANSPORT	1
+ #define SSH_KEEPALIVES_ALL		2
+ 
++void	 filter_fips_algorithms(Options *o);
+ const char *kex_default_pk_alg(void);
+ char	*ssh_connection_hash(const char *thishost, const char *host,
+     const char *portstr, const char *user, const char *jump_host);
+Index: openssh-10.3p1/servconf.c
+===================================================================
+--- openssh-10.3p1.orig/servconf.c
++++ openssh-10.3p1/servconf.c
+@@ -62,6 +62,7 @@
+ #include "myproposal.h"
+ #include "digest.h"
+ #include "version.h"
++#include "fips.h"
+ 
+ #define SSHD_CONFIG_BLOB_VERSION	1
+ 
+@@ -223,6 +224,25 @@ option_clear_or_none(const char *o)
+ 	return o == NULL || strcasecmp(o, "none") == 0;
+ }
+ 
++/* remove algorithms not approved for use in FIPS mode, when running in FIPS
++ * mode
++ */
++static void
++filter_fips_algorithms_s(ServerOptions *o)
++{
++	if (fips_mode()) {
++		if (!fips_filter_warn(&o->ciphers, FIPS_FILTER_CIPHERS,
++		    "Ciphers"))
++			fatal("None of selected ciphers can be used in FIPS mode");
++		if (!fips_filter_warn(&o->macs, FIPS_FILTER_MACS, "MACs"))
++			fatal("None of selected MAC algorithms can be used in FIPS mode");
++		if (!fips_filter_warn(&o->kex_algorithms,
++		    FIPS_FILTER_KEX_ALGS, "KexAlgorithms"))
++			fatal("None of selected KEX algorithms can be used in FIPS mode");
++	}
++	return;
++}
++
+ static void
+ assemble_algorithms(ServerOptions *o)
+ {
+@@ -264,6 +284,8 @@ assemble_algorithms(ServerOptions *o)
+ 	free(def_kex);
+ 	free(def_key);
+ 	free(def_sig);
++
++	filter_fips_algorithms_s(o);
+ }
+ 
+ void
+@@ -482,6 +504,8 @@ fill_default_server_options(ServerOption
+ 		options->fwd_opts.streamlocal_bind_mask = 0177;
+ 	if (options->fwd_opts.streamlocal_bind_unlink == -1)
+ 		options->fwd_opts.streamlocal_bind_unlink = 0;
++	options->fingerprint_hash =
++		fips_correct_dgst(options->fingerprint_hash);
+ 	if (options->sk_provider == NULL)
+ 		options->sk_provider = xstrdup("internal");
+ 	if (options->sshd_session_path == NULL)
+@@ -1928,7 +1952,7 @@ process_server_config_line_depth(ServerO
+ 			fatal("%s line %d: %s missing argument.",
+ 			    filename, linenum, keyword);
+ 		if (*arg != '-' &&
+-		    !ciphers_valid(*arg == '+' || *arg == '^' ? arg + 1 : arg))
++		    !ciphers_valid_any(*arg == '+' || *arg == '^' ? arg + 1 : arg))
+ 			fatal("%s line %d: Bad SSH2 cipher spec '%s'.",
+ 			    filename, linenum, arg ? arg : "<NONE>");
+ 		if (options->ciphers == NULL)
+@@ -1941,7 +1965,7 @@ process_server_config_line_depth(ServerO
+ 			fatal("%s line %d: %s missing argument.",
+ 			    filename, linenum, keyword);
+ 		if (*arg != '-' &&
+-		    !mac_valid(*arg == '+' || *arg == '^' ? arg + 1 : arg))
++		    !mac_valid_any(*arg == '+' || *arg == '^' ? arg + 1 : arg))
+ 			fatal("%s line %d: Bad SSH2 mac spec '%s'.",
+ 			    filename, linenum, arg ? arg : "<NONE>");
+ 		if (options->macs == NULL)
+@@ -1954,7 +1978,7 @@ process_server_config_line_depth(ServerO
+ 			fatal("%s line %d: %s missing argument.",
+ 			    filename, linenum, keyword);
+ 		if (*arg != '-' &&
+-		    !kex_names_valid(*arg == '+' || *arg == '^' ?
++		    !kex_names_valid_any(*arg == '+' || *arg == '^' ?
+ 		    arg + 1 : arg))
+ 			fatal("%s line %d: Bad SSH2 KexAlgorithms '%s'.",
+ 			    filename, linenum, arg ? arg : "<NONE>");
+Index: openssh-10.3p1/ssh-keygen.c
+===================================================================
+--- openssh-10.3p1.orig/ssh-keygen.c
++++ openssh-10.3p1/ssh-keygen.c
+@@ -18,6 +18,8 @@
+ #include <sys/socket.h>
+ #include <sys/stat.h>
+ 
++#include "fips.h"
++
+ #ifdef WITH_OPENSSL
+ #include "openbsd-compat/openssl-compat.h"
+ #include <openssl/bn.h>
+@@ -1003,11 +1005,13 @@ do_fingerprint(struct passwd *pw)
+ static void
+ do_gen_all_hostkeys(struct passwd *pw)
+ {
+-	struct {
++	struct Key_types {
+ 		char *key_type;
+ 		char *key_type_display;
+ 		char *path;
+-	} key_types[] = {
++	};
++
++	struct Key_types key_types_all[] = {
+ #ifdef WITH_OPENSSL
+ 		{ "rsa", "RSA" ,_PATH_HOST_RSA_KEY_FILE },
+ 		{ "ecdsa", "ECDSA",_PATH_HOST_ECDSA_KEY_FILE },
+@@ -1018,6 +1022,17 @@ do_gen_all_hostkeys(struct passwd *pw)
+ 		{ NULL, NULL, NULL }
+ 	};
+ 
++	struct Key_types key_types_fips140_2[] = {
++#ifdef WITH_OPENSSL
++		{ "rsa", "RSA" ,_PATH_HOST_RSA_KEY_FILE },
++#ifdef OPENSSL_HAS_ECC
++		{ "ecdsa", "ECDSA",_PATH_HOST_ECDSA_KEY_FILE },
++#endif /* OPENSSL_HAS_ECC */
++#endif /* WITH_OPENSSL */
++		{ NULL, NULL, NULL }
++	};
++
++	struct Key_types *key_types;
+ 	uint32_t bits = 0;
+ 	int first = 0;
+ 	struct stat st;
+@@ -1025,6 +1040,12 @@ do_gen_all_hostkeys(struct passwd *pw)
+ 	char comment[KEY_COMMENT_MAX], *prv_tmp, *pub_tmp, *prv_file, *pub_file;
+ 	int i, type, fd, r;
+ 
++	if (fips_mode()) {
++		key_types = key_types_fips140_2;
++	} else {
++		key_types = key_types_all;
++	}
++
+ 	for (i = 0; key_types[i].key_type; i++) {
+ 		public = private = NULL;
+ 		prv_tmp = pub_tmp = prv_file = pub_file = NULL;
+@@ -3771,6 +3792,14 @@ main(int argc, char **argv)
+ 		key_type_name = DEFAULT_KEY_TYPE_NAME;
+ 
+ 	type = sshkey_type_from_shortname(key_type_name);
++
++	/* protocol v1 is not allowed in FIPS mode, DSA is not acceptable because
++	 * it has to be 1024 bit due to RFC 4253 using SHA-1 which implies 1024 bit
++	 * keys due to FIPS-186 specification for DSS */
++	if (fips_mode() &&
++	    (type == KEY_ED25519 || type == KEY_ED25519_CERT))
++		fatal("Key type %s not alowed in FIPS mode", key_type_name);
++
+ 	type_bits_valid(type, key_type_name, &bits);
+ 
+ 	if (!quiet)
+Index: openssh-10.3p1/ssh_config.5
+===================================================================
+--- openssh-10.3p1.orig/ssh_config.5
++++ openssh-10.3p1/ssh_config.5
+@@ -879,6 +879,8 @@ The argument to this keyword must be
+ option) or
+ .Cm no
+ (the default).
++.Pp
++In the FIPS mode the minimum of SHA-1 is enforced (which means sha256).
+ .It Cm ForwardAgent
+ Specifies whether the connection to the authentication agent (if any)
+ will be forwarded to the remote machine.
+Index: openssh-10.3p1/sshd.c
+===================================================================
+--- openssh-10.3p1.orig/sshd.c
++++ openssh-10.3p1/sshd.c
+@@ -84,6 +84,8 @@
+ #endif
+ #include "monitor_wrap.h"
+ 
++#include "fips.h"
++
+ /* Re-exec fds */
+ #define REEXEC_DEVCRYPTO_RESERVED_FD	(STDERR_FILENO + 1)
+ #define REEXEC_CONFIG_PASS_FD		(STDERR_FILENO + 2)
+Index: openssh-10.3p1/sshd_config.5
+===================================================================
+--- openssh-10.3p1.orig/sshd_config.5
++++ openssh-10.3p1/sshd_config.5
+@@ -693,6 +693,8 @@ and
+ .Cm sha256 .
+ The default is
+ .Cm sha256 .
++.Pp
++In the FIPS mode the minimum of SHA-1 is enforced (which means sha256).
+ .It Cm ForceCommand
+ Forces the execution of the command specified by
+ .Cm ForceCommand ,
+Index: openssh-10.3p1/cipher.h
+===================================================================
+--- openssh-10.3p1.orig/cipher.h
++++ openssh-10.3p1/cipher.h
+@@ -53,6 +53,7 @@ struct sshcipher_ctx;
+ const struct sshcipher *cipher_by_name(const char *);
+ const char *cipher_warning_message(const struct sshcipher_ctx *);
+ int	 ciphers_valid(const char *);
++int	 ciphers_valid_any(const char *);
+ char	*cipher_alg_list(char, int);
+ const char *compression_alg_list(int);
+ int	 cipher_init(struct sshcipher_ctx **, const struct sshcipher *,
+Index: openssh-10.3p1/kex.h
+===================================================================
+--- openssh-10.3p1.orig/kex.h
++++ openssh-10.3p1/kex.h
+@@ -196,6 +196,7 @@ int	 kex_hash_from_name(const char *);
+ int	 kex_nid_from_name(const char *);
+ int	 kex_is_pq_from_name(const char *);
+ int	 kex_names_valid(const char *);
++int	 kex_names_valid_any(const char *);
+ char	*kex_alg_list(char);
+ char	*kex_names_cat(const char *, const char *);
+ int	 kex_has_any_alg(const char *, const char *);
+Index: openssh-10.3p1/mac.h
+===================================================================
+--- openssh-10.3p1.orig/mac.h
++++ openssh-10.3p1/mac.h
+@@ -41,6 +41,7 @@ struct sshmac {
+ };
+ 
+ int	 mac_valid(const char *);
++int	 mac_valid_any(const char *);
+ char	*mac_alg_list(char);
+ int	 mac_setup(struct sshmac *, char *);
+ int	 mac_init(struct sshmac *);

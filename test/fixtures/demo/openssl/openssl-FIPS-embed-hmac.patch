@@ -1,0 +1,404 @@
+From 831d0025257fd3746ab3fe30c05dbbfc0043f78e Mon Sep 17 00:00:00 2001
+From: rpm-build <rpm-build>
+Date: Wed, 6 Mar 2024 19:17:15 +0100
+Subject: [PATCH 16/49] 0033-FIPS-embed-hmac.patch
+
+Patch-name: 0033-FIPS-embed-hmac.patch
+Patch-id: 33
+Patch-status: |
+    # # Embed HMAC into the fips.so
+    # Modify fips self test as per
+    # https://github.com/simo5/openssl/commit/9b95ef8bd2f5ac862e5eee74c724b535f1a8578a
+From-dist-git-commit: 4334bc837fbc64d14890fdc51679a80770d498ce
+---
+ providers/fips/self_test.c            | 204 ++++++++++++++++++++++++--
+ test/fipsmodule.cnf                   |   2 +
+ test/recipes/00-prep_fipsmodule_cnf.t |   2 +-
+ test/recipes/01-test_fipsmodule_cnf.t |   2 +-
+ test/recipes/03-test_fipsinstall.t    |   2 +-
+ test/recipes/30-test_defltfips.t      |   2 +-
+ test/recipes/80-test_ssl_new.t        |   2 +-
+ test/recipes/90-test_sslapi.t         |   2 +-
+ 8 files changed, 200 insertions(+), 18 deletions(-)
+ create mode 100644 test/fipsmodule.cnf
+
+Index: openssl-3.5.0-beta1/providers/fips/self_test.c
+===================================================================
+--- openssl-3.5.0-beta1.orig/providers/fips/self_test.c
++++ openssl-3.5.0-beta1/providers/fips/self_test.c
+@@ -235,11 +235,133 @@ err:
+     return ok;
+ }
+ 
++#define HMAC_LEN 32
++/*
++ * The __attribute__ ensures we've created the .rodata1 section
++ * static ensures it's zero filled
++*/
++static const unsigned char __attribute__ ((section (".rodata1"))) fips_hmac_container[HMAC_LEN] = {0};
++
+ /*
+  * Calculate the HMAC SHA256 of data read using a BIO and read_cb, and verify
+  * the result matches the expected value.
+  * Return 1 if verified, or 0 if it fails.
+  */
++
++#ifndef __USE_GNU
++#define __USE_GNU
++#include <dlfcn.h>
++#undef __USE_GNU
++#else
++#include <dlfcn.h>
++#endif
++#include <link.h>
++
++static int verify_integrity_rodata(OSSL_CORE_BIO *bio,
++                                   OSSL_FUNC_BIO_read_ex_fn read_ex_cb,
++                                   unsigned char *expected, size_t expected_len,
++                                   OSSL_LIB_CTX *libctx, OSSL_SELF_TEST *ev,
++                                   const char *event_type)
++{
++    int ret = 0, status;
++    unsigned char out[MAX_MD_SIZE];
++    unsigned char buf[INTEGRITY_BUF_SIZE];
++    size_t bytes_read = 0, out_len = 0;
++    EVP_MAC *mac = NULL;
++    EVP_MAC_CTX *ctx = NULL;
++    OSSL_PARAM params[2], *p = params;
++    Dl_info info;
++    void *extra_info = NULL;
++    struct link_map *lm = NULL;
++    unsigned long paddr;
++    unsigned long off = 0;
++
++    if (expected_len != HMAC_LEN)
++        goto err;
++
++    if (!integrity_self_test(ev, libctx))
++        goto err;
++
++    OSSL_SELF_TEST_onbegin(ev, event_type, OSSL_SELF_TEST_DESC_INTEGRITY_HMAC);
++
++    if (!dladdr1 ((const void *)fips_hmac_container,
++                &info, &extra_info, RTLD_DL_LINKMAP))
++        goto err;
++    lm = extra_info;
++    paddr = (unsigned long)fips_hmac_container - lm->l_addr;
++
++    mac = EVP_MAC_fetch(libctx, MAC_NAME, NULL);
++    if (mac == NULL)
++        goto err;
++    ctx = EVP_MAC_CTX_new(mac);
++    if (ctx == NULL)
++        goto err;
++
++    *p++ = OSSL_PARAM_construct_utf8_string("digest", DIGEST_NAME, 0);
++    *p = OSSL_PARAM_construct_end();
++
++    if (!EVP_MAC_init(ctx, fixed_key, sizeof(fixed_key), params))
++        goto err;
++
++    while ((off + INTEGRITY_BUF_SIZE) <= paddr) {
++        status = read_ex_cb(bio, buf, INTEGRITY_BUF_SIZE, &bytes_read);
++        if (status != 1)
++            break;
++        if (!EVP_MAC_update(ctx, buf, bytes_read))
++            goto err;
++        off += bytes_read;
++    }
++
++    if (off < paddr) {
++        int delta = paddr - off;
++        status = read_ex_cb(bio, buf, delta, &bytes_read);
++        if (status != 1)
++            goto err;
++        if (!EVP_MAC_update(ctx, buf, bytes_read))
++            goto err;
++        off += bytes_read;
++    }
++
++    /* read away the buffer */
++    status = read_ex_cb(bio, buf, HMAC_LEN, &bytes_read);
++    if (status != 1)
++        goto err;
++
++    /* check that it is the expect bytes, no point in continuing otherwise */
++    if (memcmp(expected, buf, HMAC_LEN) != 0)
++        goto err;
++
++    /* replace in-file HMAC buffer with the original zeros */
++    memset(buf, 0, HMAC_LEN);
++    if (!EVP_MAC_update(ctx, buf, HMAC_LEN))
++        goto err;
++    off += HMAC_LEN;
++
++    while (bytes_read > 0) {
++        status = read_ex_cb(bio, buf, INTEGRITY_BUF_SIZE, &bytes_read);
++        if (status != 1)
++            break;
++        if (!EVP_MAC_update(ctx, buf, bytes_read))
++            goto err;
++        off += bytes_read;
++    }
++
++    if (!EVP_MAC_final(ctx, out, &out_len, sizeof(out)))
++        goto err;
++
++    OSSL_SELF_TEST_oncorrupt_byte(ev, out);
++    if (expected_len != out_len
++            || memcmp(expected, out, out_len) != 0)
++        goto err;
++    ret = 1;
++err:
++    OPENSSL_cleanse(out, MAX_MD_SIZE);
++    OSSL_SELF_TEST_onend(ev, ret);
++    EVP_MAC_CTX_free(ctx);
++    EVP_MAC_free(mac);
++    return ret;
++}
++
+ static int verify_integrity(OSSL_CORE_BIO *bio, OSSL_FUNC_BIO_read_ex_fn read_ex_cb,
+                             unsigned char *expected, size_t expected_len,
+                             OSSL_LIB_CTX *libctx, OSSL_SELF_TEST *ev,
+@@ -252,12 +374,23 @@ static int verify_integrity(OSSL_CORE_BI
+     EVP_MAC *mac = NULL;
+     EVP_MAC_CTX *ctx = NULL;
+     OSSL_PARAM params[2], *p = params;
++    Dl_info info;
++    void *extra_info = NULL;
++    struct link_map *lm = NULL;
++    unsigned long paddr;
++    unsigned long off = 0;
+ 
+     if (!integrity_self_test(ev, libctx))
+         goto err;
+ 
+     OSSL_SELF_TEST_onbegin(ev, event_type, OSSL_SELF_TEST_DESC_INTEGRITY_HMAC);
+ 
++    if (!dladdr1 ((const void *)fips_hmac_container,
++                &info, &extra_info, RTLD_DL_LINKMAP))
++        goto err;
++    lm = extra_info;
++    paddr = (unsigned long)fips_hmac_container - lm->l_addr;
++
+     mac = EVP_MAC_fetch(libctx, MAC_NAME, NULL);
+     if (mac == NULL)
+         goto err;
+@@ -271,13 +404,42 @@ static int verify_integrity(OSSL_CORE_BI
+     if (!EVP_MAC_init(ctx, fixed_key, sizeof(fixed_key), params))
+         goto err;
+ 
+-    while (1) {
+-        status = read_ex_cb(bio, buf, sizeof(buf), &bytes_read);
++    while ((off + INTEGRITY_BUF_SIZE) <= paddr) {
++        status = read_ex_cb(bio, buf, INTEGRITY_BUF_SIZE, &bytes_read);
++        if (status != 1)
++            break;
++        if (!EVP_MAC_update(ctx, buf, bytes_read))
++            goto err;
++        off += bytes_read;
++    }
++
++    if (off + INTEGRITY_BUF_SIZE > paddr) {
++        int delta = paddr - off;
++        status = read_ex_cb(bio, buf, delta, &bytes_read);
++        if (status != 1)
++            goto err;
++        if (!EVP_MAC_update(ctx, buf, bytes_read))
++            goto err;
++        off += bytes_read;
++
++        status = read_ex_cb(bio, buf, HMAC_LEN, &bytes_read);
++        memset(buf, 0, HMAC_LEN);
++        if (status != 1)
++            goto err;
++        if (!EVP_MAC_update(ctx, buf, bytes_read))
++            goto err;
++        off += bytes_read;
++    }
++
++    while (bytes_read > 0) {
++        status = read_ex_cb(bio, buf, INTEGRITY_BUF_SIZE, &bytes_read);
+         if (status != 1)
+             break;
+         if (!EVP_MAC_update(ctx, buf, bytes_read))
+             goto err;
++        off += bytes_read;
+     }
++
+     if (!EVP_MAC_final(ctx, out, &out_len, sizeof(out)))
+         goto err;
+ 
+@@ -287,6 +449,7 @@ static int verify_integrity(OSSL_CORE_BI
+         goto err;
+     ret = 1;
+ err:
++    OPENSSL_cleanse(out, sizeof(out));
+     OSSL_SELF_TEST_onend(ev, ret);
+     EVP_MAC_CTX_free(ctx);
+     EVP_MAC_free(mac);
+@@ -320,6 +483,7 @@ int SELF_TEST_post(SELF_TEST_POST_PARAMS
+     OSSL_SELF_TEST *ev = NULL;
+     EVP_RAND *testrand = NULL;
+     EVP_RAND_CTX *rng;
++    unsigned char *alloc_checksum = NULL;
+ #endif
+ 
+     if (!RUN_ONCE(&fips_self_test_init, do_fips_self_test_init))
+@@ -352,8 +516,7 @@ int SELF_TEST_post(SELF_TEST_POST_PARAMS
+         return 0;
+     }
+ 
+-    if (st == NULL
+-            || st->module_checksum_data == NULL) {
++    if (st == NULL) {
+         ERR_raise(ERR_LIB_PROV, PROV_R_MISSING_CONFIG_DATA);
+         goto end;
+     }
+@@ -362,8 +525,15 @@ int SELF_TEST_post(SELF_TEST_POST_PARAMS
+     if (ev == NULL)
+         goto end;
+ 
+-    module_checksum = OPENSSL_hexstr2buf(st->module_checksum_data,
+-                                         &checksum_len);
++   if (st->module_checksum_data == NULL) {
++        module_checksum = fips_hmac_container;
++        checksum_len = sizeof(fips_hmac_container);
++    } else {
++        alloc_checksum = OPENSSL_hexstr2buf(st->module_checksum_data,
++                                             &checksum_len);
++        module_checksum = alloc_checksum;
++    }
++
+     if (module_checksum == NULL) {
+         ERR_raise(ERR_LIB_PROV, PROV_R_INVALID_CONFIG_DATA);
+         goto end;
+@@ -371,14 +541,29 @@ int SELF_TEST_post(SELF_TEST_POST_PARAMS
+     bio_module = (*st->bio_new_file_cb)(st->module_filename, "rb");
+ 
+     /* Always check the integrity of the fips module */
+-    if (bio_module == NULL
+-            || !verify_integrity(bio_module, st->bio_read_ex_cb,
+-                                 module_checksum, checksum_len, st->libctx,
+-                                 ev, OSSL_SELF_TEST_TYPE_MODULE_INTEGRITY)) {
++    if (bio_module == NULL) {
+         ERR_raise(ERR_LIB_PROV, PROV_R_MODULE_INTEGRITY_FAILURE);
+         goto end;
+     }
+ 
++    if (st->module_checksum_data == NULL) {
++        if (!verify_integrity_rodata(bio_module, st->bio_read_ex_cb,
++                                     module_checksum, checksum_len,
++                                     st->libctx, ev,
++                                     OSSL_SELF_TEST_TYPE_MODULE_INTEGRITY)) {
++            ERR_raise(ERR_LIB_PROV, PROV_R_MODULE_INTEGRITY_FAILURE);
++            goto end;
++        }
++    } else {
++        if (!verify_integrity(bio_module, st->bio_read_ex_cb,
++                              module_checksum, checksum_len,
++                              st->libctx, ev,
++                              OSSL_SELF_TEST_TYPE_MODULE_INTEGRITY)) {
++            ERR_raise(ERR_LIB_PROV, PROV_R_MODULE_INTEGRITY_FAILURE);
++            goto end;
++        }
++    }
++
+     if (!SELF_TEST_kats(ev, st->libctx)) {
+         ERR_raise(ERR_LIB_PROV, PROV_R_SELF_TEST_KAT_FAILURE);
+         goto end;
+@@ -398,7 +583,8 @@ int SELF_TEST_post(SELF_TEST_POST_PARAMS
+ end:
+     EVP_RAND_free(testrand);
+     OSSL_SELF_TEST_free(ev);
+-    OPENSSL_free(module_checksum);
++    if (alloc_checksum != NULL)
++        OPENSSL_free(alloc_checksum);
+ 
+     if (st != NULL)
+         (*st->bio_free_cb)(bio_module);
+Index: openssl-3.5.0-beta1/test/fipsmodule.cnf
+===================================================================
+--- /dev/null
++++ openssl-3.5.0-beta1/test/fipsmodule.cnf
+@@ -0,0 +1,2 @@
++[fips_sect]
++activate = 1
+Index: openssl-3.5.0-beta1/test/recipes/00-prep_fipsmodule_cnf.t
+===================================================================
+--- openssl-3.5.0-beta1.orig/test/recipes/00-prep_fipsmodule_cnf.t
++++ openssl-3.5.0-beta1/test/recipes/00-prep_fipsmodule_cnf.t
+@@ -20,7 +20,7 @@ use lib srctop_dir('Configurations');
+ use lib bldtop_dir('.');
+ use platform;
+ 
+-my $no_check = disabled("fips");
++my $no_check = 1;
+ plan skip_all => "FIPS module config file only supported in a fips build"
+     if $no_check;
+ 
+Index: openssl-3.5.0-beta1/test/recipes/01-test_fipsmodule_cnf.t
+===================================================================
+--- openssl-3.5.0-beta1.orig/test/recipes/01-test_fipsmodule_cnf.t
++++ openssl-3.5.0-beta1/test/recipes/01-test_fipsmodule_cnf.t
+@@ -23,7 +23,7 @@ use lib srctop_dir('Configurations');
+ use lib bldtop_dir('.');
+ use platform;
+ 
+-my $no_check = disabled("fips");
++my $no_check = 1;
+ plan skip_all => "Test only supported in a fips build"
+     if $no_check;
+ plan tests => 1;
+Index: openssl-3.5.0-beta1/test/recipes/03-test_fipsinstall.t
+===================================================================
+--- openssl-3.5.0-beta1.orig/test/recipes/03-test_fipsinstall.t
++++ openssl-3.5.0-beta1/test/recipes/03-test_fipsinstall.t
+@@ -24,7 +24,7 @@ use platform;
+ 
+ plan skip_all => "Fipsinstall not available in SUSE/openSUSE FIPS build";
+ 
+-plan skip_all => "Test only supported in a fips build" if disabled("fips");
++plan skip_all => "Test only supported in a fips build" if 1;
+ 
+ # Compatible options for pedantic FIPS compliance
+ my @pedantic_okay =
+Index: openssl-3.5.0-beta1/test/recipes/80-test_ssl_new.t
+===================================================================
+--- openssl-3.5.0-beta1.orig/test/recipes/80-test_ssl_new.t
++++ openssl-3.5.0-beta1/test/recipes/80-test_ssl_new.t
+@@ -27,7 +27,7 @@ setup("test_ssl_new");
+ use lib srctop_dir('Configurations');
+ use lib bldtop_dir('.');
+ 
+-my $no_fips = disabled('fips') || ($ENV{NO_FIPS} // 0);
++my $no_fips = 1; #disabled('fips') || ($ENV{NO_FIPS} // 0);
+ 
+ $ENV{TEST_CERTS_DIR} = srctop_dir("test", "certs");
+ 
+Index: openssl-3.5.0-beta1/test/recipes/90-test_sslapi.t
+===================================================================
+--- openssl-3.5.0-beta1.orig/test/recipes/90-test_sslapi.t
++++ openssl-3.5.0-beta1/test/recipes/90-test_sslapi.t
+@@ -14,7 +14,7 @@ BEGIN {
+ setup("test_sslapi");
+ }
+ 
+-my $no_fips = disabled('fips') || ($ENV{NO_FIPS} // 0);
++my $no_fips = 1; #disabled('fips') || ($ENV{NO_FIPS} // 0);
+ my $fipsmodcfg_filename = "fipsmodule.cnf";
+ my $fipsmodcfg = bldtop_file("test", $fipsmodcfg_filename);
+ 
+Index: openssl-3.5.0-beta1/test/recipes/30-test_defltfips.t
+===================================================================
+--- openssl-3.5.0-beta1.orig/test/recipes/30-test_defltfips.t
++++ openssl-3.5.0-beta1/test/recipes/30-test_defltfips.t
+@@ -24,7 +24,7 @@ use lib bldtop_dir('.');
+ plan skip_all => "Configuration loading is turned off"
+     if disabled("autoload-config");
+ 
+-my $no_fips = disabled('fips') || disabled('fips-post') || ($ENV{NO_FIPS} // 0);
++my $no_fips = 1; #disabled('fips') || disabled('fips-post') || ($ENV{NO_FIPS} // 0);
+ 
+ plan tests =>
+     ($no_fips ? 1 : 5);

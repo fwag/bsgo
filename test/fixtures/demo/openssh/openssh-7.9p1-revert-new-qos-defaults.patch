@@ -1,0 +1,83 @@
+commit 101aa2f70c937abb428c9433c39ba0fd9a91fe6b
+Author: Hans Petter Jansson <hpj@cl.no>
+Date:   Thu Jun 20 23:54:11 2019 +0200
+
+    Revert IPQoS DSCP AF21/CS1 from upstream due to bugs in other software
+    
+    Reverts OpenBSD-Commit-ID: d11d2a4484f461524ef0c20870523dfcdeb52181
+
+--- a/readconf.c
++++ b/readconf.c
+@@ -3071,9 +3071,9 @@
+ 	if (options->visual_host_key == -1)
+ 		options->visual_host_key = 0;
+ 	if (options->ip_qos_interactive == -1)
+-		options->ip_qos_interactive = IPTOS_DSCP_EF;
++		options->ip_qos_interactive = IPTOS_LOWDELAY;
+ 	if (options->ip_qos_bulk == -1)
+-		options->ip_qos_bulk = IPTOS_DSCP_CS0;
++		options->ip_qos_bulk = IPTOS_THROUGHPUT;
+ 	if (options->request_tty == -1)
+ 		options->request_tty = REQUEST_TTY_AUTO;
+ 	if (options->session_type == -1)
+--- a/servconf.c
++++ b/servconf.c
+@@ -503,9 +503,9 @@
+ 		    _PATH_SSH_USER_PERMITTED_KEYS2);
+ 	}
+ 	if (options->ip_qos_interactive == -1)
+-		options->ip_qos_interactive = IPTOS_DSCP_EF;
++		options->ip_qos_interactive = IPTOS_LOWDELAY;
+ 	if (options->ip_qos_bulk == -1)
+-		options->ip_qos_bulk = IPTOS_DSCP_CS0;
++		options->ip_qos_bulk = IPTOS_THROUGHPUT;
+ 	if (options->version_addendum == NULL)
+ 		options->version_addendum = xstrdup("");
+ 	if (options->fwd_opts.streamlocal_bind_mask == (mode_t)-1)
+--- a/ssh_config.5
++++ b/ssh_config.5
+@@ -1340,11 +1340,9 @@
+ If two values are specified, the first is automatically selected for
+ interactive sessions and the second for non-interactive sessions.
+ The default is
+-.Cm ef
+-(Expedited Forwarding)
++.Cm lowdelay
+ for interactive sessions and
+-.Cm none
+-(the operating system default)
++.Cm throughput
+ for non-interactive sessions.
+ .It Cm KbdInteractiveAuthentication
+ Specifies whether to use keyboard-interactive authentication.
+--- a/sshd_config.5
++++ b/sshd_config.5
+@@ -1010,11 +1010,9 @@
+ If two values are specified, the first is automatically selected for
+ interactive sessions and the second for non-interactive sessions.
+ The default is
+-.Cm ef
+-(Expedited Forwarding)
++.Cm lowdelay
+ for interactive sessions and
+-.Cm none
+-(the operating system default)
++.Cm throughput
+ for non-interactive sessions.
+ .It Cm KbdInteractiveAuthentication
+ Specifies whether to allow keyboard-interactive authentication.
+--- a/misc.c
++++ b/misc.c
+@@ -1950,9 +1950,9 @@
+ 	{ "ef", IPTOS_DSCP_EF },
+ 	{ "le", IPTOS_DSCP_LE },
+ 	{ "va",	IPTOS_DSCP_VA },
+-	{ "lowdelay", INT_MIN },	/* deprecated */
+-	{ "throughput", INT_MIN },	/* deprecated */
+-	{ "reliability", INT_MIN },	/* deprecated */
++	{ "lowdelay", IPTOS_LOWDELAY },
++	{ "throughput", IPTOS_THROUGHPUT },
++	{ "reliability", IPTOS_RELIABILITY },
+ 	{ NULL, -1 }
+ };
+ 
