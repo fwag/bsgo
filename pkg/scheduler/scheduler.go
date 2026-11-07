@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/openSUSE/bsgo/pkg/manifest"
@@ -125,13 +126,18 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		})
 	}
 
+	prio := 50 + len(chrootRPMs)
+	if prio > math.MaxInt32 {
+		prio = math.MaxInt32
+	}
+
 	return &v1.BuildJob{
 		JobID:        fmt.Sprintf("job-%d", time.Now().UnixNano()),
 		Project:      trigger.Project,
 		Package:      trigger.Package,
 		Target:       targetName,
 		Architecture: arch,
-		Priority:     int32(50 + len(chrootRPMs)),
+		Priority:     int32(prio),
 		Source: v1.SourceSpec{
 			GitURL:     trigger.SourceGitURL,
 			CommitSHA:  trigger.CommitSHA,

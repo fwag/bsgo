@@ -22,9 +22,9 @@ func NewPostgresStore(ctx context.Context, connStr string) (*PostgresStore, erro
 		return nil, fmt.Errorf("failed to connect to postgres: %w", err)
 	}
 
-	if _, err := pool.Exec(ctx, InitialSchema); err != nil {
+	if err := Migrate(ctx, pool); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("failed to run initial schema: %w", err)
+		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
 	return &PostgresStore{pool: pool}, nil

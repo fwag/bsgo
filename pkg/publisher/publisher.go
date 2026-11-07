@@ -95,7 +95,7 @@ func (p *Publisher) ProcessPublishRequest(ctx context.Context, req PublishReques
 
 	repoDir := filepath.Join(p.workDir, req.Project, req.Target, req.Architecture)
 	oldMetaDir := filepath.Join(repoDir, "repodata")
-	_ = os.MkdirAll(repoDir, 0755)
+	_ = os.MkdirAll(repoDir, 0750)
 
 	s3Prefix := fmt.Sprintf("repos/%s/%s/%s/", req.Project, req.Target, req.Architecture)
 	_ = p.s3Client.DownloadMetadata(ctx, s3Prefix+"repodata", oldMetaDir)

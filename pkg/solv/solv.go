@@ -8,6 +8,7 @@ import "C"
 
 import (
 	"fmt"
+	"math"
 	"runtime"
 	"sync"
 	"unsafe"
@@ -132,10 +133,24 @@ func (r *Repo) AddPackage(spec PackageSpec) error {
 	cRequires, freeRequires := makeCStringArray(spec.Requires)
 	defer freeRequires()
 
+	nProvides := len(spec.Provides)
+	if nProvides > math.MaxInt32 {
+		return fmt.Errorf("provides count exceeds max int32")
+	}
+	nRequires := len(spec.Requires)
+	if nRequires > math.MaxInt32 {
+		return fmt.Errorf("requires count exceeds max int32")
+	}
+
+	// #nosec G115 -- slice length is bounded by math.MaxInt32
+	cNumProvides := C.int(int32(nProvides))
+	// #nosec G115 -- slice length is bounded by math.MaxInt32
+	cNumRequires := C.int(int32(nRequires))
+
 	ret := C.bsgo_add_package(
 		r.ptr, cName, cEVR, cArch,
-		C.int(len(spec.Provides)), cProvides,
-		C.int(len(spec.Requires)), cRequires,
+		cNumProvides, cProvides,
+		cNumRequires, cRequires,
 	)
 	if ret != 0 {
 		return fmt.Errorf("failed to add package %s to repo", spec.Name)
@@ -156,7 +171,13 @@ func (r *Repo) DumpMemory() ([]byte, error) {
 	}
 	defer C.free(outBuf)
 
-	data := C.GoBytes(outBuf, C.int(outLen))
+	if outLen > math.MaxInt32 {
+		return nil, fmt.Errorf("dump size exceeds max int32")
+	}
+
+	// #nosec G115 -- outLen is bounded by math.MaxInt32
+	cLen := C.int(int32(outLen))
+	data := C.GoBytes(outBuf, cLen)
 	return data, nil
 }
 
@@ -169,10 +190,24 @@ func (p *Pool) Resolve(req ExpansionRequest) (*ExpansionResult, error) {
 	cPrefers, freePrefers := makeCStringArray(req.Prefer)
 	defer freePrefers()
 
+	nReqs := len(req.BuildRequires)
+	if nReqs > math.MaxInt32 {
+		return nil, fmt.Errorf("build requires count exceeds max int32")
+	}
+	nPrefers := len(req.Prefer)
+	if nPrefers > math.MaxInt32 {
+		return nil, fmt.Errorf("prefer count exceeds max int32")
+	}
+
+	// #nosec G115 -- slice lengths are bounded by math.MaxInt32
+	cNumReqs := C.int(int32(nReqs))
+	// #nosec G115 -- slice lengths are bounded by math.MaxInt32
+	cNumPrefers := C.int(int32(nPrefers))
+
 	outcome := C.bsgo_expand(
 		p.ptr,
-		C.int(len(req.BuildRequires)), cReqs,
-		C.int(len(req.Prefer)), cPrefers,
+		cNumReqs, cReqs,
+		cNumPrefers, cPrefers,
 	)
 	defer C.bsgo_free_outcome(&outcome)
 

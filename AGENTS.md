@@ -24,7 +24,7 @@ All production code and pull requests must pass the following pipeline gates bef
 - **Linting**: Clean execution of `golangci-lint run` (configured in `.golangci.yml`) with zero suppressed warnings or ignored errors.
 - **Security Review**: Clean execution of `govulncheck ./...` and `gosec ./...`.
 - **Unit Testing**: Table-driven unit tests for all domain packages, achieving comprehensive branch coverage without relying on mocking frameworks where real in-memory types suffice.
-- **Integration Testing**: End-to-end verification against local containerized dependencies (NATS, PostgreSQL, Garage S3) before marking issues resolved.
+- **Integration Testing & Container Runtime**: End-to-end verification against local containerized dependencies (NATS, PostgreSQL, Garage S3). **Strictly use Podman and Podman Compose** (`podman compose`, `podman-compose`, or `hack/mini-setup/`) for all container orchestration. **Never use Docker or invoke the `docker` CLI command.**
 
 ## 4. Reviewability & Cognitive Ergonomics (The evergit Standard)
 
@@ -42,6 +42,7 @@ The entire `bsgo` ecosystem must be architected from day one for seamless, safe 
 - **Comprehensive CLI Help & Introspection**: Every command must provide rich, self-documenting `--help` text with explicit intent, valid flag values, and concrete usage examples. Agents discover and reason about capabilities through `--help`.
 - **Full Non-Interactive Mutation Coverage**: Every system state that an agent can inspect must be fully mutable via CLI commands (e.g. updating package resources, toggling builds, configuring targets). There must be **zero interactive-only dead ends**; provide `--yes`/`-y` flags to bypass interactive confirmations.
 - **Deterministic Machine Contracts (`--json`)**: When invoked with `--json`, commands must emit strictly deterministic JSON on `stdout` with **zero ANSI escapes**, no progress spinners, and no human decoration. Operational diagnostics and error messages must be strictly isolated to `stderr`. Support `--dry-run` where mutations occur.
+- **Emoji & Formatting Boundary (TUI Only)**: Emojis and decorative styling are strictly confined to human-facing interactive TUI components (e.g. Lipgloss/Bubble Tea in `pkg/cli/`). **NEVER use emojis or decorative glyphs in operational logs, server logs, worker logs, stderr diagnostics, or daemon outputs.** System logs must remain clean, plain, and machine-parseable by log forwarders and AI agents.
 - **Fine-Grained Token ACLs (Least-Privilege Agent Scopes)**: To ensure safe agent execution and contain blast radius, API tokens must enforce fine-grained, resource-scoped permissions:
   - Format: `<action>:<resource>[:<id>]` (e.g. `build:trigger:openSUSE:Factory`, `project:write:home:myuser`, `package:resources:update`).
   - An agent operating on project `home:bot` must be restricted to tokens with `project:write:home:bot`, preventing accidental modifications to core distribution repositories like `openSUSE:Factory`.

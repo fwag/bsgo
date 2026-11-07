@@ -81,12 +81,12 @@ func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWrite
 		return nil, fmt.Errorf("invalid job directory resolution: %s", jobDir)
 	}
 
-	if err := os.MkdirAll(jobDir, 0755); err != nil {
+	if err := os.MkdirAll(jobDir, 0750); err != nil {
 		return nil, fmt.Errorf("failed to create job dir: %w", err)
 	}
 
-	logFilePath := filepath.Join(jobDir, "build.log")
-	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	logFilePath := filepath.Clean(filepath.Join(jobDir, "build.log"))
+	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create log file: %w", err)
 	}
@@ -118,20 +118,24 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 
 	srcEntries, _ := filepath.Glob("test/fixtures/hello/*")
 	for _, f := range srcEntries {
-		data, err := os.ReadFile(f)
+		cleanF := filepath.Clean(f)
+		data, err := os.ReadFile(cleanF)
 		if err == nil {
-			_ = os.WriteFile(filepath.Join(jobDir, filepath.Base(f)), data, 0644)
+			destFile := filepath.Clean(filepath.Join(jobDir, filepath.Base(cleanF)))
+			// #nosec G703 -- destination file is written within validated jobDir sandbox
+			_ = os.WriteFile(destFile, data, 0600)
 		}
 	}
 
 	cacheDir := filepath.Join(s.WorkDir, "cache")
-	_ = os.MkdirAll(cacheDir, 0755)
+	_ = os.MkdirAll(cacheDir, 0750)
 
 	buildRoot := filepath.Join(jobDir, "build-root")
 	specFile := filepath.Join(jobDir, "hello.spec")
 	args := []string{"--clean", "--vm-type", "kvm", "--root", buildRoot, "--cachedir", cacheDir, specFile}
 
 	fmt.Fprintf(w, "[%s] bsgo-worker: executing %s %s\n", time.Now().Format("15:04:05"), obsBin, strings.Join(args, " "))
+	// #nosec G204 -- obs-build runner executes parameterized sandbox binary
 	cmd := exec.CommandContext(ctx, obsBin, args...)
 	cmd.Dir = jobDir
 	cmd.Stdout = w
@@ -147,24 +151,10 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 
 func (s *ProcessSandbox) collectKVMArtifacts(buildRoot, jobDir, project, pkg string, w io.Writer, start time.Time) (*ExecutionResult, error) {
 	pkgDir := filepath.Join(jobDir, "packages")
-	_ = os.MkdirAll(pkgDir, 0755)
+	_ = os.MkdirAll(pkgDir, 0750)
 
-	builtRPMs, _ := filepath.Glob(filepath.Join(buildRoot, "usr/src/packages/RPMS/*/*.rpm"))
-	var artifacts []v1.ChrootRPM
-	for _, rpmPath := range builtRPMs {
-		baseName := filepath.Base(rpmPath)
-		dest := filepath.Join(pkgDir, baseName)
-		data, err := os.ReadFile(rpmPath)
-		if err == nil {
-			_ = os.WriteFile(dest, data, 0644)
-			artifacts = append(artifacts, v1.ChrootRPM{
-				Filename:  baseName,
-				S3Key:     fmt.Sprintf("artifacts/%s/%s/%s", project, pkg, baseName),
-				SizeBytes: int64(len(data)),
-			})
-			fmt.Fprintf(w, "[%s] bsgo-worker: extracted KVM RPM artifact: %s (%d bytes)\n", time.Now().Format("15:04:05"), baseName, len(data))
-		}
-	}
+	pattern := filepath.Join(buildRoot, "usr/src/packages/RPMS/*/*.rpm")
+	artifacts := collectRPMsFromPattern(pattern, pkgDir, project, pkg, "extracted KVM RPM artifact", w)
 
 	elapsed := time.Since(start).Seconds()
 	return &ExecutionResult{
@@ -178,28 +168,36 @@ func (s *ProcessSandbox) buildHelloPackage(ctx context.Context, job *v1.BuildJob
 	rpmTopDir := filepath.Join(jobDir, "rpmbuild")
 	dirs := []string{"BUILD", "BUILDROOT", "RPMS", "SOURCES", "SPECS", "SRPMS"}
 	for _, d := range dirs {
-		if err := os.MkdirAll(filepath.Join(rpmTopDir, d), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(rpmTopDir, d), 0750); err != nil {
 			return nil, err
 		}
 	}
 
 	srcEntries, _ := filepath.Glob("test/fixtures/hello/*")
 	for _, f := range srcEntries {
-		data, err := os.ReadFile(f)
+		cleanF := filepath.Clean(f)
+		data, err := os.ReadFile(cleanF)
 		if err == nil {
-			_ = os.WriteFile(filepath.Join(rpmTopDir, "SOURCES", filepath.Base(f)), data, 0644)
+			dest := filepath.Clean(filepath.Join(rpmTopDir, "SOURCES", filepath.Base(cleanF)))
+			// #nosec G703 -- destination file is written within validated jobDir sandbox
+			_ = os.WriteFile(dest, data, 0600)
 		}
 	}
 	specData, _ := os.ReadFile("test/fixtures/hello/hello.spec")
-	specFile := filepath.Join(rpmTopDir, "SPECS", "hello.spec")
-	_ = os.WriteFile(specFile, specData, 0644)
+	specFile := filepath.Clean(filepath.Join(rpmTopDir, "SPECS", "hello.spec"))
+	// #nosec G703 -- destination file is written within validated jobDir sandbox
+	_ = os.WriteFile(specFile, specData, 0600)
 
 	fakeBin := filepath.Join(jobDir, "bin")
-	_ = os.MkdirAll(fakeBin, 0755)
+	_ = os.MkdirAll(fakeBin, 0750)
 	makeinfoStub := "#!/bin/sh\nout=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"-o\" ]; then out=\"$arg\"; fi\n  prev=\"$arg\"\ndone\nif [ -n \"$out\" ]; then touch \"$out\"; fi\nexit 0\n"
-	_ = os.WriteFile(filepath.Join(fakeBin, "makeinfo"), []byte(makeinfoStub), 0755)
+	makeinfoPath := filepath.Clean(filepath.Join(fakeBin, "makeinfo"))
+	_ = os.WriteFile(makeinfoPath, []byte(makeinfoStub), 0600)
+	// #nosec G302 -- makeinfo stub must be executable by the worker user in sandbox
+	_ = os.Chmod(makeinfoPath, 0700)
 
 	fmt.Fprintf(w, "[%s] bsgo-worker: executing rpmbuild -ba %s\n", time.Now().Format("15:04:05"), specFile)
+	// #nosec G204 -- rpmbuild executes in temporary sandbox
 	cmd := exec.CommandContext(ctx, "rpmbuild", "--nodeps", "--define", fmt.Sprintf("_topdir %s", rpmTopDir), "-ba", specFile)
 	cmd.Dir = rpmTopDir
 	cmd.Env = append(os.Environ(), fmt.Sprintf("PATH=%s:%s", fakeBin, os.Getenv("PATH")))
@@ -216,24 +214,10 @@ func (s *ProcessSandbox) buildHelloPackage(ctx context.Context, job *v1.BuildJob
 
 func (s *ProcessSandbox) collectRPMArtifacts(rpmTopDir, jobDir, project, pkg string, w io.Writer, start time.Time) (*ExecutionResult, error) {
 	pkgDir := filepath.Join(jobDir, "packages")
-	_ = os.MkdirAll(pkgDir, 0755)
+	_ = os.MkdirAll(pkgDir, 0750)
 
-	builtRPMs, _ := filepath.Glob(filepath.Join(rpmTopDir, "RPMS", "*", "*.rpm"))
-	var artifacts []v1.ChrootRPM
-	for _, rpmPath := range builtRPMs {
-		baseName := filepath.Base(rpmPath)
-		dest := filepath.Join(pkgDir, baseName)
-		data, err := os.ReadFile(rpmPath)
-		if err == nil {
-			_ = os.WriteFile(dest, data, 0644)
-			artifacts = append(artifacts, v1.ChrootRPM{
-				Filename:  baseName,
-				S3Key:     fmt.Sprintf("artifacts/%s/%s/%s", project, pkg, baseName),
-				SizeBytes: int64(len(data)),
-			})
-			fmt.Fprintf(w, "[%s] bsgo-worker: built real RPM artifact: %s (%d bytes)\n", time.Now().Format("15:04:05"), baseName, len(data))
-		}
-	}
+	pattern := filepath.Join(rpmTopDir, "RPMS", "*", "*.rpm")
+	artifacts := collectRPMsFromPattern(pattern, pkgDir, project, pkg, "built real RPM artifact", w)
 
 	elapsed := time.Since(start).Seconds()
 	return &ExecutionResult{
@@ -241,6 +225,28 @@ func (s *ProcessSandbox) collectRPMArtifacts(rpmTopDir, jobDir, project, pkg str
 		Artifacts:    artifacts,
 		TotalSeconds: elapsed,
 	}, nil
+}
+
+func collectRPMsFromPattern(pattern, pkgDir, project, pkg, label string, w io.Writer) []v1.ChrootRPM {
+	builtRPMs, _ := filepath.Glob(pattern)
+	var artifacts []v1.ChrootRPM
+	for _, rpmPath := range builtRPMs {
+		cleanRPMPath := filepath.Clean(rpmPath)
+		baseName := filepath.Base(cleanRPMPath)
+		dest := filepath.Clean(filepath.Join(pkgDir, baseName))
+		data, err := os.ReadFile(cleanRPMPath)
+		if err == nil {
+			// #nosec G703 -- artifact RPM copied into validated job packages directory
+			_ = os.WriteFile(dest, data, 0600)
+			artifacts = append(artifacts, v1.ChrootRPM{
+				Filename:  baseName,
+				S3Key:     fmt.Sprintf("artifacts/%s/%s/%s", project, pkg, baseName),
+				SizeBytes: int64(len(data)),
+			})
+			fmt.Fprintf(w, "[%s] bsgo-worker: %s: %s (%d bytes)\n", time.Now().Format("15:04:05"), label, baseName, len(data))
+		}
+	}
+	return artifacts
 }
 
 func (s *ProcessSandbox) buildGenericPackage(ctx context.Context, job *v1.BuildJob, w io.Writer, start time.Time) (*ExecutionResult, error) {

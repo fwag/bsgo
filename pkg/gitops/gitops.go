@@ -14,7 +14,7 @@ type Client struct {
 }
 
 func InitBareRepo(path string) error {
-	if err := os.MkdirAll(path, 0755); err != nil {
+	if err := os.MkdirAll(path, 0750); err != nil {
 		return fmt.Errorf("failed to create directory for bare repo: %w", err)
 	}
 
@@ -27,6 +27,7 @@ func InitBareRepo(path string) error {
 }
 
 func CloneLocal(bareRepoPath, workDir string) (*Client, error) {
+	// #nosec G204 -- git clone requires dynamic repository and working directory paths
 	cmd := exec.Command("git", "clone", bareRepoPath, workDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("git clone failed: %s: %w", string(out), err)
@@ -48,11 +49,11 @@ func (c *Client) CommitFile(ctx context.Context, relPath string, content []byte,
 	}
 
 	dir := filepath.Dir(fullPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		return "", fmt.Errorf("failed to create parent dir: %w", err)
 	}
 
-	if err := os.WriteFile(fullPath, content, 0644); err != nil {
+	if err := os.WriteFile(fullPath, content, 0600); err != nil {
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -88,6 +89,7 @@ func (c *Client) CommitFile(ctx context.Context, relPath string, content []byte,
 }
 
 func (c *Client) runGit(ctx context.Context, args ...string) error {
+	// #nosec G204 -- git commands execute with repo-scoped arguments
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = c.workDir
 	if out, err := cmd.CombinedOutput(); err != nil {

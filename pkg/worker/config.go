@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"gopkg.in/yaml.v3"
@@ -58,7 +59,8 @@ type WorkerConfigFile struct {
 }
 
 func LoadConfigFile(path string) (*WorkerConfigFile, error) {
-	data, err := os.ReadFile(path)
+	cleanPath := filepath.Clean(path)
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read worker config: %w", err)
 	}

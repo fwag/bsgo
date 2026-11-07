@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -109,8 +110,9 @@ func newPackageAddCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			projectName, manifestPath := args[0], args[1]
+			projectName, manifestPath := args[0], filepath.Clean(args[1])
 
+			// #nosec G304 -- CLI argument specifying manifest path to import
 			data, err := os.ReadFile(manifestPath)
 			if err != nil {
 				return fmt.Errorf("failed to read manifest file: %w", err)

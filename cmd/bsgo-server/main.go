@@ -212,7 +212,11 @@ func startHTTPServer(ctx context.Context, httpPort int, store storage.Store) {
 		_, _ = w.Write([]byte("OK"))
 	})
 
-	srv := &http.Server{Addr: fmt.Sprintf(":%d", httpPort), Handler: mux}
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", httpPort),
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "HTTP server error: %v\n", err)
@@ -221,7 +225,7 @@ func startHTTPServer(ctx context.Context, httpPort int, store storage.Store) {
 
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer shutdownCancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()

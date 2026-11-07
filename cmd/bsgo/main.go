@@ -26,7 +26,7 @@ func main() {
 func initStore(ctx context.Context) storage.Store {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "postgres://bsgo:password@localhost:5432/bsgodb?sslmode=disable"
+		dbURL = defaultDatabaseURL()
 	}
 
 	connectCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
@@ -41,6 +41,24 @@ func initStore(ctx context.Context) storage.Store {
 	memStore := storage.NewMemoryStore()
 	seedIfEmpty(ctx, memStore)
 	return memStore
+}
+
+func defaultDatabaseURL() string {
+	user := defaultEnv("PGUSER", "bsgo")
+	host := defaultEnv("PGHOST", "localhost")
+	port := defaultEnv("PGPORT", "5432")
+	dbName := defaultEnv("PGDATABASE", "bsgodb")
+	if pass := os.Getenv("PGPASSWORD"); pass != "" {
+		return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", user, pass, host, port, dbName)
+	}
+	return fmt.Sprintf("postgres://%s@%s:%s/%s?sslmode=disable", user, host, port, dbName)
+}
+
+func defaultEnv(key, fallback string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return fallback
 }
 
 func seedIfEmpty(ctx context.Context, store storage.Store) {

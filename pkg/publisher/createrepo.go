@@ -54,6 +54,7 @@ func (e *RealCreateRepoExecutor) Run(ctx context.Context, opts CreateRepoOptions
 
 	args = append(args, "--", opts.Dir)
 
+	// #nosec G204 -- createrepo_c binary path and arguments are parameterized by design
 	cmd := exec.CommandContext(ctx, e.BinPath, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("createrepo_c failed: %s: %w", strings.TrimSpace(string(out)), err)

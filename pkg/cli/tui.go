@@ -230,7 +230,8 @@ func (m *DashboardModel) toggleLogSubscription() {
 		curJob := m.jobs[m.cursor]
 		m.logLines = []string{fmt.Sprintf("─── Build Logs: %s (%s) ───", curJob.JobID, curJob.Package)}
 
-		savedLog := filepath.Join("/tmp/bsgo-worker/jobs", curJob.JobID, "build.log")
+		cleanJobID := filepath.Clean(curJob.JobID)
+		savedLog := filepath.Clean(filepath.Join("/tmp/bsgo-worker/jobs", cleanJobID, "build.log"))
 		if data, err := os.ReadFile(savedLog); err == nil && len(data) > 0 {
 			lines := strings.Split(string(data), "\n")
 			for _, l := range lines {
