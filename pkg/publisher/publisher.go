@@ -20,14 +20,7 @@ func isValidPathSegment(s string) bool {
 	return true
 }
 
-type PublishRequest struct {
-	RequestID    string   `json:"request_id"`
-	Project      string   `json:"project"`
-	Target       string   `json:"target"`
-	Architecture string   `json:"architecture"`
-	Package      string   `json:"package,omitempty"`
-	NewRPMPaths  []string `json:"new_rpm_paths"`
-}
+type PublishRequest = v1.PublishRequest
 
 type PublishResult struct {
 	Project         string   `json:"project"`

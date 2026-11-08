@@ -94,6 +94,10 @@ func (s *S3Storage) DownloadFile(ctx context.Context, s3Key, localPath string) e
 	return err
 }
 
+func (s *S3Storage) Bucket() string {
+	return s.bucket
+}
+
 func (s *S3Storage) GetObject(ctx context.Context, s3Key string) (io.ReadCloser, int64, string, error) {
 	resp, err := s.client.GetObject(ctx, &awss3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -117,6 +121,12 @@ func (s *S3Storage) GetObject(ctx context.Context, s3Key string) (io.ReadCloser,
 
 func (s *S3Storage) GetRepoFile(ctx context.Context, s3Key string) (io.ReadCloser, int64, string, error) {
 	return s.GetObject(ctx, s3Key)
+}
+
+func (s *S3Storage) DownloadMetadata(ctx context.Context, prefix, localDir string) error {
+	cleanPrefix := strings.Trim(filepath.Clean(prefix), "/") + "/"
+	_, err := s.DownloadPrefix(ctx, cleanPrefix, localDir)
+	return err
 }
 
 func (s *S3Storage) DownloadPrefix(ctx context.Context, s3Prefix, localDir string) (int, error) {

@@ -53,6 +53,9 @@ func main() {
 		WorkDir:     cfg.WorkDir,
 		SandboxMode: cfg.SandboxMode,
 		S3Storage:   s3Storage,
+		PublishFunc: func(_ context.Context, subject string, data []byte) error {
+			return nc.Publish(subject, data)
+		},
 	}
 	daemon := worker.NewWorkerDaemon(cfg, nc, sandbox)
 

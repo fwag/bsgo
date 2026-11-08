@@ -9,12 +9,12 @@ Decouple repodata generation and repository publishing from the worker execution
 
 **Blocked by:** 22: Signer: bsgo-signd Bare-Metal Daemon, Database Keys & EFI Signing
 
-**Status:** open
+**Status:** resolved
 
-- [ ] Update `bsgo-worker` to upload raw RPM artifacts to S3 and emit `PublishRequest` on NATS JetStream `PUBLISH` stream.
-- [ ] Remove inline `createrepo_c` and S3 repo syncing from `pkg/worker/sandbox.go`.
-- [ ] Implement `PostgresLockManager` in `pkg/storage/postgres` using `pg_advisory_xact_lock`.
-- [ ] Create `cmd/bsgo-publisher/main.go` daemon consuming from NATS JetStream `PUBLISH` stream.
-- [ ] Wire `MetadataSigner` into `bsgo-publisher` to produce `repomd.xml.asc` and export `repomd.xml.key`.
-- [ ] Publish `bsgo.events.published` on S3 commit, verifying end-to-end trigger of the Cascade Engine.
-- [ ] Unit and integration tests verifying worker decoupling, JetStream consumption, and PostgreSQL advisory locking.
+- [x] Update `bsgo-worker` to upload raw RPM artifacts to S3 and emit `PublishRequest` on NATS JetStream `PUBLISH` stream.
+- [x] Remove inline `createrepo_c` and S3 repo syncing from `pkg/worker/sandbox.go`.
+- [x] Implement `PostgresLockManager` in `pkg/storage/postgres` using `pg_advisory_xact_lock`.
+- [x] Create `cmd/bsgo-publisher/main.go` daemon consuming from NATS JetStream `PUBLISH` stream.
+- [x] Wire `MetadataSigner` into `bsgo-publisher` to produce `repomd.xml.asc` and export `repomd.xml.key`.
+- [x] Publish `bsgo.events.published` on S3 commit, verifying end-to-end trigger of the Cascade Engine.
+- [x] Unit and integration tests verifying worker decoupling, JetStream consumption, and PostgreSQL advisory locking.

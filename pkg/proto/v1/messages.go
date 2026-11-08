@@ -109,6 +109,17 @@ type WorkerHardware struct {
 	CPUFeatures     []string `json:"cpu_features"`
 }
 
+type PublishRequest struct {
+	RequestID    string   `json:"request_id"`
+	JobID        string   `json:"job_id,omitempty"`
+	Project      string   `json:"project"`
+	Target       string   `json:"target"`
+	Architecture string   `json:"architecture"`
+	Package      string   `json:"package,omitempty"`
+	NewRPMPaths  []string `json:"new_rpm_paths,omitempty"`
+	ArtifactKeys []string `json:"artifact_keys,omitempty"`
+}
+
 type PublicationEvent struct {
 	EventID       string   `json:"event_id"`
 	Project       string   `json:"project"`

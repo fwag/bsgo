@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/storage/s3"
 )
@@ -67,6 +68,7 @@ type ProcessSandbox struct {
 	SandboxMode string
 	ObsBuildBin string
 	S3Storage   *s3.S3Storage
+	PublishFunc func(ctx context.Context, subject string, data []byte) error
 }
 
 func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWriter io.Writer) (*ExecutionResult, error) {
@@ -207,7 +209,7 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 		return &ExecutionResult{ExitCode: 1}, err
 	}
 
-	return s.collectKVMArtifacts(buildRoot, jobDir, job, w, start)
+	return s.collectKVMArtifacts(ctx, buildRoot, jobDir, job, w, start)
 }
 
 func (s *ProcessSandbox) ResolveJobRepositories(ctx context.Context, job *v1.BuildJob, w io.Writer) []string {
@@ -301,7 +303,7 @@ func (s *ProcessSandbox) discoverLocalRepositories(arch, target string, attached
 	return args
 }
 
-func (s *ProcessSandbox) collectKVMArtifacts(buildRoot, jobDir string, job *v1.BuildJob, w io.Writer, start time.Time) (*ExecutionResult, error) {
+func (s *ProcessSandbox) collectKVMArtifacts(ctx context.Context, buildRoot, jobDir string, job *v1.BuildJob, w io.Writer, start time.Time) (*ExecutionResult, error) {
 	pkgDir := filepath.Join(jobDir, "packages")
 	_ = os.MkdirAll(pkgDir, 0750)
 
@@ -327,6 +329,46 @@ func (s *ProcessSandbox) collectKVMArtifacts(buildRoot, jobDir string, job *v1.B
 		artifacts = append(artifacts, arts...)
 	}
 
+	// 1. Upload newly built RPMs to S3 artifacts destination
+	var artifactPaths []string
+	if s.S3Storage != nil {
+		for _, a := range artifacts {
+			src := filepath.Join(pkgDir, a.Filename)
+			s3Key := fmt.Sprintf("artifacts/%s/%s/%s/%s/%s", job.Project, target, arch, job.Package, a.Filename)
+			if err := s.S3Storage.UploadFile(ctx, src, s3Key); err == nil {
+				artifactPaths = append(artifactPaths, src)
+				fmt.Fprintf(w, "[%s] bsgo-worker: uploaded RPM artifact to s3://%s/%s\n",
+					time.Now().Format("15:04:05"), s.S3Storage.Bucket(), s3Key)
+			}
+		}
+	}
+
+	// 2. Decoupled publishing: Emit PublishRequest to NATS JetStream PUBLISH stream
+	if s.PublishFunc != nil && len(artifacts) > 0 {
+		pubReq := v1.PublishRequest{
+			RequestID:    uuid.NewString(),
+			JobID:        job.JobID,
+			Project:      job.Project,
+			Target:       target,
+			Architecture: arch,
+			Package:      job.Package,
+			NewRPMPaths:  artifactPaths,
+		}
+		subject := fmt.Sprintf("bsgo.publish.rpm.%s.%s.%s", job.Project, target, arch)
+		if data, err := json.Marshal(pubReq); err == nil {
+			if err := s.PublishFunc(ctx, subject, data); err == nil {
+				fmt.Fprintf(w, "[%s] bsgo-worker: emitted PublishRequest to %s (%d RPMs)\n",
+					time.Now().Format("15:04:05"), subject, len(artifacts))
+			}
+		}
+	} else if s.PublishFunc == nil {
+		s.fallbackLocalPublish(localRepo, artifacts, pkgDir, target, arch, job, w)
+	}
+
+	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
+}
+
+func (s *ProcessSandbox) fallbackLocalPublish(localRepo string, artifacts []v1.ChrootRPM, pkgDir, target, arch string, job *v1.BuildJob, w io.Writer) {
 	for _, a := range artifacts {
 		src := filepath.Join(pkgDir, a.Filename)
 		dest := filepath.Join(localRepo, a.Filename)
@@ -358,8 +400,6 @@ func (s *ProcessSandbox) collectKVMArtifacts(buildRoot, jobDir string, job *v1.B
 		fmt.Fprintf(w, "[%s] bsgo-worker: synced repository to Garage S3: s3://bsgo-artifacts/%s\n",
 			time.Now().Format("15:04:05"), s3Prefix)
 	}
-
-	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
 }
 
 func (s *ProcessSandbox) buildSourcePackage(ctx context.Context, job *v1.BuildJob, jobDir, srcDir, specName string, w io.Writer, start time.Time) (*ExecutionResult, error) {

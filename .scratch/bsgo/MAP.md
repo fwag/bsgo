@@ -50,7 +50,7 @@ Deliver an architectural specification, core schemas, and prototype contracts fo
 - [20: Supply Chain: SLSA 1.2 Provenance Attestation Pipeline](issues/20-slsa-provenance-attestation.md) (resolved)
 - [21: Signer: obs-signd Protocol Client & Hardware Security Module (HSM) Service](issues/21-signer-obs-signd-and-pkcs11-hsm-service.md) (resolved)
 - [22: Signer: bsgo-signd Bare-Metal Daemon, Database Keys & EFI Signing](issues/22-signd-daemon-master-keys-and-efi-signing.md) (resolved)
-- [23: Publisher: Standalone bsgo-publisher Daemon & Worker Decoupling](issues/23-publisher-standalone-daemon-and-worker-decoupling.md)
+- [23: Publisher: Standalone bsgo-publisher Daemon & Worker Decoupling](issues/23-publisher-standalone-daemon-and-worker-decoupling.md) (resolved)
 - [24: Publisher: Sub-Repository Channel Partitioning (Standard, Debuginfo, Sources)](issues/24-publisher-sub-repository-partitioning.md)
 - [25: Publisher: Metadata Enrichment via modifyrepo_c (AppStream & Errata/CVE)](issues/25-publisher-metadata-enrichment-modifyrepo.md)
 - [26: Publisher: Debounce Batching, Tombstones & S3 Metadata Garbage Collection](issues/26-publisher-debounce-batching-and-metadata-gc.md)
