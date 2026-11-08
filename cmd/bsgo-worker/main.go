@@ -10,6 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
+	"github.com/openSUSE/bsgo/pkg/storage/s3"
 	"github.com/openSUSE/bsgo/pkg/worker"
 )
 
@@ -40,14 +41,20 @@ func main() {
 	}
 	defer nc.Close()
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	s3Storage, err := s3.NewS3Storage(ctx, cfg.S3Endpoint, "garage", cfg.S3Bucket, "", "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to connect to S3 (%s): %v\n", cfg.S3Endpoint, err)
+	}
+
 	sandbox := &worker.ProcessSandbox{
 		WorkDir:     cfg.WorkDir,
 		SandboxMode: cfg.SandboxMode,
+		S3Storage:   s3Storage,
 	}
 	daemon := worker.NewWorkerDaemon(cfg, nc, sandbox)
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 
 	fmt.Printf("Starting bsgo-worker [%s] (Arch: %s, Sandbox: %s) connecting to %s...\n",
 		cfg.WorkerID, cfg.Architecture, cfg.SandboxMode, cfg.NatsURL)
@@ -63,6 +70,7 @@ func resolveWorkerConfig(configFile, flagID, flagArch, flagNats, flagBucket, fla
 		WorkerID:     "worker-local-01",
 		Architecture: "x86_64",
 		NatsURL:      "nats://localhost:4222",
+		S3Endpoint:   "http://localhost:3900",
 		S3Bucket:     "bsgo-artifacts",
 		WorkDir:      "/tmp/bsgo-worker",
 		SandboxMode:  "rpmbuild",
@@ -94,6 +102,9 @@ func applyFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile)
 	}
 	if fileCfg.Nats.URL != "" {
 		cfg.NatsURL = fileCfg.Nats.URL
+	}
+	if fileCfg.Storage.S3Endpoint != "" {
+		cfg.S3Endpoint = fileCfg.Storage.S3Endpoint
 	}
 	if fileCfg.Storage.S3Bucket != "" {
 		cfg.S3Bucket = fileCfg.Storage.S3Bucket

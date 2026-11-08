@@ -12,6 +12,7 @@ import (
 	"time"
 
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
+	"github.com/openSUSE/bsgo/pkg/storage/s3"
 )
 
 type MockSandbox struct {
@@ -64,6 +65,7 @@ type ProcessSandbox struct {
 	WorkDir     string
 	SandboxMode string
 	ObsBuildBin string
+	S3Storage   *s3.S3Storage
 }
 
 func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWriter io.Writer) (*ExecutionResult, error) {
@@ -162,6 +164,18 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	specFile := filepath.Join(jobDir, specName)
 	args := []string{"--clean", "--vm-type", "kvm", "--root", buildRoot, "--cachedir", cacheDir}
 
+	// 1. Pull upstream repository from Garage S3 if configured
+	if s.S3Storage != nil {
+		s3RepoDir := filepath.Join(s.WorkDir, "cache", "s3_repos", "openSUSE:Crypto", "standard", "x86_64")
+		s3Prefix := "repos/openSUSE:Crypto/standard/x86_64/"
+		count, err := s.S3Storage.DownloadPrefix(ctx, s3Prefix, s3RepoDir)
+		if err == nil && count > 0 {
+			args = append(args, "--repo", s3RepoDir)
+			fmt.Fprintf(w, "[%s] bsgo-worker: pulled S3 repository from s3://bsgo-artifacts/%s (%d files)\n",
+				time.Now().Format("15:04:05"), s3Prefix, count)
+		}
+	}
+
 	repoBase := filepath.Join(s.WorkDir, "repos")
 	if repos, err := filepath.Glob(filepath.Join(repoBase, "*", "standard", "x86_64")); err == nil {
 		for _, r := range repos {
@@ -213,6 +227,20 @@ func (s *ProcessSandbox) collectKVMArtifacts(buildRoot, jobDir string, job *v1.B
 	crCmd.Stdout = w
 	crCmd.Stderr = w
 	_ = crCmd.Run()
+
+	// Sync generated RPMs and repodata to Garage S3
+	if s.S3Storage != nil {
+		s3Prefix := fmt.Sprintf("repos/%s/standard/x86_64/", job.Project)
+		_ = filepath.Walk(localRepo, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			rel, _ := filepath.Rel(localRepo, path)
+			return s.S3Storage.UploadFile(context.Background(), path, s3Prefix+rel)
+		})
+		fmt.Fprintf(w, "[%s] bsgo-worker: synced repository to Garage S3: s3://bsgo-artifacts/%s\n",
+			time.Now().Format("15:04:05"), s3Prefix)
+	}
 
 	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
 }

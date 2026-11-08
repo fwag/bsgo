@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/openSUSE/bsgo/pkg/manifest"
@@ -13,6 +14,15 @@ var (
 	ErrConflict = errors.New("resource already exists")
 )
 
+type ProjectSigningKey struct {
+	ProjectName         string `json:"project_name"`
+	KeyFlavor           string `json:"key_flavor"`
+	KeyType             string `json:"key_type"`
+	PublicKeyArmored    string `json:"public_key_armored"`
+	EncryptedPrivateKey string `json:"encrypted_private_key"`
+	Fingerprint         string `json:"fingerprint"`
+}
+
 type Store interface {
 	CreateProject(ctx context.Context, prj *manifest.ProjectManifest) error
 	GetProject(ctx context.Context, name string) (*manifest.ProjectManifest, error)
@@ -21,18 +31,24 @@ type Store interface {
 	UpsertPackage(ctx context.Context, projectName string, pkg *manifest.PackageManifest) error
 	GetPackage(ctx context.Context, projectName, packageName string) (*manifest.PackageManifest, error)
 	ListPackages(ctx context.Context, projectName string) ([]*manifest.PackageManifest, error)
+
+	SaveProjectKey(ctx context.Context, key *ProjectSigningKey) error
+	GetProjectKey(ctx context.Context, projectName, flavor, keyType string) (*ProjectSigningKey, error)
+	ListProjectKeys(ctx context.Context, projectName string) ([]*ProjectSigningKey, error)
 }
 
 type MemoryStore struct {
 	mu       sync.RWMutex
 	projects map[string]*manifest.ProjectManifest
 	packages map[string]map[string]*manifest.PackageManifest
+	keys     map[string]map[string]*ProjectSigningKey // key: project -> flavor:type -> key
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		projects: make(map[string]*manifest.ProjectManifest),
 		packages: make(map[string]map[string]*manifest.PackageManifest),
+		keys:     make(map[string]map[string]*ProjectSigningKey),
 	}
 }
 
@@ -108,6 +124,56 @@ func (s *MemoryStore) ListPackages(_ context.Context, projectName string) ([]*ma
 	list := make([]*manifest.PackageManifest, 0, len(pkgs))
 	for _, p := range pkgs {
 		list = append(list, p)
+	}
+	return list, nil
+}
+
+func (s *MemoryStore) SaveProjectKey(_ context.Context, key *ProjectSigningKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.projects[key.ProjectName]; !exists {
+		return ErrNotFound
+	}
+
+	if s.keys[key.ProjectName] == nil {
+		s.keys[key.ProjectName] = make(map[string]*ProjectSigningKey)
+	}
+
+	keyID := fmt.Sprintf("%s:%s", key.KeyFlavor, key.KeyType)
+	s.keys[key.ProjectName][keyID] = key
+	return nil
+}
+
+func (s *MemoryStore) GetProjectKey(_ context.Context, projectName, flavor, keyType string) (*ProjectSigningKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	prjKeys, exists := s.keys[projectName]
+	if !exists {
+		return nil, ErrNotFound
+	}
+
+	keyID := fmt.Sprintf("%s:%s", flavor, keyType)
+	key, found := prjKeys[keyID]
+	if !found {
+		return nil, ErrNotFound
+	}
+	return key, nil
+}
+
+func (s *MemoryStore) ListProjectKeys(_ context.Context, projectName string) ([]*ProjectSigningKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	prjKeys, exists := s.keys[projectName]
+	if !exists {
+		return []*ProjectSigningKey{}, nil
+	}
+
+	var list []*ProjectSigningKey
+	for _, k := range prjKeys {
+		list = append(list, k)
 	}
 	return list, nil
 }

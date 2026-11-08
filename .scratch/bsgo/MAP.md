@@ -48,6 +48,7 @@ Deliver an architectural specification, core schemas, and prototype contracts fo
 - [19: Dispatcher: Worker Fault Tolerance, badhost Tracking & Quarantine](issues/19-worker-fault-tolerance-badhost.md) (resolved)
 - [20: Supply Chain: SLSA 1.2 Provenance Attestation Pipeline](issues/20-slsa-provenance-attestation.md) (resolved)
 - [21: Signer: obs-signd Protocol Client & Hardware Security Module (HSM) Service](issues/21-signer-obs-signd-and-pkcs11-hsm-service.md) (resolved)
+- [22: Signer: bsgo-signd Bare-Metal Daemon, Database Keys & EFI Signing](issues/22-signd-daemon-master-keys-and-efi-signing.md) (resolved)
 
 ## Not yet specified
 

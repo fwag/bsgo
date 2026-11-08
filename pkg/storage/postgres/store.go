@@ -163,3 +163,62 @@ func (s *PostgresStore) ListPackages(ctx context.Context, projectName string) ([
 	}
 	return list, nil
 }
+
+func (s *PostgresStore) SaveProjectKey(ctx context.Context, key *storage.ProjectSigningKey) error {
+	query := `
+		INSERT INTO project_signing_keys (project_name, key_flavor, key_type, public_key_armored, encrypted_private_key, fingerprint, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		ON CONFLICT (project_name, key_flavor, key_type) DO UPDATE SET
+			public_key_armored = EXCLUDED.public_key_armored,
+			encrypted_private_key = EXCLUDED.encrypted_private_key,
+			fingerprint = EXCLUDED.fingerprint,
+			updated_at = NOW()`
+	_, err := s.pool.Exec(ctx, query, key.ProjectName, key.KeyFlavor, key.KeyType, key.PublicKeyArmored, key.EncryptedPrivateKey, key.Fingerprint)
+	if err != nil {
+		return fmt.Errorf("failed to save project key: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetProjectKey(ctx context.Context, projectName, flavor, keyType string) (*storage.ProjectSigningKey, error) {
+	query := `
+		SELECT project_name, key_flavor, key_type, public_key_armored, encrypted_private_key, fingerprint
+		FROM project_signing_keys
+		WHERE project_name = $1 AND key_flavor = $2 AND key_type = $3`
+	var key storage.ProjectSigningKey
+	err := s.pool.QueryRow(ctx, query, projectName, flavor, keyType).Scan(
+		&key.ProjectName, &key.KeyFlavor, &key.KeyType, &key.PublicKeyArmored, &key.EncryptedPrivateKey, &key.Fingerprint,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, storage.ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to fetch project key: %w", err)
+	}
+	return &key, nil
+}
+
+func (s *PostgresStore) ListProjectKeys(ctx context.Context, projectName string) ([]*storage.ProjectSigningKey, error) {
+	query := `
+		SELECT project_name, key_flavor, key_type, public_key_armored, encrypted_private_key, fingerprint
+		FROM project_signing_keys
+		WHERE project_name = $1
+		ORDER BY key_flavor, key_type`
+	rows, err := s.pool.Query(ctx, query, projectName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list project keys: %w", err)
+	}
+	defer rows.Close()
+
+	var list []*storage.ProjectSigningKey
+	for rows.Next() {
+		var key storage.ProjectSigningKey
+		if err := rows.Scan(
+			&key.ProjectName, &key.KeyFlavor, &key.KeyType, &key.PublicKeyArmored, &key.EncryptedPrivateKey, &key.Fingerprint,
+		); err != nil {
+			return nil, err
+		}
+		list = append(list, &key)
+	}
+	return list, nil
+}

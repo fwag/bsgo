@@ -23,8 +23,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 		t.Fatalf("failed to collect migrations: %v", err)
 	}
 
-	if len(migrations) != 2 {
-		t.Fatalf("expected 2 migrations, got %d", len(migrations))
+	if len(migrations) != 3 {
+		t.Fatalf("expected 3 migrations, got %d", len(migrations))
 	}
 
 	if migrations[0].Version != 1 {
@@ -32,6 +32,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if migrations[1].Version != 2 {
 		t.Errorf("expected migration 1 version 2, got %d", migrations[1].Version)
+	}
+	if migrations[2].Version != 3 {
+		t.Errorf("expected migration 2 version 3, got %d", migrations[2].Version)
 	}
 
 	// Verify each migration contains expected statements
@@ -49,5 +52,13 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if len(m2Content) == 0 {
 		t.Error("migration 2 content is empty")
+	}
+
+	m3Content, err := fs.ReadFile(subFS, "00003_project_signing_keys.sql")
+	if err != nil {
+		t.Fatalf("failed to read migration 3: %v", err)
+	}
+	if len(m3Content) == 0 {
+		t.Error("migration 3 content is empty")
 	}
 }

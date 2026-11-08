@@ -27,11 +27,12 @@ echo "Waiting for services to initialize..."
 sleep 2
 
 # Configure Garage cluster layout & bucket
-NODE_ID=$(podman exec bsgo-garage /garage node id 2>/dev/null | grep -E '^[0-9a-f]{16}' | head -n 1 | awk '{print $1}')
+NODE_ID=$(podman exec bsgo-garage /garage node id 2>/dev/null | head -n 1 | awk '{print $1}' | cut -d'@' -f1)
 if [ -n "$NODE_ID" ]; then
   podman exec bsgo-garage /garage layout assign -z dc1 -c 1G "$NODE_ID" >/dev/null 2>&1 || true
   podman exec bsgo-garage /garage layout apply --version 1 >/dev/null 2>&1 || true
   podman exec bsgo-garage /garage bucket create bsgo-artifacts >/dev/null 2>&1 || true
+  podman exec bsgo-garage /garage bucket website --allow bsgo-artifacts >/dev/null 2>&1 || true
   podman exec bsgo-garage /garage key create bsgo-key >/dev/null 2>&1 || true
   podman exec bsgo-garage /garage bucket allow --read --write bsgo-artifacts --key bsgo-key >/dev/null 2>&1 || true
 fi
