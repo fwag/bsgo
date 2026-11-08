@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
 	"github.com/spf13/cobra"
@@ -67,6 +68,7 @@ type DashboardModel struct {
 	termHeight   int
 	natsURL      string
 	nc           *nats.Conn
+	js           jetstream.JetStream
 	workers      map[string]v1.WorkerHeartbeat
 	jobs         []v1.BuildJob
 	viewLog      bool
@@ -75,23 +77,30 @@ type DashboardModel struct {
 }
 
 func newWatchCmd() *cobra.Command {
+	defaultNATSURL := os.Getenv("NATS_URL")
+	if defaultNATSURL == "" {
+		defaultNATSURL = "nats://localhost:4222"
+	}
 	var natsURL string
 
 	cmd := &cobra.Command{
 		Use:   "watch",
 		Short: "Open the interactive live TUI dashboard connected to NATS",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			nc, _, err := natsqueue.ConnectJetStream(natsURL)
+			nc, js, err := natsqueue.ConnectJetStream(natsURL)
 			if err != nil {
 				return fmt.Errorf("failed to connect to NATS at %s: %w", natsURL, err)
 			}
 			defer nc.Close()
 
-			m := newLiveDashboardModel(natsURL, nc)
+			ctx, cancel := context.WithCancel(cmd.Context())
+			defer cancel()
+
+			_ = natsqueue.SetupStreams(ctx, js)
+
+			m := newLiveDashboardModel(natsURL, nc, js)
 			p := tea.NewProgram(m, tea.WithAltScreen())
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
 			go m.listenNATS(ctx, p)
 
 			if _, err := p.Run(); err != nil {
@@ -101,20 +110,108 @@ func newWatchCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&natsURL, "nats-url", "nats://localhost:4222", "NATS JetStream connection URL")
+	cmd.Flags().StringVar(&natsURL, "nats-url", defaultNATSURL, "NATS JetStream connection URL")
 	return cmd
 }
 
-func newLiveDashboardModel(natsURL string, nc *nats.Conn) *DashboardModel {
-	return &DashboardModel{
+func newLiveDashboardModel(natsURL string, nc *nats.Conn, js jetstream.JetStream) *DashboardModel {
+	m := &DashboardModel{
 		natsURL:    natsURL,
 		nc:         nc,
+		js:         js,
 		workers:    make(map[string]v1.WorkerHeartbeat),
 		jobs:       make([]v1.BuildJob, 0),
 		logLines:   make([]string, 0),
 		termWidth:  110,
 		termHeight: 30,
 	}
+	if js != nil {
+		m.loadHistoricalJobs(context.Background())
+	}
+	return m
+}
+
+func (m *DashboardModel) loadHistoricalJobs(ctx context.Context) {
+	if m.js == nil {
+		return
+	}
+
+	loadCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	m.replayTriggers(loadCtx)
+	m.replayJobStatuses(loadCtx)
+}
+
+func (m *DashboardModel) replayTriggers(ctx context.Context) {
+	cons, err := m.js.OrderedConsumer(ctx, natsqueue.StreamTriggers, jetstream.OrderedConsumerConfig{
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+	})
+	if err != nil {
+		return
+	}
+
+	batch, err := cons.FetchNoWait(1000)
+	if err != nil {
+		return
+	}
+
+	for msg := range batch.Messages() {
+		var trig v1.BuildTrigger
+		if err := json.Unmarshal(msg.Data(), &trig); err == nil {
+			m.handleTrigger(trig)
+		}
+	}
+}
+
+func (m *DashboardModel) replayJobStatuses(ctx context.Context) {
+	cons, err := m.js.OrderedConsumer(ctx, natsqueue.StreamJobStatus, jetstream.OrderedConsumerConfig{
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+	})
+	if err != nil {
+		return
+	}
+
+	batch, err := cons.FetchNoWait(1000)
+	if err != nil {
+		return
+	}
+
+	for msg := range batch.Messages() {
+		var st map[string]any
+		if err := json.Unmarshal(msg.Data(), &st); err == nil {
+			m.handleStatusUpdate(st)
+		}
+	}
+}
+
+func (m *DashboardModel) handleTrigger(trig v1.BuildTrigger) {
+	if trig.TriggerID == "" {
+		return
+	}
+	for i, j := range m.jobs {
+		if j.JobID == trig.TriggerID {
+			if trig.Package != "" {
+				m.jobs[i].Package = trig.Package
+			}
+			if trig.Project != "" {
+				m.jobs[i].Project = trig.Project
+			}
+			return
+		}
+	}
+
+	arch := trig.Architecture
+	if arch == "" {
+		arch = "x86_64"
+	}
+	m.jobs = append(m.jobs, v1.BuildJob{
+		JobID:        trig.TriggerID,
+		Project:      trig.Project,
+		Package:      trig.Package,
+		Architecture: arch,
+		Target:       "PENDING",
+	})
 }
 
 func (m *DashboardModel) listenNATS(ctx context.Context, p *tea.Program) {
@@ -122,6 +219,24 @@ func (m *DashboardModel) listenNATS(ctx context.Context, p *tea.Program) {
 		var hb v1.WorkerHeartbeat
 		if err := json.Unmarshal(msg.Data, &hb); err == nil {
 			p.Send(HeartbeatMsg(hb))
+		}
+	})
+
+	_, _ = m.nc.Subscribe("bsgo.triggers.>", func(msg *nats.Msg) {
+		var trig v1.BuildTrigger
+		if err := json.Unmarshal(msg.Data, &trig); err == nil {
+			arch := trig.Architecture
+			if arch == "" {
+				arch = "x86_64"
+			}
+			statusMsg := map[string]any{
+				"job_id":       trig.TriggerID,
+				"project":      trig.Project,
+				"package":      trig.Package,
+				"phase":        "PENDING",
+				"architecture": arch,
+			}
+			p.Send(StatusUpdateMsg(statusMsg))
 		}
 	})
 
@@ -343,7 +458,12 @@ func (m *DashboardModel) renderJobPanel() string {
 		if len(displayName) > 22 {
 			displayName = displayName[:19] + "..."
 		}
-		fmt.Fprintf(&sb, "%s%-18s %s %-22s\n", cursor, j.JobID, badge, displayName)
+
+		displayJobID := j.JobID
+		if len(displayJobID) > 16 {
+			displayJobID = displayJobID[:13] + "..."
+		}
+		fmt.Fprintf(&sb, "%s%-16s %s %-22s\n", cursor, displayJobID, badge, displayName)
 	}
 
 	if endIdx < len(m.jobs) {

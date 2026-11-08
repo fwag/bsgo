@@ -7,10 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/nats-io/nats.go"
 	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
@@ -212,6 +210,12 @@ func newPackageSetResourcesCmd(store storage.Store, opts *OutputOptions) *cobra.
 
 func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
 	var commitSHA string
+	var natsURL string
+
+	defaultNATSURL := os.Getenv("NATS_URL")
+	if defaultNATSURL == "" {
+		defaultNATSURL = "nats://localhost:4222"
+	}
 
 	cmd := &cobra.Command{
 		Use:   "trigger <project/package>",
@@ -237,38 +241,20 @@ func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Comma
 				}
 			}
 
-			jobID := fmt.Sprintf("job-%d", time.Now().UnixNano())
+			trigger := v1.NewTrigger(projectName, pkgName, p.Source.Git, commitSHA, p.Source.Branch, "developer")
+			jobID := trigger.TriggerID
 			subject := natsqueue.TriggerSubject(natsqueue.PriorityHigh, projectName, pkgName)
 			result := map[string]any{
 				"status":     "TRIGGERED",
 				"job_id":     jobID,
+				"trigger_id": jobID,
 				"project":    projectName,
 				"package":    pkgName,
 				"commit_sha": commitSHA,
 				"subject":    subject,
 			}
 
-			// Publish real trigger to NATS
-			natsURL := "nats://localhost:4222"
-			if nc, err := nats.Connect(natsURL); err == nil {
-				defer nc.Close()
-				trigger := v1.NewTrigger(projectName, pkgName, p.Source.Git, commitSHA, p.Source.Branch, "developer")
-				trigger.TriggerID = jobID
-				tData, _ := json.Marshal(trigger)
-				_ = nc.Publish(subject, tData)
-
-				// Notify dashboard of pending job
-				statusMsg := map[string]any{
-					"job_id":       jobID,
-					"project":      projectName,
-					"package":      pkgName,
-					"phase":        "PENDING",
-					"architecture": "x86_64",
-				}
-				sData, _ := json.Marshal(statusMsg)
-				_ = nc.Publish("bsgo.status", sData)
-				_ = nc.Flush()
-			}
+			publishPackageTrigger(ctx, natsURL, subject, trigger, jobID, projectName, pkgName)
 
 			var sb strings.Builder
 			sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")).Render("✔ Build triggered successfully!") + "\n\n")
@@ -283,5 +269,30 @@ func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Comma
 	}
 
 	cmd.Flags().StringVar(&commitSHA, "commit", "", "Optional commit SHA override to build")
+	cmd.Flags().StringVar(&natsURL, "nats-url", defaultNATSURL, "NATS JetStream connection URL")
 	return cmd
+}
+
+func publishPackageTrigger(ctx context.Context, natsURL, subject string, trigger *v1.BuildTrigger, jobID, project, pkg string) {
+	nc, js, err := natsqueue.ConnectJetStream(natsURL)
+	if err != nil {
+		return
+	}
+	defer nc.Close()
+
+	_ = natsqueue.SetupStreams(ctx, js)
+
+	tData, _ := json.Marshal(trigger)
+	_, _ = js.Publish(ctx, subject, tData)
+
+	statusMsg := map[string]any{
+		"job_id":       jobID,
+		"project":      project,
+		"package":      pkg,
+		"phase":        "PENDING",
+		"architecture": "x86_64",
+	}
+	sData, _ := json.Marshal(statusMsg)
+	_, _ = js.Publish(ctx, natsqueue.SubjectJobStatus, sData)
+	_ = nc.Flush()
 }

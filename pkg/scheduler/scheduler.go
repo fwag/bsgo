@@ -7,6 +7,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
@@ -120,7 +121,7 @@ func (s *Scheduler) isTargetEligible(trigger *v1.BuildTrigger, pkg *manifest.Pac
 }
 
 func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger, targetName string, archs []string, pkg *manifest.PackageManifest) ([]*v1.BuildJob, error) {
-	var jobs []*v1.BuildJob
+	var eligibleArchs []string
 	for _, arch := range archs {
 		if trigger.Architecture != "" && trigger.Architecture != arch {
 			continue
@@ -128,8 +129,19 @@ func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger,
 		if isArchExcluded(arch, pkg.Build.Architectures.Exclude) {
 			continue
 		}
+		eligibleArchs = append(eligibleArchs, arch)
+	}
 
-		job, err := s.buildJobForArch(ctx, trigger, targetName, arch, pkg)
+	var jobs []*v1.BuildJob
+	for _, arch := range eligibleArchs {
+		jobID := trigger.TriggerID
+		if jobID == "" {
+			jobID = uuid.NewString()
+		} else if len(eligibleArchs) > 1 {
+			jobID = fmt.Sprintf("%s-%s", trigger.TriggerID, arch)
+		}
+
+		job, err := s.buildJobForArch(ctx, trigger, targetName, arch, pkg, jobID)
 		if err != nil {
 			return nil, err
 		}
@@ -148,7 +160,7 @@ func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger,
 	return jobs, nil
 }
 
-func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigger, targetName, arch string, pkg *manifest.PackageManifest) (*v1.BuildJob, error) {
+func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigger, targetName, arch string, pkg *manifest.PackageManifest, jobID string) (*v1.BuildJob, error) {
 	req := solv.ExpansionRequest{
 		BuildRequires: []string{pkg.Package.Name},
 	}
@@ -170,7 +182,7 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 	prio := calculatePriority(trigger.NormalizedPriority(), len(chrootRPMs))
 
 	return &v1.BuildJob{
-		JobID:        fmt.Sprintf("job-%d", time.Now().UnixNano()),
+		JobID:        jobID,
 		Project:      trigger.Project,
 		Package:      trigger.Package,
 		Target:       targetName,

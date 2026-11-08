@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/openSUSE/bsgo/pkg/cli"
-	"github.com/openSUSE/bsgo/pkg/manifest"
 	"github.com/openSUSE/bsgo/pkg/storage"
 	"github.com/openSUSE/bsgo/pkg/storage/postgres"
 )
@@ -34,13 +33,10 @@ func initStore(ctx context.Context) storage.Store {
 
 	pgStore, err := postgres.NewPostgresStore(connectCtx, dbURL)
 	if err == nil {
-		seedIfEmpty(ctx, pgStore)
 		return pgStore
 	}
 
-	memStore := storage.NewMemoryStore()
-	seedIfEmpty(ctx, memStore)
-	return memStore
+	return storage.NewMemoryStore()
 }
 
 func defaultDatabaseURL() string {
@@ -57,71 +53,4 @@ func defaultEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
-}
-
-func seedIfEmpty(ctx context.Context, store storage.Store) {
-	_, err := store.GetProject(ctx, "openSUSE:Factory")
-	if err != nil {
-		prj := &manifest.ProjectManifest{
-			SchemaVersion: "v1",
-			Project: manifest.ProjectInfo{
-				Name:        "openSUSE:Factory",
-				Title:       "openSUSE Factory Distribution",
-				Description: "Rolling release base distribution",
-			},
-			Targets: map[string]manifest.BuildTarget{
-				"standard": {
-					Architectures: []string{"x86_64", "aarch64"},
-					Flags: manifest.TargetFlags{
-						Build:   true,
-						Publish: true,
-					},
-				},
-			},
-		}
-		_ = store.CreateProject(ctx, prj)
-	}
-
-	_, err = store.GetPackage(ctx, "openSUSE:Factory", "chromium")
-	if err != nil {
-		_ = store.UpsertPackage(ctx, "openSUSE:Factory", &manifest.PackageManifest{
-			SchemaVersion: "v1",
-			Package: manifest.PackageInfo{
-				Name:  "chromium",
-				Title: "Chromium Web Browser",
-			},
-			Source: manifest.PackageSource{
-				Git:    "https://github.com/openSUSE/chromium.git",
-				Branch: "factory",
-				Commit: "8f7e2a9b4c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f",
-			},
-			Build: manifest.PackageBuild{
-				Enabled: true,
-			},
-			Resources: manifest.ResourceLimits{
-				Memory: "32Gi",
-				VCPUs:  16,
-				Disk:   "100Gi",
-			},
-		})
-
-		_ = store.UpsertPackage(ctx, "openSUSE:Factory", &manifest.PackageManifest{
-			SchemaVersion: "v1",
-			Package: manifest.PackageInfo{
-				Name:  "glibc",
-				Title: "GNU C Library",
-			},
-			Source: manifest.PackageSource{
-				Git:    "https://github.com/openSUSE/glibc.git",
-				Branch: "factory",
-			},
-			Build: manifest.PackageBuild{
-				Enabled: true,
-			},
-			Resources: manifest.ResourceLimits{
-				Memory: "8Gi",
-				VCPUs:  8,
-			},
-		})
-	}
 }

@@ -16,7 +16,6 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/openSUSE/bsgo/pkg/dispatcher"
-	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/publisher"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
@@ -79,13 +78,10 @@ func initControlPlaneStore(ctx context.Context, dbURL string) storage.Store {
 
 	pgStore, err := postgres.NewPostgresStore(connectCtx, dbURL)
 	if err == nil {
-		seedDefaultData(ctx, pgStore)
 		return pgStore
 	}
 
-	memStore := storage.NewMemoryStore()
-	seedDefaultData(ctx, memStore)
-	return memStore
+	return storage.NewMemoryStore()
 }
 
 func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store storage.Store) {
@@ -404,18 +400,4 @@ func startHTTPServer(ctx context.Context, httpPort int, store storage.Store) {
 		defer shutdownCancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
-}
-
-func seedDefaultData(ctx context.Context, store storage.Store) {
-	_, err := store.GetProject(ctx, "openSUSE:Factory")
-	if err == nil {
-		return
-	}
-
-	prj := &manifest.ProjectManifest{
-		SchemaVersion: "v1",
-		Project:       manifest.ProjectInfo{Name: "openSUSE:Factory", Title: "openSUSE Factory Distribution"},
-		Targets:       map[string]manifest.BuildTarget{"standard": {Architectures: []string{"x86_64", "aarch64"}}},
-	}
-	_ = store.CreateProject(ctx, prj)
 }

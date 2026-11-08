@@ -7,10 +7,8 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/nats-io/nats.go"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
 	"github.com/openSUSE/bsgo/pkg/storage"
@@ -181,6 +179,7 @@ func processSingleTrigger(ctx context.Context, store storage.Store, project, pkg
 
 	result := map[string]any{
 		"trigger_id": trigger.TriggerID,
+		"job_id":     trigger.TriggerID,
 		"project":    project,
 		"package":    pkgName,
 		"commit_sha": commit,
@@ -203,10 +202,12 @@ func processSingleTrigger(ctx context.Context, store storage.Store, project, pkg
 		natsURL = "nats://localhost:4222"
 	}
 
-	if nc, err := nats.Connect(natsURL, nats.Timeout(1*time.Second)); err == nil {
+	if nc, js, err := natsqueue.ConnectJetStream(natsURL); err == nil {
 		defer nc.Close()
+		_ = natsqueue.SetupStreams(ctx, js)
+
 		tData, _ := json.Marshal(trigger)
-		_ = nc.Publish(subject, tData)
+		_, _ = js.Publish(ctx, subject, tData)
 
 		statusMsg := map[string]any{
 			"job_id":       trigger.TriggerID,
@@ -217,7 +218,7 @@ func processSingleTrigger(ctx context.Context, store storage.Store, project, pkg
 			"architecture": flags.arch,
 		}
 		sData, _ := json.Marshal(statusMsg)
-		_ = nc.Publish("bsgo.status", sData)
+		_, _ = js.Publish(ctx, natsqueue.SubjectJobStatus, sData)
 		_ = nc.Flush()
 	}
 
