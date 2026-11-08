@@ -1,0 +1,147 @@
+---
+ Makefile.in        |    2 --
+ complete.c         |    6 +++---
+ doc/Makefile.in    |    2 +-
+ doc/readline.3     |   11 +++++++++++
+ examples/fileman.c |    2 +-
+ history.h          |    1 +
+ readline.h         |    3 ++-
+ support/shobj-conf |    5 +++--
+ 8 files changed, 22 insertions(+), 10 deletions(-)
+
+--- Makefile.in
++++ Makefile.in	2025-01-31 12:07:47.226717382 +0000
+@@ -258,10 +258,8 @@ uninstall-pc:
+ maybe-uninstall-pc: uninstall-pc
+ 
+ install-static: installdirs $(STATIC_LIBS) install-headers install-doc ${install_examples} install-pc
+-	-$(MV) $(DESTDIR)$(libdir)/libreadline.a $(DESTDIR)$(libdir)/libreadline.old
+ 	$(INSTALL_DATA) libreadline.a $(DESTDIR)$(libdir)/libreadline.a
+ 	-test -n "$(RANLIB)" && $(RANLIB) $(DESTDIR)$(libdir)/libreadline.a
+-	-$(MV) $(DESTDIR)$(libdir)/libhistory.a $(DESTDIR)$(libdir)/libhistory.old
+ 	$(INSTALL_DATA) libhistory.a $(DESTDIR)$(libdir)/libhistory.a
+ 	-test -n "$(RANLIB)" && $(RANLIB) $(DESTDIR)$(libdir)/libhistory.a
+ 
+--- complete.c
++++ complete.c	2025-01-31 12:15:33.358146338 +0000
+@@ -1206,7 +1206,7 @@ _rl_find_completion_word (int *fp, int *
+       /* We didn't find an unclosed quoted substring upon which to do
+          completion, so use the word break characters to find the
+          substring on which to complete. */
+-      while (rl_point = MB_PREVCHAR (rl_line_buffer, rl_point, MB_FIND_ANY))
++      while ((rl_point = MB_PREVCHAR (rl_line_buffer, rl_point, MB_FIND_ANY)))
+ 	{
+ 	  scan = rl_line_buffer[rl_point];
+ 
+@@ -2327,7 +2327,7 @@ rl_completion_matches (const char *text,
+   match_list = (char **)xmalloc ((match_list_size + 1) * sizeof (char *));
+   match_list[1] = (char *)NULL;
+ 
+-  while (string = (*entry_function) (text, matches))
++  while ((string = (*entry_function) (text, matches)))
+     {
+       if (RL_SIG_RECEIVED ())
+ 	{
+@@ -2396,7 +2396,7 @@ rl_username_completion_function (const c
+       setpwent ();
+     }
+ 
+-  while (entry = getpwent ())
++  while ((entry = getpwent ()))
+     {
+       /* Null usernames should result in all users as possible completions. */
+       if (namelen == 0 || (STREQN (username, entry->pw_name, namelen)))
+--- doc/Makefile.in
++++ doc/Makefile.in	2025-01-31 12:16:13.733404009 +0000
+@@ -115,7 +115,7 @@ DIST_DOCS = $(DVIOBJ) $(PSOBJ) $(HTMLOBJ
+ #	$(RM) $@
+ #	-${TEXI2PDF} $<
+ 
+-all: info html text pdf dvi
++all: info html
+ nodvi: info html text
+ everything: all ps
+ 
+--- doc/readline.3
++++ doc/readline.3	2025-01-31 12:18:24.554998839 +0000
+@@ -181,6 +181,14 @@ If that variable is unset, the default i
+ .IR \*~/.inputrc .
+ If that file  does not exist or cannot be read, \fBreadline\fP looks for
+ .IR /etc/inputrc .
++If both files
++.I ~/.inputrc
++and
++.I /etc/inputrc
++exist readline will read first
++.I /etc/inputrc
++and then
++.IR ~/.inputrc .
+ When a program that uses the \fBreadline\fP library starts up,
+ \fBreadline\fP reads the initialization file
+ and sets the key bindings and variables found there,
+@@ -1852,6 +1860,9 @@ VI Command Mode functions
+ .TP
+ .FN \*~/.inputrc
+ Individual \fBreadline\fP initialization file
++.TP
++.FN /etc/inputrc
++System \fBreadline\fP initialization file
+ .PD
+ .SH AUTHORS
+ Brian Fox, Free Software Foundation
+--- examples/fileman.c
++++ examples/fileman.c	2025-01-31 12:07:47.230717309 +0000
+@@ -333,7 +333,7 @@ com_stat (char *arg)
+ 
+   printf ("Statistics for `%s':\n", arg);
+ 
+-  printf ("%s has %d link%s, and is %lu byte%s in length.\n",
++  printf ("%s has %lu link%s, and is %lu byte%s in length.\n",
+ 	  arg,
+           finfo.st_nlink,
+           (finfo.st_nlink == 1) ? "" : "s",
+--- history.h
++++ history.h	2025-01-31 12:07:47.230717309 +0000
+@@ -32,6 +32,7 @@ extern "C" {
+ #  include "rlstdc.h"
+ #  include "rltypedefs.h"
+ #else
++#  include <stdio.h>
+ #  include <readline/rlstdc.h>
+ #  include <readline/rltypedefs.h>
+ #endif
+--- readline.h
++++ readline.h	2025-01-31 12:07:47.230717309 +0000
+@@ -32,6 +32,7 @@ extern "C" {
+ #  include "keymaps.h"
+ #  include "tilde.h"
+ #else
++#  include <stdio.h>
+ #  include <readline/rlstdc.h>
+ #  include <readline/rltypedefs.h>
+ #  include <readline/keymaps.h>
+@@ -498,7 +499,7 @@ extern char *rl_filename_completion_func
+ 
+ extern int rl_completion_mode (rl_command_func_t *);
+ 
+-#if 0
++#ifdef OLD_READLINE
+ /* Backwards compatibility (compat.c).  These will go away sometime. */
+ extern void free_undo_list (void);
+ extern int maybe_save_line (void);
+--- support/shobj-conf
++++ support/shobj-conf	2025-01-31 12:07:47.230717309 +0000
+@@ -126,10 +126,11 @@ sunos5*|solaris2*)
+ linux*-*|gnu*-*|k*bsd*-gnu-*|midnightbsd*|freebsd*|dragonfly*)
+ 	SHOBJ_CFLAGS=-fPIC
+ 	SHOBJ_LD='${CC}'
+-	SHOBJ_LDFLAGS='-shared -Wl,-soname,$@'
++	SHOBJ_LDFLAGS='-shared'
+ 
+-	SHLIB_XLDFLAGS='-Wl,-rpath,$(libdir) -Wl,-soname,`basename $@ $(SHLIB_MINOR)`'
++	SHLIB_XLDFLAGS='-Wl,-rpath-link,$(libdir) -Wl,-soname,`basename $@ $(SHLIB_MINOR)`'
+ 	SHLIB_LIBVERSION='$(SHLIB_LIBSUFF).$(SHLIB_MAJOR)$(SHLIB_MINOR)'
++	echo 'int main () { return 0; }' | gcc -ltinfo -o /dev/null -xc - > /dev/null 2>&1 && SHLIB_LIBS=-ltinfo || SHLIB_LIBS=-lncurses
+ 	;;
+ 
+ # Darwin/MacOS X

@@ -25,7 +25,58 @@ triggers, force package rebuilds, and manage queue priorities.`,
 	}
 
 	adminCmd.AddCommand(newAdminTriggerCmd(store, opts))
+	adminCmd.AddCommand(newAdminPurgeCmd(opts))
 	return adminCmd
+}
+
+func newAdminPurgeCmd(opts *OutputOptions) *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:     "purge-queues",
+		Aliases: []string{"purge"},
+		Short:   "Purge all jobs and trigger history from NATS JetStream",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := context.Background()
+			natsURL := os.Getenv("NATS_URL")
+			if natsURL == "" {
+				natsURL = "nats://localhost:4222"
+			}
+
+			nc, js, err := natsqueue.ConnectJetStream(natsURL)
+			if err != nil {
+				return fmt.Errorf("failed connecting to NATS: %w", err)
+			}
+			defer nc.Close()
+
+			streamNames := []string{
+				natsqueue.StreamTriggers,
+				natsqueue.StreamJobStatus,
+				natsqueue.StreamJobsPending,
+				natsqueue.StreamPublish,
+			}
+
+			var purged []string
+			for _, name := range streamNames {
+				str, err := js.Stream(ctx, name)
+				if err == nil {
+					_ = str.Purge(ctx)
+					purged = append(purged, name)
+				}
+			}
+
+			res := map[string]any{
+				"status":  "PURGED",
+				"streams": purged,
+			}
+			if opts.JSON {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(res)
+			}
+			fmt.Printf("✔ Successfully purged all jobs from NATS streams: %s\n", strings.Join(purged, ", "))
+			return nil
+		},
+	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Bypass confirmation")
+	return cmd
 }
 
 type adminTriggerFlags struct {

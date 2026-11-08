@@ -1,0 +1,11 @@
+# 0009: Kubernetes-Managed Control Plane and Dynamic Bare-Metal Worker Supervision
+
+We decided on an explicit architectural division between the control plane and compilation workers:
+1. **Control Plane on Kubernetes (gVisor Sandboxed)**: APIs (`bsgo-server`), publishers (`bsgo-publisher`), PostgreSQL, NATS JetStream, and Garage S3 run containerized on Kubernetes under gVisor isolation (ADR 0005) to benefit from native ingress, health-checking, secret management, and zero-downtime rolling updates.
+2. **Compilation Workers on Bare Metal with Dynamic Host Supervision**: Compilation workers run as native Go daemons (`bsgo-worker`) directly on bare-metal server fleets under systemd, completely bypassing the "Kubernetes tax" (Kubelet CPU overhead, container overlay network hops, `virt-launcher` pod startup delays of 5–12s, and cluster maintenance restarts disrupting multi-hour builds).
+
+Rather than adopting the legacy OBS pattern of statically slicing a physical server into fixed-size instances (e.g. 28 static 16 GB worker slots on a 512 GB host), each `bsgo-worker` host supervisor dynamically manages the machine's pooled CPU and memory budget:
+- **Dynamic Bin-Packing**: `bsgo-worker` tracks real-time available memory and vCPUs on the host. Light packages (`hello`, `which`) receive lightweight 2 GB / 2 vCPU micro-VMs, while heavy packages (`chromium`, `llvm`) are dynamically allocated 64 GB / 32 vCPUs without requiring dedicated "giant" host labels.
+- **Sterile Hardware Virtualization**: Each job executes inside an ephemeral QEMU/KVM virtual machine spawned with the exact resource sizing requested in the package manifest. Disk drives utilize `cache=unsafe,aio=io_uring` on dedicated NVMe storage (`ext4,nobarrier`) with volatile control state in `/run` (`tmpfs`), achieving RAM-disk I/O throughput while supporting massive compilation trees.
+- **Heterogeneous Architecture Agility**: Standalone Go worker daemons compile natively (`GOARCH=...`) and run uniformly across all openSUSE tier-1/tier-2 target architectures (x86_64, aarch64, ppc64le, s390x, and riscv64) without requiring Kubernetes or KubeVirt infrastructure on non-commodity architectures.
+- **Cloud Bursting**: Ephemeral KubeVirt or cloud worker instances remain an optional burst-scaling driver connecting to the NATS JetStream queue during mass rebuild spikes.

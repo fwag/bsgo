@@ -35,18 +35,27 @@ func (t *BuildTrigger) NormalizedPriority() string {
 }
 
 type BuildJob struct {
-	JobID         string               `json:"job_id"`
-	Project       string               `json:"project"`
-	Package       string               `json:"package"`
-	Target        string               `json:"target"`
-	Architecture  string               `json:"architecture"`
-	Priority      int32                `json:"priority"`
-	Reason        string               `json:"reason,omitempty"`
-	Source        SourceSpec           `json:"source"`
-	ChrootRPMs    []ChrootRPM          `json:"chroot_rpms"`
-	Resources     ResourceRequirements `json:"resources"`
-	Destination   ArtifactDestination  `json:"destination"`
-	CreatedAtUnix int64                `json:"created_at_unix"`
+	JobID         string                 `json:"job_id"`
+	Project       string                 `json:"project"`
+	Package       string                 `json:"package"`
+	Target        string                 `json:"target"`
+	Architecture  string                 `json:"architecture"`
+	Priority      int32                  `json:"priority"`
+	Reason        string                 `json:"reason,omitempty"`
+	Source        SourceSpec             `json:"source"`
+	Repositories  []RepositoryDependency `json:"repositories,omitempty"`
+	ChrootRPMs    []ChrootRPM            `json:"chroot_rpms"`
+	Resources     ResourceRequirements   `json:"resources"`
+	Destination   ArtifactDestination    `json:"destination"`
+	CreatedAtUnix int64                  `json:"created_at_unix"`
+}
+
+type RepositoryDependency struct {
+	Project  string `json:"project,omitempty"`
+	Target   string `json:"target,omitempty"`
+	Arch     string `json:"arch,omitempty"`
+	S3Prefix string `json:"s3_prefix,omitempty"`
+	URL      string `json:"url,omitempty"`
 }
 
 type SourceSpec struct {

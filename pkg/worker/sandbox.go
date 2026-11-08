@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,6 +116,7 @@ func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWrite
 
 func findPackageSources(pkgName, recipePath string) (string, string) {
 	candidates := []string{
+		filepath.Join("test/fixtures/demo-fast", pkgName),
 		filepath.Join("test/fixtures/demo", pkgName),
 		filepath.Join("test/fixtures", pkgName),
 	}
@@ -162,29 +164,34 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 
 	buildRoot := filepath.Join(jobDir, "build-root")
 	specFile := filepath.Join(jobDir, specName)
-	args := []string{"--clean", "--vm-type", "kvm", "--root", buildRoot, "--cachedir", cacheDir}
 
-	// 1. Pull upstream repository from Garage S3 if configured
-	if s.S3Storage != nil {
-		s3RepoDir := filepath.Join(s.WorkDir, "cache", "s3_repos", "openSUSE:Crypto", "standard", "x86_64")
-		s3Prefix := "repos/openSUSE:Crypto/standard/x86_64/"
-		count, err := s.S3Storage.DownloadPrefix(ctx, s3Prefix, s3RepoDir)
-		if err == nil && count > 0 {
-			args = append(args, "--repo", s3RepoDir)
-			fmt.Fprintf(w, "[%s] bsgo-worker: pulled S3 repository from s3://bsgo-artifacts/%s (%d files)\n",
-				time.Now().Format("15:04:05"), s3Prefix, count)
-		}
+	defer func() {
+		// Clean up heavy ephemeral VM disk images and chroot tree after artifact extraction
+		_ = os.Remove(filepath.Join(jobDir, "build-root.img"))
+		_ = os.Remove(filepath.Join(jobDir, "build-root.swap"))
+		_ = os.RemoveAll(buildRoot)
+	}()
+
+	memMB := int64(job.Resources.MemoryMB)
+	if memMB <= 0 {
+		memMB = 4096
+	}
+	diskMB := int64(job.Resources.DiskGB) * 1024
+	if diskMB <= 0 {
+		diskMB = 10240
 	}
 
-	repoBase := filepath.Join(s.WorkDir, "repos")
-	if repos, err := filepath.Glob(filepath.Join(repoBase, "*", "standard", "x86_64")); err == nil {
-		for _, r := range repos {
-			if _, err := os.Stat(filepath.Join(r, "repodata", "repomd.xml")); err == nil {
-				args = append(args, "--repo", r)
-				fmt.Fprintf(w, "[%s] bsgo-worker: attaching local upstream repository: %s\n", time.Now().Format("15:04:05"), r)
-			}
-		}
+	args := []string{
+		"--clean",
+		"--vm-type", "kvm",
+		"--root", buildRoot,
+		"--cachedir", cacheDir,
+		"--vm-memory", strconv.FormatInt(memMB, 10),
+		"--vm-disk-size", strconv.FormatInt(diskMB, 10),
 	}
+
+	repoArgs := s.ResolveJobRepositories(ctx, job, w)
+	args = append(args, repoArgs...)
 	args = append(args, "--repo", "zypp://")
 	args = append(args, specFile)
 
@@ -203,26 +210,136 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	return s.collectKVMArtifacts(buildRoot, jobDir, job, w, start)
 }
 
+func (s *ProcessSandbox) ResolveJobRepositories(ctx context.Context, job *v1.BuildJob, w io.Writer) []string {
+	attachedRepos := make(map[string]bool)
+	args := s.attachJobRepositories(ctx, job.Repositories, attachedRepos, w)
+
+	arch := job.Architecture
+	if arch == "" {
+		arch = "x86_64"
+	}
+	target := job.Target
+	if target == "" {
+		target = "standard"
+	}
+
+	// In cloud-native operation with S3 configured, remote projects must come from S3.
+	// Only discover local disk repos if S3 is nil or to attach the job's own local repository.
+	if s.S3Storage == nil {
+		localArgs := s.discoverLocalRepositories(arch, target, attachedRepos, w)
+		args = append(args, localArgs...)
+	} else {
+		// Attach own project's local repo if it has completed local builds
+		ownRepo := filepath.Join(s.WorkDir, "repos", job.Project, target, arch)
+		if !attachedRepos[ownRepo] {
+			if _, err := os.Stat(filepath.Join(ownRepo, "repodata", "repomd.xml")); err == nil {
+				args = append(args, "--repo", ownRepo)
+				attachedRepos[ownRepo] = true
+			}
+		}
+	}
+	return args
+}
+
+func (s *ProcessSandbox) attachJobRepositories(ctx context.Context, repos []v1.RepositoryDependency, attached map[string]bool, w io.Writer) []string {
+	var args []string
+	for _, repo := range repos {
+		if repo.S3Prefix != "" && s.S3Storage != nil {
+			if s3Arg := s.pullS3Repository(ctx, repo.S3Prefix, attached, w); s3Arg != "" {
+				args = append(args, "--repo", s3Arg)
+			}
+		}
+		if repo.URL != "" {
+			args = append(args, "--repo", repo.URL)
+			fmt.Fprintf(w, "[%s] bsgo-worker: attaching external repository: %s\n",
+				time.Now().Format("15:04:05"), repo.URL)
+		}
+	}
+	return args
+}
+
+func (s *ProcessSandbox) pullS3Repository(ctx context.Context, prefix string, attached map[string]bool, w io.Writer) string {
+	cleanPrefix := strings.Trim(filepath.Clean(prefix), "/") + "/"
+	s3RepoDir := filepath.Join(s.WorkDir, "cache", "s3_repos", filepath.Clean(cleanPrefix))
+	count, err := s.S3Storage.DownloadPrefix(ctx, cleanPrefix, s3RepoDir)
+	if err != nil {
+		fmt.Fprintf(w, "[%s] bsgo-worker: S3 download error for s3://bsgo-artifacts/%s: %v\n",
+			time.Now().Format("15:04:05"), cleanPrefix, err)
+		return ""
+	}
+	if count == 0 {
+		fmt.Fprintf(w, "[%s] bsgo-worker: S3 repository empty: s3://bsgo-artifacts/%s\n",
+			time.Now().Format("15:04:05"), cleanPrefix)
+		return ""
+	}
+
+	attached[s3RepoDir] = true
+	fmt.Fprintf(w, "[%s] bsgo-worker: pulled S3 repository from s3://bsgo-artifacts/%s (%d files)\n",
+		time.Now().Format("15:04:05"), cleanPrefix, count)
+	return s3RepoDir
+}
+
+func (s *ProcessSandbox) discoverLocalRepositories(arch, target string, attached map[string]bool, w io.Writer) []string {
+	repoBase := filepath.Join(s.WorkDir, "repos")
+	repos, err := filepath.Glob(filepath.Join(repoBase, "*", target, arch))
+	if err != nil {
+		return nil
+	}
+
+	var args []string
+	for _, r := range repos {
+		if attached[r] {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(r, "repodata", "repomd.xml")); err == nil {
+			args = append(args, "--repo", r)
+			attached[r] = true
+			fmt.Fprintf(w, "[%s] bsgo-worker: attaching local upstream repository: %s\n",
+				time.Now().Format("15:04:05"), r)
+		}
+	}
+	return args
+}
+
 func (s *ProcessSandbox) collectKVMArtifacts(buildRoot, jobDir string, job *v1.BuildJob, w io.Writer, start time.Time) (*ExecutionResult, error) {
 	pkgDir := filepath.Join(jobDir, "packages")
 	_ = os.MkdirAll(pkgDir, 0750)
 
-	localRepo := filepath.Join(s.WorkDir, "repos", job.Project, "standard", "x86_64")
+	target := job.Target
+	if target == "" {
+		target = "standard"
+	}
+	arch := job.Architecture
+	if arch == "" {
+		arch = "x86_64"
+	}
+
+	localRepo := filepath.Join(s.WorkDir, "repos", job.Project, target, arch)
 	_ = os.MkdirAll(localRepo, 0750)
 
-	pattern := filepath.Join(buildRoot, "usr/src/packages/RPMS/*/*.rpm")
-	artifacts := collectRPMsFromPattern(pattern, pkgDir, job.Project, job.Package, "extracted KVM RPM artifact", w)
+	var artifacts []v1.ChrootRPM
+	patterns := []string{
+		filepath.Join(buildRoot, ".build.packages/RPMS/*/*.rpm"),
+		filepath.Join(buildRoot, "usr/src/packages/RPMS/*/*.rpm"),
+	}
+	for _, p := range patterns {
+		arts := collectRPMsFromPattern(p, pkgDir, job.Project, job.Package, "extracted KVM RPM artifact", w)
+		artifacts = append(artifacts, arts...)
+	}
 
 	for _, a := range artifacts {
 		src := filepath.Join(pkgDir, a.Filename)
 		dest := filepath.Join(localRepo, a.Filename)
+		// #nosec G304 -- reading RPM from validated pkgDir sandbox
 		data, err := os.ReadFile(src)
 		if err == nil {
+			// #nosec G703 G306 -- publishing RPM artifact with read permission
 			_ = os.WriteFile(dest, data, 0644)
 		}
 	}
 
 	fmt.Fprintf(w, "[%s] bsgo-worker: updating local repository repodata via createrepo_c\n", time.Now().Format("15:04:05"))
+	// #nosec G204 -- createrepo_c called on validated local repo directory
 	crCmd := exec.Command("createrepo_c", localRepo)
 	crCmd.Stdout = w
 	crCmd.Stderr = w
@@ -230,7 +347,7 @@ func (s *ProcessSandbox) collectKVMArtifacts(buildRoot, jobDir string, job *v1.B
 
 	// Sync generated RPMs and repodata to Garage S3
 	if s.S3Storage != nil {
-		s3Prefix := fmt.Sprintf("repos/%s/standard/x86_64/", job.Project)
+		s3Prefix := fmt.Sprintf("repos/%s/%s/%s/", job.Project, target, arch)
 		_ = filepath.Walk(localRepo, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				return nil

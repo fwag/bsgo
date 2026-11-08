@@ -1,0 +1,49 @@
+---
+ builtins/printf.def |   13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+--- builtins/printf.def
++++ builtins/printf.def	2025-01-31 13:35:58.961286087 +0000
+@@ -56,6 +56,7 @@ error occurs.
+ $END
+ 
+ #include <config.h>
++#include <locale.h>
+ 
+ #include "../bashtypes.h"
+ 
+@@ -783,7 +784,7 @@ printf_builtin (WORD_LIST *list)
+ 	    case 'A':
+ #endif
+ 	      {
+-		char *f;
++		char *f, *lce = getenv("LC_NUMERIC"), *lcl = setlocale(LC_NUMERIC, NULL);
+ 
+ 	      	if (use_Lmod || posixly_correct == 0)
+ 		  {
+@@ -791,7 +792,12 @@ printf_builtin (WORD_LIST *list)
+ 
+ 		    p = getfloatmax ();
+ 		    f = mklong (start, FLOATMAX_CONV, FLOATMAX_CONVLEN);
++
++		    if (lce && lcl) setlocale(LC_NUMERIC, lce);
++
+ 		    PF (f, p);
++
++		    if (lce && lcl) setlocale(LC_NUMERIC, lcl);
+ 		  }
+ 		else		/* posixly_correct */
+ 		  {
+@@ -799,7 +805,12 @@ printf_builtin (WORD_LIST *list)
+ 
+ 		    p = getdouble ();
+ 		    f = mklong (start, "", 0);
++
++		    if (lce && lcl) setlocale(LC_NUMERIC, lce);
++
+ 		    PF (f, p);
++
++		    if (lce && lcl) setlocale(LC_NUMERIC, lcl);
+ 		  }
+ 
+ 		break;

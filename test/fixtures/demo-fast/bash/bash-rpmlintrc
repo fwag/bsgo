@@ -1,0 +1,2 @@
+addFilter(".*call-to-mktemp.*/usr/bin/bash.*")
+addFilter(".*W:.hidden-file-or-dir.*/usr/etc/skel/\..*")

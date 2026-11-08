@@ -311,3 +311,59 @@ func TestProcessSandboxSLSAProvenanceGeneration(t *testing.T) {
 		t.Errorf("expected package sample-app in build definition external parameters")
 	}
 }
+
+func TestProcessSandboxDynamicRepositories(t *testing.T) {
+	tempDir := t.TempDir()
+	sandbox := &worker.ProcessSandbox{WorkDir: tempDir}
+
+	// Create local mock repository with repomd.xml
+	localRepo := filepath.Join(tempDir, "repos", "upstream-dep", "standard", "x86_64", "repodata")
+	if err := os.MkdirAll(localRepo, 0750); err != nil {
+		t.Fatalf("failed to create localRepo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(localRepo, "repomd.xml"), []byte("<repomd/>"), 0600); err != nil {
+		t.Fatalf("failed to write repomd.xml: %v", err)
+	}
+
+	job := &v1.BuildJob{
+		JobID:        "job-dyn-repo-test",
+		Project:      "consumer-proj",
+		Package:      "app",
+		Target:       "standard",
+		Architecture: "x86_64",
+		Repositories: []v1.RepositoryDependency{
+			{URL: "https://download.opensuse.org/distribution/leap"},
+		},
+	}
+
+	var buf strings.Builder
+	args := sandbox.ResolveJobRepositories(context.Background(), job, &buf)
+
+	// Verify that:
+	// 1. External URL from job was attached
+	// 2. Local repository from repos/ was discovered and attached
+	// 3. No hardcoded repos were forced
+	hasExternal := false
+	hasLocal := false
+	for i, arg := range args {
+		if arg == "--repo" && i+1 < len(args) {
+			val := args[i+1]
+			if val == "https://download.opensuse.org/distribution/leap" {
+				hasExternal = true
+			}
+			if strings.Contains(val, "upstream-dep") {
+				hasLocal = true
+			}
+			if strings.Contains(val, "openSUSE:Crypto") {
+				t.Errorf("unexpected hardcoded openSUSE:Crypto found in args: %v", args)
+			}
+		}
+	}
+
+	if !hasExternal {
+		t.Errorf("expected external repo in args, got %v", args)
+	}
+	if !hasLocal {
+		t.Errorf("expected local upstream-dep repo in args, got %v", args)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -37,9 +38,10 @@ func NewS3Storage(ctx context.Context, endpoint, region, bucket, accessKey, secr
 
 	client := awss3.NewFromConfig(cfg, func(o *awss3.Options) {
 		if endpoint != "" {
-			o.BaseEndpoint = aws.String(endpoint)
+			normalizedEndpoint := strings.Replace(endpoint, "://localhost:", "://127.0.0.1:", 1)
+			o.BaseEndpoint = aws.String(normalizedEndpoint)
+			o.UsePathStyle = true
 		}
-		o.UsePathStyle = true
 	})
 
 	return &S3Storage{
@@ -90,6 +92,31 @@ func (s *S3Storage) DownloadFile(ctx context.Context, s3Key, localPath string) e
 
 	_, err = io.Copy(outFile, resp.Body)
 	return err
+}
+
+func (s *S3Storage) GetObject(ctx context.Context, s3Key string) (io.ReadCloser, int64, string, error) {
+	resp, err := s.client.GetObject(ctx, &awss3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s3Key),
+	})
+	if err != nil {
+		return nil, 0, "", fmt.Errorf("failed to get s3://%s/%s: %w", s.bucket, s3Key, err)
+	}
+
+	var size int64
+	if resp.ContentLength != nil {
+		size = *resp.ContentLength
+	}
+	var contentType string
+	if resp.ContentType != nil {
+		contentType = *resp.ContentType
+	}
+
+	return resp.Body, size, contentType, nil
+}
+
+func (s *S3Storage) GetRepoFile(ctx context.Context, s3Key string) (io.ReadCloser, int64, string, error) {
+	return s.GetObject(ctx, s3Key)
 }
 
 func (s *S3Storage) DownloadPrefix(ctx context.Context, s3Prefix, localDir string) (int, error) {

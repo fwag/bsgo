@@ -1,0 +1,20 @@
+schema_version: "v1"
+package:
+  name: "readline"
+  title: "GNU Readline Line Editing Library"
+  description: "The GNU Readline library provides a set of functions for use by applications that allow users to edit command lines."
+source:
+  git: "https://code.opensuse.org/package/readline"
+  branch: "factory"
+  commit: "8.3.6"
+  recipe: "readline.spec"
+build:
+  enabled: true
+  targets:
+    standard: true
+  architectures:
+    standard: ["x86_64"]
+resources:
+  memory: "4Gi"
+  vcpus: 2
+  disk: "10Gi"

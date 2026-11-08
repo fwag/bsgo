@@ -1,0 +1,13 @@
+schema_version: "v1"
+project:
+  name: "Base:System"
+  title: "Core Operating System Base Libraries"
+  description: "Foundational userland libraries including readline and terminal utilities."
+targets:
+  standard:
+    architectures: ["x86_64"]
+    flags:
+      build: true
+      publish: true
+      rebuild: "transitive"
+      block: "all"

@@ -15,7 +15,10 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/openSUSE/bsgo/pkg/auth"
 	"github.com/openSUSE/bsgo/pkg/dispatcher"
+	"github.com/openSUSE/bsgo/pkg/gateway"
+	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/publisher"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
@@ -24,6 +27,7 @@ import (
 	"github.com/openSUSE/bsgo/pkg/solv"
 	"github.com/openSUSE/bsgo/pkg/storage"
 	"github.com/openSUSE/bsgo/pkg/storage/postgres"
+	"github.com/openSUSE/bsgo/pkg/storage/s3"
 )
 
 func main() {
@@ -102,7 +106,7 @@ func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store stora
 	sched := scheduler.NewScheduler(store, solverPool, pub, scheduler.Config{S3Bucket: "bsgo-artifacts"})
 	cascade := scheduler.NewCascadeEngine(store, solverPool, pub, gatekeeper)
 
-	subscribeTriggers(ctx, nc, sched, disp)
+	subscribeTriggers(ctx, nc, sched, disp, store)
 	subscribePublicationEvents(ctx, nc, cascade)
 	startDispatchLoop(ctx, disp, nc)
 }
@@ -289,7 +293,7 @@ func subscribePublicationEvents(ctx context.Context, nc *nats.Conn, cascade *sch
 	})
 }
 
-func subscribeTriggers(ctx context.Context, nc *nats.Conn, sched *scheduler.Scheduler, disp *dispatcher.Dispatcher) {
+func subscribeTriggers(ctx context.Context, nc *nats.Conn, sched *scheduler.Scheduler, disp *dispatcher.Dispatcher, store storage.Store) {
 	_, _ = nc.Subscribe("bsgo.triggers.>", func(msg *nats.Msg) {
 		var trig v1.BuildTrigger
 		if err := json.Unmarshal(msg.Data, &trig); err != nil {
@@ -309,7 +313,7 @@ func subscribeTriggers(ctx context.Context, nc *nats.Conn, sched *scheduler.Sche
 
 		jobs, err := sched.ProcessTrigger(ctx, &trig)
 		if err != nil {
-			jobs = []*v1.BuildJob{createFallbackJob(&trig)}
+			jobs = []*v1.BuildJob{createFallbackJob(ctx, store, &trig)}
 		}
 
 		enqueueDispatchedJobs(nc, disp, jobs)
@@ -362,18 +366,85 @@ func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nat
 	}()
 }
 
-func createFallbackJob(trig *v1.BuildTrigger) *v1.BuildJob {
+func createFallbackJob(ctx context.Context, store storage.Store, trig *v1.BuildTrigger) *v1.BuildJob {
+	arch := trig.Architecture
+	if arch == "" {
+		arch = "x86_64"
+	}
+	targetName := trig.Target
+	if targetName == "" {
+		targetName = "standard"
+	}
+
+	repos := resolveFallbackRepositories(ctx, store, trig.Project, targetName, arch)
+
 	return &v1.BuildJob{
 		JobID:        trig.TriggerID,
 		Project:      trig.Project,
 		Package:      trig.Package,
-		Architecture: "x86_64",
+		Target:       targetName,
+		Architecture: arch,
 		Priority:     50,
+		Repositories: repos,
 		Destination: v1.ArtifactDestination{
 			S3Bucket: "bsgo-artifacts",
 			S3Prefix: fmt.Sprintf("artifacts/%s/%s/", trig.Project, trig.Package),
 		},
+		CreatedAtUnix: time.Now().Unix(),
 	}
+}
+
+func resolveFallbackRepositories(ctx context.Context, store storage.Store, project, targetName, arch string) []v1.RepositoryDependency {
+	var repos []v1.RepositoryDependency
+	if store == nil {
+		return appendDefaultRepo(repos, project, targetName, arch)
+	}
+
+	prj, err := store.GetProject(ctx, project)
+	if err != nil || prj == nil {
+		return appendDefaultRepo(repos, project, targetName, arch)
+	}
+
+	targetCfg, exists := prj.Targets[targetName]
+	if !exists {
+		return appendDefaultRepo(repos, project, targetName, arch)
+	}
+
+	for _, dep := range targetCfg.Dependencies {
+		if r := buildDependencyRepo(dep, targetName, arch); r != nil {
+			repos = append(repos, *r)
+		}
+	}
+
+	return appendDefaultRepo(repos, project, targetName, arch)
+}
+
+func buildDependencyRepo(dep manifest.DependencySource, defaultTarget, arch string) *v1.RepositoryDependency {
+	if dep.Project != "" {
+		depTarget := dep.Target
+		if depTarget == "" {
+			depTarget = defaultTarget
+		}
+		return &v1.RepositoryDependency{
+			Project:  dep.Project,
+			Target:   depTarget,
+			Arch:     arch,
+			S3Prefix: fmt.Sprintf("repos/%s/%s/%s/", dep.Project, depTarget, arch),
+		}
+	}
+	if dep.URL != "" {
+		return &v1.RepositoryDependency{URL: dep.URL}
+	}
+	return nil
+}
+
+func appendDefaultRepo(repos []v1.RepositoryDependency, project, targetName, arch string) []v1.RepositoryDependency {
+	return append(repos, v1.RepositoryDependency{
+		Project:  project,
+		Target:   targetName,
+		Arch:     arch,
+		S3Prefix: fmt.Sprintf("repos/%s/%s/%s/", project, targetName, arch),
+	})
 }
 
 func startHTTPServer(ctx context.Context, httpPort int, store storage.Store) {
@@ -382,6 +453,11 @@ func startHTTPServer(ctx context.Context, httpPort int, store storage.Store) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	})
+
+	repoStorage := initRepoStorage(ctx)
+	authorizer := auth.NewAuthorizer()
+	repoServer := gateway.NewRepoServer(repoStorage, authorizer)
+	mux.Handle("/repos/", repoServer)
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", httpPort),
@@ -400,4 +476,21 @@ func startHTTPServer(ctx context.Context, httpPort int, store storage.Store) {
 		defer shutdownCancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
+}
+
+func initRepoStorage(ctx context.Context) gateway.RepoStorage {
+	s3Endpoint := os.Getenv("S3_ENDPOINT")
+	if s3Endpoint == "" {
+		s3Endpoint = "http://localhost:3900"
+	}
+	s3Bucket := os.Getenv("S3_BUCKET")
+	if s3Bucket == "" {
+		s3Bucket = "bsgo-artifacts"
+	}
+
+	if s3Storage, err := s3.NewS3Storage(ctx, s3Endpoint, "garage", s3Bucket, "", ""); err == nil {
+		return s3Storage
+	}
+
+	return gateway.NewDiskRepoStorage("/tmp/bsgo-artifacts")
 }

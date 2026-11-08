@@ -351,3 +351,66 @@ func TestSchedulerProcessCommitBatch(t *testing.T) {
 		t.Fatalf("expected 2 jobs from commit batch, got %d", len(jobs))
 	}
 }
+
+func TestSchedulerResolvesRepositoryDependencies(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+
+	prj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "downstream-prj"},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {
+				Architectures: []string{"x86_64"},
+				Flags:         manifest.TargetFlags{Build: true},
+				Dependencies: []manifest.DependencySource{
+					{Project: "upstream-crypto", Target: "standard"},
+					{URL: "https://download.opensuse.org/repo"},
+				},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, prj)
+
+	pkg := &manifest.PackageManifest{
+		SchemaVersion: "v1",
+		Package:       manifest.PackageInfo{Name: "downstream-app"},
+		Source:        manifest.PackageSource{Git: "https://git/downstream-app", Branch: "main"},
+		Build:         manifest.PackageBuild{Enabled: true},
+	}
+	_ = store.UpsertPackage(ctx, "downstream-prj", pkg)
+
+	solver := &mockSolver{
+		pkgs: []solv.ResolvedPackage{{Name: "base", EVR: "1.0-1", Arch: "x86_64"}},
+	}
+	pub := scheduler.NewNatsPublisher(func(_ context.Context, _ string, _ []byte) error { return nil })
+	sched := scheduler.NewScheduler(store, solver, pub, scheduler.Config{S3Bucket: "artifacts"})
+
+	trigger := v1.NewTrigger("downstream-prj", "downstream-app", "https://git/downstream-app", "c0ffee", "main", "alice")
+	jobs, err := sched.ProcessTrigger(ctx, trigger)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs))
+	}
+
+	job := jobs[0]
+	if len(job.Repositories) != 3 {
+		t.Fatalf("expected 3 repositories (upstream, external URL, self), got %d", len(job.Repositories))
+	}
+
+	// 1. Upstream S3 repo
+	if job.Repositories[0].Project != "upstream-crypto" || job.Repositories[0].S3Prefix != "repos/upstream-crypto/standard/x86_64/" {
+		t.Errorf("unexpected upstream repo: %+v", job.Repositories[0])
+	}
+	// 2. External URL
+	if job.Repositories[1].URL != "https://download.opensuse.org/repo" {
+		t.Errorf("unexpected external repo: %+v", job.Repositories[1])
+	}
+	// 3. Intra-project repo
+	if job.Repositories[2].Project != "downstream-prj" || job.Repositories[2].S3Prefix != "repos/downstream-prj/standard/x86_64/" {
+		t.Errorf("unexpected self repo: %+v", job.Repositories[2])
+	}
+}

@@ -1,0 +1,90 @@
+---
+ lib/sh/tmpfile.c |   42 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 42 insertions(+)
+
+--- lib/sh/tmpfile.c
++++ lib/sh/tmpfile.c	2025-01-31 14:26:40.473201839 +0000
+@@ -36,6 +36,14 @@
+ #include <stdio.h>
+ #include <errno.h>
+ 
++#if defined(__linux__)
++#  include <sys/statfs.h>
++#  include <unistd.h>
++#  ifndef  TMPFS_MAGIC
++#    define TMPFS_MAGIC 0x01021994
++#  endif
++#endif
++
+ #include <shell.h>
+ 
+ #ifndef errno
+@@ -71,6 +79,8 @@ static unsigned long filenum = 1L;
+ static char *
+ get_sys_tmpdir (void)
+ {
++  static int doshm;
++
+   if (sys_tmpdir)
+     return sys_tmpdir;
+ 
+@@ -97,6 +107,31 @@ get_sys_tmpdir (void)
+   return sys_tmpdir;
+ }
+ 
++#if defined(__linux__)
++static int
++emergency_sys_tmpdir ()
++{
++  static char *shm = "/dev/shm";
++  static size_t pgsz;
++  struct statfs fs;
++  static int doshm;
++
++  if (getuid() != 0)
++    return 0;
++
++  if (doshm)
++    return 0;
++
++  doshm++;
++
++  if (statfs(shm, &fs) < 0 || fs.f_type != TMPFS_MAGIC || eaccess(shm, W_OK|X_OK))
++    return 0;
++
++  sys_tmpdir = shm;
++  return 1;
++}
++#endif
++
+ static char *
+ get_tmpdir (int flags)
+ {
+@@ -214,6 +249,7 @@ sh_mktmpfd (const char *nameroot, int fl
+   const char *lroot;
+   int fd, tdlen;
+   
++enospace:
+   filename = (char *)xmalloc (PATH_MAX + 1);
+   tdir = get_tmpdir (flags);
+   tdlen = strlen (tdir);
+@@ -243,6 +279,10 @@ sh_mktmpfd (const char *nameroot, int fl
+       free (filename);
+       filename = NULL;
+     }
++
++  if (fd < 0 && errno == ENOSPC && emergency_sys_tmpdir())
++    goto enospace;
++
+   if (namep)
+     *namep = filename;
+ 
+@@ -282,6 +322,8 @@ sh_mktmpfd (const char *nameroot, int fl
+       free (filename);
+       filename = NULL;
+     }
++  if (fd < 0 && errno == ENOSPC && emergency_sys_tmpdir())
++    goto enospace;
+ 
+   if (namep)
+     *namep = filename;

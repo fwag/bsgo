@@ -1,0 +1,20 @@
+---
+ bashline.c |    6 ++++++
+ 1 file changed, 6 insertions(+)
+
+--- bashline.c
++++ bashline.c	2025-01-31 13:50:00.705768344 +0000
+@@ -2259,6 +2259,13 @@ globword:
+ 	    }
+ 	}
+ 
++      if (GLOB_FAILED (glob_matches) || glob_matches == 0)
++	{
++	  glob_ignore_case = old_glob_ignore_case;
++	  glob_matches = (char **)NULL;
++	  return ((char *)NULL);
++	}
++
+       while (val = glob_matches[local_index++])
+         {
+ 	  if (executable_or_directory (val))

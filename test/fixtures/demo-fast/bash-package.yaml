@@ -1,0 +1,20 @@
+schema_version: "v1"
+package:
+  name: "bash"
+  title: "GNU Bourne Again Shell"
+  description: "The GNU Bourne Again shell (Bash) is an sh-compatible command language interpreter."
+source:
+  git: "https://code.opensuse.org/package/bash"
+  branch: "factory"
+  commit: "5.3.20"
+  recipe: "bash.spec"
+build:
+  enabled: true
+  targets:
+    standard: true
+  architectures:
+    standard: ["x86_64"]
+resources:
+  memory: "4Gi"
+  vcpus: 2
+  disk: "15Gi"

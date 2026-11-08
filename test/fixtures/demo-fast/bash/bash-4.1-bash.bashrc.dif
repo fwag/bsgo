@@ -1,0 +1,74 @@
+|BNC#577221 - Non-login, interactive bash executes /etc/bash.bashrc
+|             yet not documented
+|
+|Jared Hudson    2010-02-04 22:47:01 UTC
+|
+|bash-3.2-147.4.1 executes /etc/bash.bashrc when invoking an interactive,
+|non-login shell yet this is not documented. The man page should mention
+|this in its INVOCATION section. I've checked the source code and it's
+|hard coded to execute /etc/bash.bashrc (SYS_BASHRC macro)
+|
+|BSC#959755 - man page on bash needs some clarification.
+|
+|Werner Fink	2016-08-01 12:40:06 UTC
+|
+|Make clear that the files /etc/profile as well as /etc/bash.bashrc may source
+|other files as well even if the bash does not.
+|
+---
+ doc/bash.1 |   22 +++++++++++++++++++---
+ 1 file changed, 19 insertions(+), 3 deletions(-)
+
+--- doc/bash.1
++++ doc/bash.1	2025-01-31 14:07:19.026636616 +0000
+@@ -372,6 +372,8 @@ and executes commands from the first one
+ The
+ .B \-\-noprofile
+ option may be used when the shell is started to inhibit this behavior.
++Please note that the file \fI/etc/profile\fP includes an autodetection shell
++code wether it has to source \fI/etc/bash.bashrc\fP as well as \fI~/.bashrc\fP.
+ .PP
+ When an interactive login shell exits,
+ or a non-interactive login shell executes the \fBexit\fP builtin command,
+@@ -383,8 +385,10 @@ if it exists.
+ When an interactive shell that is not a login shell is started,
+ .B bash
+ reads and executes commands from 
+-.FN \*~/.bashrc ,
+-if that file exists.
++.FN /etc/bash.bashrc
++then
++.FN \*~/.bashrc
++when those files exist and are readable.
+ The
+ .B \-\-norc
+ option inhibits this behavior.
+@@ -392,6 +396,16 @@ The \fB\-\-rcfile\fP \fIfile\fP option c
+ .B bash
+ to use \fIfile\fP instead of
+ .FN \*~/.bashrc .
++Please note that the file
++.FN /etc/bash.bashrc
++includes an autodetection shell
++code wether it is used for by a remote OpenSSH SSH client like
++.BR ssh (1)
++or
++.BR slogin (1)
++to source the local
++.FN /etc/profile
++if not already done.
+ .PP
+ When
+ .B bash
+@@ -481,8 +495,10 @@ If
+ .B bash
+ determines it is being run non-interactively in this fashion,
+ it reads and executes commands from
++.FN /etc/bash.bashrc
++then
+ .FN \*~/.bashrc ,
+-if that file exists and is readable.
++when those file exists and is readable.
+ .B Bash
+ does not read this file if invoked as \fBsh\fP.
+ The

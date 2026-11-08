@@ -32,6 +32,7 @@ Deliver an architectural specification, core schemas, and prototype contracts fo
 - [ADR 0006: GitOps Project Declarations with API-Driven Merkle Commits](../../docs/adr/0006-gitops-project-declarations-with-api-driven-merkle-commits-and-postgres-projection.md): Git Merkle-tree for tamper-proof auditability, projected to PostgreSQL, mutated via user-friendly API commits.
 - [ADR 0007: Scheduler-Dispatcher Split and NATS JetStream Topology](../../docs/adr/0007-scheduler-dispatcher-split-and-nats-topology.md): Dedicated Go Dispatcher for constraint matching and cache affinity; NATS JetStream for durable queues, Core NATS for ephemeral live log streaming.
 - [ADR 0008: Database-Managed Project Access Control and Descoped Package Ownership](../../docs/adr/0008-database-managed-acls-and-global-package-ownership.md): Authentik OIDC + JIT user provisioning, PostgreSQL-managed project ACLs, package-level maintainers descoped.
+- [ADR 0009: Kubernetes-Managed Control Plane and Dynamic Bare-Metal Worker Supervision](../../docs/adr/0009-kubernetes-control-plane-and-dynamic-bare-metal-worker-supervision.md): Control plane in Kubernetes with gVisor; dynamic bare-metal host supervisor daemons bin-packing RAM/vCPUs across KVM micro-VMs without static slot waste.
 - [01: Research libsolv CGO Integration](issues/01-research-libsolv-cgo.md): Use deterministic greedy expander from `BSSolv.xs` (not standard SAT `solver_solve()`), store binary `.solv` blobs in PostgreSQL loaded via `fmemopen`, and isolate per-worker `Pool`s pinned with `runtime.LockOSThread()`.
 - [02: Research obs-build Worker Execution Contract](issues/02-research-obs-build-worker.md): Standardize worker supervisor on `/usr/lib/build/build` CLI contract with `.build.rpmlist` pre-computed from S3, disposable QCOW2 overlays, and standardized exit codes (0/1/2/3/4/9).
 - [03: Research S3 RPM Repodata Generation](issues/03-research-s3-repodata.md): Subprocess `createrepo_c` with `--update --recycle-pkglist` on metadata-only S3 syncs, serialized via NATS partitioned subjects and PostgreSQL advisory locks, published atomically via `repomd.xml`.
@@ -49,6 +50,12 @@ Deliver an architectural specification, core schemas, and prototype contracts fo
 - [20: Supply Chain: SLSA 1.2 Provenance Attestation Pipeline](issues/20-slsa-provenance-attestation.md) (resolved)
 - [21: Signer: obs-signd Protocol Client & Hardware Security Module (HSM) Service](issues/21-signer-obs-signd-and-pkcs11-hsm-service.md) (resolved)
 - [22: Signer: bsgo-signd Bare-Metal Daemon, Database Keys & EFI Signing](issues/22-signd-daemon-master-keys-and-efi-signing.md) (resolved)
+- [23: Publisher: Standalone bsgo-publisher Daemon & Worker Decoupling](issues/23-publisher-standalone-daemon-and-worker-decoupling.md)
+- [24: Publisher: Sub-Repository Channel Partitioning (Standard, Debuginfo, Sources)](issues/24-publisher-sub-repository-partitioning.md)
+- [25: Publisher: Metadata Enrichment via modifyrepo_c (AppStream & Errata/CVE)](issues/25-publisher-metadata-enrichment-modifyrepo.md)
+- [26: Publisher: Debounce Batching, Tombstones & S3 Metadata Garbage Collection](issues/26-publisher-debounce-batching-and-metadata-gc.md)
+- [27: Worker: Ephemeral Storage (tmpfs/RAM Disk) & KVM Performance Hardening](issues/27-worker-ephemeral-ramdisk-and-kvm-performance-hardening.md)
+- [28: Worker: Dynamic Multi-Job Host Supervision & Resource Bin-Packing](issues/28-worker-dynamic-resource-allocation-and-host-supervisor.md)
 
 ## Not yet specified
 
@@ -60,6 +67,7 @@ Deliver an architectural specification, core schemas, and prototype contracts fo
 ## Out of scope
 
 - **Legacy WebUI & Frontend**: No Rails, no frontend UI (delegated to modern Git forges and CLI).
+- **Delta RPMs (DRPMs)**: Omitted in accordance with modern distribution standards (deprecated in Fedora 38+, DNF5, and openSUSE Tumbleweed in favor of zstd and zchunk).
 - **Legacy XML API / osc Protocol**: Clean break to modern REST/gRPC; no legacy XML backward compatibility layer.
 - **Server-Side VCS & Merge Request Engine**: OBS no longer acts as a Git forge or code review tool.
 - **Maintenance Incident & QAM Workflows**: Removed in favor of standard Git branch/tag promotion pipelines.

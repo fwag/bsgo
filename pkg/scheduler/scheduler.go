@@ -76,7 +76,7 @@ func (s *Scheduler) ProcessTrigger(ctx context.Context, trigger *v1.BuildTrigger
 			continue
 		}
 
-		targetJobs, err := s.processTarget(ctx, trigger, targetName, targetCfg.Architectures, pkg)
+		targetJobs, err := s.processTarget(ctx, trigger, targetName, targetCfg, pkg)
 		if err != nil {
 			return nil, err
 		}
@@ -120,9 +120,9 @@ func (s *Scheduler) isTargetEligible(trigger *v1.BuildTrigger, pkg *manifest.Pac
 	return true
 }
 
-func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger, targetName string, archs []string, pkg *manifest.PackageManifest) ([]*v1.BuildJob, error) {
+func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger, targetName string, targetCfg manifest.BuildTarget, pkg *manifest.PackageManifest) ([]*v1.BuildJob, error) {
 	var eligibleArchs []string
-	for _, arch := range archs {
+	for _, arch := range targetCfg.Architectures {
 		if trigger.Architecture != "" && trigger.Architecture != arch {
 			continue
 		}
@@ -141,7 +141,7 @@ func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger,
 			jobID = fmt.Sprintf("%s-%s", trigger.TriggerID, arch)
 		}
 
-		job, err := s.buildJobForArch(ctx, trigger, targetName, arch, pkg, jobID)
+		job, err := s.buildJobForArch(ctx, trigger, targetName, arch, pkg, targetCfg, jobID)
 		if err != nil {
 			return nil, err
 		}
@@ -160,7 +160,7 @@ func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger,
 	return jobs, nil
 }
 
-func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigger, targetName, arch string, pkg *manifest.PackageManifest, jobID string) (*v1.BuildJob, error) {
+func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigger, targetName, arch string, pkg *manifest.PackageManifest, targetCfg manifest.BuildTarget, jobID string) (*v1.BuildJob, error) {
 	req := solv.ExpansionRequest{
 		BuildRequires: []string{pkg.Package.Name},
 	}
@@ -180,6 +180,7 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 	}
 
 	prio := calculatePriority(trigger.NormalizedPriority(), len(chrootRPMs))
+	repos := resolveRepositoryDependencies(trigger, targetName, arch, targetCfg)
 
 	return &v1.BuildJob{
 		JobID:        jobID,
@@ -194,7 +195,8 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 			CommitSHA:  trigger.CommitSHA,
 			RecipePath: pkg.Source.Recipe,
 		},
-		ChrootRPMs: chrootRPMs,
+		Repositories: repos,
+		ChrootRPMs:   chrootRPMs,
 		Resources: v1.ResourceRequirements{
 			MemoryMB: 4096,
 			VCPUs:    2,
@@ -206,6 +208,36 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		},
 		CreatedAtUnix: time.Now().Unix(),
 	}, nil
+}
+
+func resolveRepositoryDependencies(trigger *v1.BuildTrigger, targetName, arch string, targetCfg manifest.BuildTarget) []v1.RepositoryDependency {
+	var repos []v1.RepositoryDependency
+	for _, dep := range targetCfg.Dependencies {
+		if dep.Project != "" {
+			depTarget := dep.Target
+			if depTarget == "" {
+				depTarget = targetName
+			}
+			repos = append(repos, v1.RepositoryDependency{
+				Project:  dep.Project,
+				Target:   depTarget,
+				Arch:     arch,
+				S3Prefix: fmt.Sprintf("repos/%s/%s/%s/", dep.Project, depTarget, arch),
+			})
+		}
+		if dep.URL != "" {
+			repos = append(repos, v1.RepositoryDependency{
+				URL: dep.URL,
+			})
+		}
+	}
+	repos = append(repos, v1.RepositoryDependency{
+		Project:  trigger.Project,
+		Target:   targetName,
+		Arch:     arch,
+		S3Prefix: fmt.Sprintf("repos/%s/%s/%s/", trigger.Project, targetName, arch),
+	})
+	return repos
 }
 
 func calculatePriority(priorityTier string, chrootCount int) int32 {
