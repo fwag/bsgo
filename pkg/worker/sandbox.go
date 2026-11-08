@@ -160,7 +160,19 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 
 	buildRoot := filepath.Join(jobDir, "build-root")
 	specFile := filepath.Join(jobDir, specName)
-	args := []string{"--clean", "--vm-type", "kvm", "--root", buildRoot, "--cachedir", cacheDir, specFile}
+	args := []string{"--clean", "--vm-type", "kvm", "--root", buildRoot, "--cachedir", cacheDir}
+
+	repoBase := filepath.Join(s.WorkDir, "repos")
+	if repos, err := filepath.Glob(filepath.Join(repoBase, "*", "standard", "x86_64")); err == nil {
+		for _, r := range repos {
+			if _, err := os.Stat(filepath.Join(r, "repodata", "repomd.xml")); err == nil {
+				args = append(args, "--repo", r)
+				fmt.Fprintf(w, "[%s] bsgo-worker: attaching local upstream repository: %s\n", time.Now().Format("15:04:05"), r)
+			}
+		}
+	}
+	args = append(args, "--repo", "zypp://")
+	args = append(args, specFile)
 
 	fmt.Fprintf(w, "[%s] bsgo-worker: executing %s %s\n", time.Now().Format("15:04:05"), obsBin, strings.Join(args, " "))
 	// #nosec G204 -- obs-build runner executes parameterized sandbox binary
@@ -181,8 +193,26 @@ func (s *ProcessSandbox) collectKVMArtifacts(buildRoot, jobDir string, job *v1.B
 	pkgDir := filepath.Join(jobDir, "packages")
 	_ = os.MkdirAll(pkgDir, 0750)
 
+	localRepo := filepath.Join(s.WorkDir, "repos", job.Project, "standard", "x86_64")
+	_ = os.MkdirAll(localRepo, 0750)
+
 	pattern := filepath.Join(buildRoot, "usr/src/packages/RPMS/*/*.rpm")
 	artifacts := collectRPMsFromPattern(pattern, pkgDir, job.Project, job.Package, "extracted KVM RPM artifact", w)
+
+	for _, a := range artifacts {
+		src := filepath.Join(pkgDir, a.Filename)
+		dest := filepath.Join(localRepo, a.Filename)
+		data, err := os.ReadFile(src)
+		if err == nil {
+			_ = os.WriteFile(dest, data, 0644)
+		}
+	}
+
+	fmt.Fprintf(w, "[%s] bsgo-worker: updating local repository repodata via createrepo_c\n", time.Now().Format("15:04:05"))
+	crCmd := exec.Command("createrepo_c", localRepo)
+	crCmd.Stdout = w
+	crCmd.Stderr = w
+	_ = crCmd.Run()
 
 	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
 }
