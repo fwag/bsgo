@@ -103,13 +103,13 @@ routine queues by injecting high-priority triggers or forcing rebuilds.
 
 Examples:
   # Inject high-priority rebuild for a single package:
-  bsgo admin trigger openSUSE:Factory curl --priority high --reason "CRITICAL_CVE_REBUILD"
+  bsgo admin trigger my-project my-package --priority high --reason "CRITICAL_CVE_REBUILD"
 
   # Force rebuild all packages in a project:
-  bsgo admin trigger openSUSE:Factory --all --force --priority high
+  bsgo admin trigger my-project --all --force --priority high
 
   # Dry-run trigger injection with machine-readable JSON:
-  bsgo admin trigger openSUSE:Factory curl --target standard --arch x86_64 --dry-run --json`,
+  bsgo admin trigger my-project my-package --target standard --arch x86_64 --dry-run --json`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()

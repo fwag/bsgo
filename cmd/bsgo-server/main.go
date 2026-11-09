@@ -258,7 +258,7 @@ func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store stora
 	subscribeWorkerHeartbeats(nc, disp)
 	subscribeJobStatus(nc, gatekeeper, disp)
 
-	solverPool, _ := solv.NewWorkerPool("x86_64", 2)
+	solverPool := solv.NewMultiArchPool(2)
 	pub := scheduler.NewNatsPublisher(func(pCtx context.Context, subject string, data []byte) error {
 		return nc.Publish(subject, data)
 	})
@@ -442,7 +442,12 @@ func subscribeTriggers(ctx context.Context, nc *nats.Conn, sched *scheduler.Sche
 
 		jobs, err := sched.ProcessTrigger(ctx, &trig)
 		if err != nil {
-			jobs = []*v1.BuildJob{createFallbackJob(ctx, store, &trig)}
+			fallbackJob, fErr := createFallbackJob(ctx, store, &trig)
+			if fErr != nil {
+				fmt.Fprintf(os.Stderr, "[SCHEDULER] Invalid trigger rejected: %v\n", fErr)
+				return
+			}
+			jobs = []*v1.BuildJob{fallbackJob}
 		}
 
 		enqueueDispatchedJobs(nc, disp, jobs)
@@ -495,24 +500,22 @@ func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nat
 	}()
 }
 
-func createFallbackJob(ctx context.Context, store storage.Store, trig *v1.BuildTrigger) *v1.BuildJob {
-	arch := trig.Architecture
-	if arch == "" {
-		arch = "x86_64"
+func createFallbackJob(ctx context.Context, store storage.Store, trig *v1.BuildTrigger) (*v1.BuildJob, error) {
+	if trig.Architecture == "" {
+		return nil, fmt.Errorf("trigger missing required architecture")
 	}
-	targetName := trig.Target
-	if targetName == "" {
-		targetName = "standard"
+	if trig.Target == "" {
+		return nil, fmt.Errorf("trigger missing required target")
 	}
 
-	repos := resolveFallbackRepositories(ctx, store, trig.Project, targetName, arch)
+	repos := resolveFallbackRepositories(ctx, store, trig.Project, trig.Target, trig.Architecture)
 
 	return &v1.BuildJob{
 		JobID:        trig.TriggerID,
 		Project:      trig.Project,
 		Package:      trig.Package,
-		Target:       targetName,
-		Architecture: arch,
+		Target:       trig.Target,
+		Architecture: trig.Architecture,
 		Priority:     50,
 		Repositories: repos,
 		Destination: v1.ArtifactDestination{
@@ -520,7 +523,7 @@ func createFallbackJob(ctx context.Context, store storage.Store, trig *v1.BuildT
 			S3Prefix: fmt.Sprintf("artifacts/%s/%s/", trig.Project, trig.Package),
 		},
 		CreatedAtUnix: time.Now().Unix(),
-	}
+	}, nil
 }
 
 func resolveFallbackRepositories(ctx context.Context, store storage.Store, project, targetName, arch string) []v1.RepositoryDependency {

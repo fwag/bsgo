@@ -47,6 +47,7 @@ type ResolvedPackage struct {
 type ExpansionRequest struct {
 	BuildRequires []string
 	Prefer        []string
+	Architecture  string
 }
 
 type ExpansionResult struct {

@@ -47,7 +47,10 @@ func TestCreateFallbackJobAttachesRepositoryDependencies(t *testing.T) {
 		Architecture: "x86_64",
 	}
 
-	job := createFallbackJob(ctx, store, trig)
+	job, err := createFallbackJob(ctx, store, trig)
+	if err != nil {
+		t.Fatalf("unexpected error creating fallback job: %v", err)
+	}
 	if len(job.Repositories) != 2 {
 		t.Fatalf("expected 2 repositories (upstream dependency + self), got %d", len(job.Repositories))
 	}
@@ -56,6 +59,14 @@ func TestCreateFallbackJobAttachesRepositoryDependencies(t *testing.T) {
 	}
 	if job.Repositories[1].Project != "net-proj" || job.Repositories[1].S3Prefix != "repos/net-proj/standard/x86_64/" {
 		t.Errorf("expected net-proj self, got %+v", job.Repositories[1])
+	}
+
+	// Validation rejection
+	if _, err := createFallbackJob(ctx, store, &v1.BuildTrigger{Target: "standard"}); err == nil {
+		t.Errorf("expected error when architecture is missing")
+	}
+	if _, err := createFallbackJob(ctx, store, &v1.BuildTrigger{Architecture: "x86_64"}); err == nil {
+		t.Errorf("expected error when target is missing")
 	}
 }
 

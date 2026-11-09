@@ -1,6 +1,7 @@
 package solv_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -248,5 +249,42 @@ func TestEmptyResolutionSafety(t *testing.T) {
 	}
 	if len(res.Packages) != 0 {
 		t.Errorf("expected 0 packages, got %d", len(res.Packages))
+	}
+}
+
+func TestMultiArchPool(t *testing.T) {
+	ctx := context.Background()
+	mapPool := solv.NewMultiArchPool(2)
+	defer mapPool.Close()
+
+	resX86, err := mapPool.Resolve(ctx, solv.ExpansionRequest{
+		Architecture:  "x86_64",
+		BuildRequires: []string{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error resolving x86_64: %v", err)
+	}
+	if resX86 == nil {
+		t.Fatalf("expected non-nil result")
+	}
+
+	resArm, err := mapPool.Resolve(ctx, solv.ExpansionRequest{
+		Architecture:  "aarch64",
+		BuildRequires: []string{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error resolving aarch64: %v", err)
+	}
+	if resArm == nil {
+		t.Fatalf("expected non-nil result")
+	}
+
+	p1, err := mapPool.PoolForArch("x86_64")
+	if err != nil || p1 == nil {
+		t.Fatalf("expected pool for x86_64")
+	}
+	p2, err := mapPool.PoolForArch("aarch64")
+	if err != nil || p2 == nil {
+		t.Fatalf("expected pool for aarch64")
 	}
 }

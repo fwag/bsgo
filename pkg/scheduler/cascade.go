@@ -138,6 +138,7 @@ func (c *CascadeEngine) evaluateTargetPackages(ctx context.Context, prjName, tar
 func (c *CascadeEngine) checkPackageCascade(ctx context.Context, prjName, targetName string, targetCfg manifest.BuildTarget, pkg *manifest.PackageManifest, event *v1.PublicationEvent) (*v1.BuildTrigger, error) {
 	req := solv.ExpansionRequest{
 		BuildRequires: []string{pkg.Package.Name},
+		Architecture:  event.Architecture,
 	}
 	res, _ := c.solver.Resolve(ctx, req)
 
