@@ -44,7 +44,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	s3Storage, err := s3.NewS3Storage(ctx, cfg.S3Endpoint, "garage", cfg.S3Bucket, "", "")
+	s3Storage, err := s3.NewS3Storage(ctx, cfg.S3Endpoint, "garage", cfg.S3Bucket, cfg.S3AccessKey, cfg.S3SecretKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to connect to S3 (%s): %v\n", cfg.S3Endpoint, err)
 	}
@@ -111,6 +111,15 @@ func applyFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile)
 	}
 	if fileCfg.Storage.S3Bucket != "" {
 		cfg.S3Bucket = fileCfg.Storage.S3Bucket
+	}
+	if fileCfg.Storage.S3Region != "" {
+		cfg.S3Region = fileCfg.Storage.S3Region
+	}
+	if fileCfg.Storage.AccessKey != "" {
+		cfg.S3AccessKey = fileCfg.Storage.AccessKey
+	}
+	if fileCfg.Storage.SecretKey != "" {
+		cfg.S3SecretKey = fileCfg.Storage.SecretKey
 	}
 	if fileCfg.Sandbox.Mode != "" {
 		cfg.SandboxMode = fileCfg.Sandbox.Mode

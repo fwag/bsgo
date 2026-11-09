@@ -30,6 +30,16 @@ func NewPostgresStore(ctx context.Context, connStr string) (*PostgresStore, erro
 	return &PostgresStore{pool: pool}, nil
 }
 
+// NewPostgresStoreWithPool wraps an existing initialized connection pool.
+func NewPostgresStoreWithPool(pool *pgxpool.Pool) *PostgresStore {
+	return &PostgresStore{pool: pool}
+}
+
+// Pool returns the underlying pgxpool connection pool.
+func (s *PostgresStore) Pool() *pgxpool.Pool {
+	return s.pool
+}
+
 func (s *PostgresStore) Close() {
 	s.pool.Close()
 }

@@ -2,12 +2,16 @@ package signer_test
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/openSUSE/bsgo/pkg/manifest"
 	"github.com/openSUSE/bsgo/pkg/publisher"
+	"github.com/openSUSE/bsgo/pkg/signd"
 	"github.com/openSUSE/bsgo/pkg/signer"
+	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
 func TestMemorySignDriverDetachedAndVerification(t *testing.T) {
@@ -41,6 +45,73 @@ func TestMemorySignDriverDetachedAndVerification(t *testing.T) {
 	tamperedPayload := []byte("tampered content")
 	if err := driver.VerifyDetached(pubKey, tamperedPayload, sig); err == nil {
 		t.Fatalf("expected verification to fail for tampered content")
+	}
+}
+
+func TestRemoteSignerDriver(t *testing.T) {
+	ctx := context.Background()
+	mk, _ := signd.NewMasterKey("remote-driver-passphrase")
+	defer mk.Destroy()
+
+	engine := signd.NewSignEngine(mk, nil)
+	server := signd.NewServer(engine)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	addr := ln.Addr().String()
+
+	go func() {
+		_ = server.Serve(ln)
+	}()
+	defer server.Close()
+
+	// Provision project and key in storage
+	memStore := storage.NewMemoryStore()
+	_ = memStore.CreateProject(ctx, &manifest.ProjectManifest{
+		Project: manifest.ProjectInfo{Name: "openSUSE:Factory"},
+	})
+	keyModel, err := engine.GenerateProjectKeypair("openSUSE:Factory", "default", "gpg")
+	if err != nil {
+		t.Fatalf("failed generating keypair: %v", err)
+	}
+	if err := memStore.SaveProjectKey(ctx, keyModel); err != nil {
+		t.Fatalf("failed saving project key: %v", err)
+	}
+
+	client := signd.NewClient(addr)
+	driver := signer.NewRemoteSignerDriver(client, memStore)
+	opts := signer.SignOptions{Project: "openSUSE:Factory"}
+
+	pubKey, err := driver.PublicKey(ctx, opts)
+	if err != nil {
+		t.Fatalf("failed fetching public key: %v", err)
+	}
+
+	payload := []byte("data to sign via remote signd daemon")
+	sig, err := driver.SignDetached(ctx, payload, opts)
+	if err != nil {
+		t.Fatalf("failed signing detached remotely: %v", err)
+	}
+
+	if err := driver.VerifyDetached(pubKey, payload, sig); err != nil {
+		t.Fatalf("remote signature verification failed: %v", err)
+	}
+
+	if err := driver.VerifyDetached(pubKey, []byte("tampered data"), sig); err == nil {
+		t.Fatalf("expected verification to fail on tampered data")
+	}
+
+	clearsign, err := driver.SignClearsign(ctx, payload, opts)
+	if err != nil || len(clearsign) == 0 {
+		t.Fatalf("clearsign failed: %v", err)
+	}
+
+	tempRPM := filepath.Join(t.TempDir(), "test.rpm")
+	_ = os.WriteFile(tempRPM, []byte("rpmpayload"), 0600)
+	if err := driver.SignRPM(ctx, tempRPM, opts); err != nil {
+		t.Fatalf("SignRPM failed: %v", err)
 	}
 }
 

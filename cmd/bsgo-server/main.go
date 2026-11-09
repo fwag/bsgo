@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/openSUSE/bsgo/pkg/auth"
 	"github.com/openSUSE/bsgo/pkg/dispatcher"
 	"github.com/openSUSE/bsgo/pkg/gateway"
@@ -23,6 +24,7 @@ import (
 	"github.com/openSUSE/bsgo/pkg/publisher"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
 	"github.com/openSUSE/bsgo/pkg/scheduler"
+	"github.com/openSUSE/bsgo/pkg/signd"
 	"github.com/openSUSE/bsgo/pkg/signer"
 	"github.com/openSUSE/bsgo/pkg/solv"
 	"github.com/openSUSE/bsgo/pkg/storage"
@@ -30,27 +32,58 @@ import (
 	"github.com/openSUSE/bsgo/pkg/storage/s3"
 )
 
-func main() {
-	var (
-		natsURL  string
-		httpPort int
-		dbURL    string
-	)
+type ServerConfig struct {
+	Role       string
+	NatsURL    string
+	HTTPPort   int
+	DBURL      string
+	S3Endpoint string
+	S3Bucket   string
+	WorkDir    string
+	SignerType string
+	SigndAddr  string
+	TLSCert    string
+	TLSKey     string
+	ServerCA   string
+}
 
-	flag.StringVar(&natsURL, "nats-url", "nats://localhost:4222", "NATS JetStream connection URL")
-	flag.IntVar(&httpPort, "http-port", 8080, "HTTP API gateway listening port")
-	flag.StringVar(&dbURL, "db-url", "postgres://bsgo:password@localhost:5432/bsgodb?sslmode=disable", "PostgreSQL URL")
+func parseServerConfig() ServerConfig {
+	subcmd := ""
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		subcmd = os.Args[1]
+		os.Args = append(os.Args[:1], os.Args[2:]...)
+	}
+
+	var cfg ServerConfig
+	flag.StringVar(&cfg.Role, "role", "all", "Server role: 'all' (API+Scheduler+Publisher), 'api', or 'publisher'")
+	flag.StringVar(&cfg.NatsURL, "nats-url", getEnv("NATS_URL", "nats://localhost:4222"), "NATS JetStream connection URL")
+	flag.IntVar(&cfg.HTTPPort, "http-port", 8080, "HTTP API gateway listening port")
+	flag.StringVar(&cfg.DBURL, "db-url", getEnv("DATABASE_URL", "postgres://bsgo:password@localhost:5432/bsgodb?sslmode=disable"), "PostgreSQL URL")
+	flag.StringVar(&cfg.S3Endpoint, "s3-endpoint", getEnv("S3_ENDPOINT", "http://127.0.0.1:3900"), "S3 storage endpoint")
+	flag.StringVar(&cfg.S3Bucket, "s3-bucket", getEnv("S3_BUCKET", "bsgo-artifacts"), "S3 bucket for published repositories")
+	flag.StringVar(&cfg.WorkDir, "work-dir", "/tmp/bsgo-publisher-work", "Working directory for metadata staging")
+	flag.StringVar(&cfg.SignerType, "signer-type", getEnv("SIGNER_TYPE", "signd"), "Signer backend: 'signd' or 'memory'")
+	flag.StringVar(&cfg.SigndAddr, "signd-addr", getEnv("SIGND_ADDR", "127.0.0.1:5167"), "bsgo-signd network address")
+	flag.StringVar(&cfg.TLSCert, "signd-tls-cert", getEnv("SIGND_TLS_CERT", ""), "Client certificate for mTLS connection to bsgo-signd")
+	flag.StringVar(&cfg.TLSKey, "signd-tls-key", getEnv("SIGND_TLS_KEY", ""), "Client key for mTLS connection to bsgo-signd")
+	flag.StringVar(&cfg.ServerCA, "signd-server-ca", getEnv("SIGND_SERVER_CA", ""), "Server root CA certificate for verifying bsgo-signd")
 	flag.Parse()
+
+	if subcmd != "" {
+		cfg.Role = subcmd
+	}
+	return cfg
+}
+
+func main() {
+	cfg := parseServerConfig()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher)...\n")
-
-	// 1. Connect to NATS JetStream and ensure streams
-	nc, js, err := natsqueue.ConnectJetStream(natsURL)
+	nc, js, err := natsqueue.ConnectJetStream(cfg.NatsURL)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to connect to NATS (%s): %v\n", natsURL, err)
+		fmt.Fprintf(os.Stderr, "Failed to connect to NATS (%s): %v\n", cfg.NatsURL, err)
 		os.Exit(1)
 	}
 	defer nc.Close()
@@ -59,17 +92,41 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to provision JetStream streams: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("  - NATS JetStream streams verified: TRIGGERS, JOBS_PENDING, JOB_STATUS, PUBLISH\n")
 
-	// 2. Storage
-	store := initControlPlaneStore(ctx, dbURL)
-	fmt.Printf("  - Storage initialized and verified\n")
+	store := initControlPlaneStore(ctx, cfg.DBURL)
 
-	// 3. Start Scheduler & Dispatcher
-	startSchedulerAndDispatcher(ctx, nc, store)
+	if cfg.Role == "publisher" {
+		runPublisherOnly(ctx, cfg, nc, js, store)
+		return
+	}
 
-	// 4. HTTP Gateway
-	startHTTPServer(ctx, httpPort, store)
+	runControlPlane(ctx, cfg, nc, js, store)
+}
+
+func runPublisherOnly(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jetstream.JetStream, store storage.Store) {
+	fmt.Printf("Starting bsgo-server [publisher] connected to %s (S3: %s)...\n", cfg.NatsURL, cfg.S3Endpoint)
+	pubService := initPublisherService(ctx, cfg, nc, store)
+	if err := consumePublishRequests(ctx, js, pubService); err != nil {
+		fmt.Fprintf(os.Stderr, "Publisher consumer error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("\nbsgo-server publisher stopped cleanly.")
+}
+
+func runControlPlane(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jetstream.JetStream, store storage.Store) {
+	var pubService *publisher.Publisher
+	if cfg.Role == "all" {
+		fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher + Publisher)...\n")
+		pubService = initPublisherService(ctx, cfg, nc, store)
+		go func() {
+			_ = consumePublishRequests(ctx, js, pubService)
+		}()
+	} else {
+		fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher)...\n")
+	}
+
+	startSchedulerAndDispatcher(ctx, nc, store, pubService)
+	startHTTPServer(ctx, cfg.HTTPPort, store)
 
 	fmt.Printf("bsgo Control Plane is LIVE and listening for triggers and workers\n")
 	<-ctx.Done()
@@ -88,13 +145,111 @@ func initControlPlaneStore(ctx context.Context, dbURL string) storage.Store {
 	return storage.NewMemoryStore()
 }
 
-func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store storage.Store) {
+func initPublisherService(ctx context.Context, cfg ServerConfig, nc *nats.Conn, store storage.Store) *publisher.Publisher {
+	var s3Client publisher.S3Client
+	if s3Storage, err := s3.NewS3Storage(ctx, cfg.S3Endpoint, "garage", cfg.S3Bucket, "", ""); err == nil {
+		s3Client = s3Storage
+	} else {
+		s3Client = NewDiskS3Client("/tmp/bsgo-artifacts")
+	}
+
+	var lockMgr publisher.LockManager
+	if pgStore, ok := store.(*postgres.PostgresStore); ok {
+		lockMgr = postgres.NewPostgresLockManager(pgStore.Pool())
+	} else {
+		lockMgr = publisher.NewLocalLockManager()
+	}
+
+	pubService := publisher.NewPublisher(
+		publisher.NewRealCreateRepoExecutor(),
+		s3Client,
+		lockMgr,
+		cfg.WorkDir,
+	)
+	pubService.SetEventPublisher(&eventPubAdapter{nc: nc})
+
+	signerDrv := initSignerDriver(cfg, store)
+	pubService.SetMetadataSigner(&signerAdapter{driver: signerDrv})
+	return pubService
+}
+
+func initSignerDriver(cfg ServerConfig, store storage.Store) signer.SignerDriver {
+	if cfg.SignerType == "memory" {
+		return signer.NewMemorySignDriver()
+	}
+
+	var client *signd.Client
+	if cfg.TLSCert != "" && cfg.TLSKey != "" {
+		tlsCfg, err := signd.LoadClientTLSConfig(cfg.TLSCert, cfg.TLSKey, cfg.ServerCA)
+		if err == nil {
+			client = signd.NewTLSClient(cfg.SigndAddr, tlsCfg)
+		}
+	}
+	if client == nil {
+		client = signd.NewClient(cfg.SigndAddr)
+	}
+
+	if keyStore, ok := store.(signer.ProjectKeyStore); ok {
+		return signer.NewRemoteSignerDriver(client, keyStore)
+	}
+
+	return signer.NewMemorySignDriver()
+}
+
+func consumePublishRequests(ctx context.Context, js jetstream.JetStream, pub *publisher.Publisher) error {
+	cons, err := js.CreateOrUpdateConsumer(ctx, natsqueue.StreamPublish, jetstream.ConsumerConfig{
+		Durable:       "bsgo-server-publisher",
+		FilterSubject: "bsgo.publish.>",
+		AckPolicy:     jetstream.AckExplicitPolicy,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create JetStream consumer: %w", err)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+			msgs, err := cons.Fetch(1, jetstream.FetchMaxWait(500*time.Millisecond))
+			if err != nil {
+				continue
+			}
+			for msg := range msgs.Messages() {
+				processPublishMessage(ctx, msg, pub)
+			}
+		}
+	}
+}
+
+func processPublishMessage(ctx context.Context, msg jetstream.Msg, pub *publisher.Publisher) {
+	var req v1.PublishRequest
+	if err := json.Unmarshal(msg.Data(), &req); err != nil {
+		_ = msg.Term()
+		return
+	}
+
+	fmt.Printf("[%s] [PUBLISHER] Ingested publish request: %s/%s (%s, %d RPMs)\n",
+		time.Now().Format("15:04:05"), req.Project, req.Package, req.Architecture, len(req.NewRPMPaths))
+
+	res, err := pub.ProcessPublishRequest(ctx, req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[PUBLISHER] Failed publishing %s/%s: %v\n", req.Project, req.Package, err)
+		_ = msg.Nak()
+		return
+	}
+
+	_ = msg.Ack()
+	fmt.Printf("[%s] [PUBLISHER] Successfully committed repository: %s\n",
+		time.Now().Format("15:04:05"), res.RepomdXMLKey)
+}
+
+func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store storage.Store, pubService *publisher.Publisher) {
 	disp := dispatcher.NewDispatcher(dispatcher.NewFuncPublisher(func(subj string, data []byte) {
 		_ = nc.Publish(subj, data)
 	}), 30*time.Second)
 
 	gatekeeper := scheduler.NewMemoryGatekeeper()
-	pubService := initPublisherService(nc)
 
 	subscribeWorkerHeartbeats(nc, disp)
 	subscribeJobStatus(nc, gatekeeper, disp, pubService)
@@ -179,19 +334,6 @@ func triggerPublisher(pub *publisher.Publisher, jobID, prjName, pkgName string) 
 		fmt.Printf("[%s] [PUBLISHER] Published %s/%s repodata (signed with repomd.xml.asc, repomd.xml.key)\n",
 			time.Now().Format("15:04:05"), prjName, pkgName)
 	}
-}
-
-func initPublisherService(nc *nats.Conn) *publisher.Publisher {
-	pubS3 := NewDiskS3Client("/tmp/bsgo-artifacts")
-	pubService := publisher.NewPublisher(
-		publisher.NewRealCreateRepoExecutor(),
-		pubS3,
-		publisher.NewLocalLockManager(),
-		"/tmp/bsgo-publisher-work",
-	)
-	pubService.SetEventPublisher(&eventPubAdapter{nc: nc})
-	pubService.SetMetadataSigner(&signerAdapter{driver: signer.NewMemorySignDriver()})
-	return pubService
 }
 
 type eventPubAdapter struct {
@@ -493,4 +635,11 @@ func initRepoStorage(ctx context.Context) gateway.RepoStorage {
 	}
 
 	return gateway.NewDiskRepoStorage("/tmp/bsgo-artifacts")
+}
+
+func getEnv(key, fallback string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return fallback
 }

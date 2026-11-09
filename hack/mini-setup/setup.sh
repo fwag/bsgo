@@ -26,6 +26,16 @@ podman run -d --name bsgo-garage -p 3900:3900 -p 3903:3903 \
 echo "Waiting for services to initialize..."
 sleep 2
 
+# Load external credentials file if present
+ENV_FILE="$DIR/../../config/s3-credentials.env"
+if [ -f "$ENV_FILE" ]; then
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+fi
+
+ACCESS_KEY="${AWS_ACCESS_KEY_ID:-${S3_ACCESS_KEY}}"
+SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-${S3_SECRET_KEY}}"
+
 # Configure Garage cluster layout & bucket
 NODE_ID=$(podman exec bsgo-garage /garage node id 2>/dev/null | head -n 1 | awk '{print $1}' | cut -d'@' -f1)
 if [ -n "$NODE_ID" ]; then
@@ -33,8 +43,14 @@ if [ -n "$NODE_ID" ]; then
   podman exec bsgo-garage /garage layout apply --version 1 >/dev/null 2>&1 || true
   podman exec bsgo-garage /garage bucket create bsgo-artifacts >/dev/null 2>&1 || true
   podman exec bsgo-garage /garage bucket website --allow bsgo-artifacts >/dev/null 2>&1 || true
-  podman exec bsgo-garage /garage key create bsgo-key >/dev/null 2>&1 || true
-  podman exec bsgo-garage /garage bucket allow --read --write bsgo-artifacts --key bsgo-key >/dev/null 2>&1 || true
+
+  if [ -n "$ACCESS_KEY" ] && [ -n "$SECRET_KEY" ]; then
+    podman exec bsgo-garage /garage key import --yes -n bsgo-key "$ACCESS_KEY" "$SECRET_KEY" >/dev/null 2>&1 || true
+    podman exec bsgo-garage /garage bucket allow --read --write bsgo-artifacts --key "$ACCESS_KEY" >/dev/null 2>&1 || true
+  else
+    podman exec bsgo-garage /garage key create bsgo-key >/dev/null 2>&1 || true
+    podman exec bsgo-garage /garage bucket allow --read --write bsgo-artifacts --key bsgo-key >/dev/null 2>&1 || true
+  fi
 fi
 
 echo ""

@@ -58,3 +58,27 @@ func TestCreateFallbackJobAttachesRepositoryDependencies(t *testing.T) {
 		t.Errorf("expected net-proj self, got %+v", job.Repositories[1])
 	}
 }
+
+func TestInitSignerDriver(t *testing.T) {
+	store := storage.NewMemoryStore()
+
+	// Memory driver
+	cfgMem := ServerConfig{SignerType: "memory"}
+	drvMem := initSignerDriver(cfgMem, store)
+	if drvMem == nil {
+		t.Fatalf("expected non-nil memory driver")
+	}
+
+	// Remote driver
+	cfgRemote := ServerConfig{SignerType: "signd", SigndAddr: "127.0.0.1:5167"}
+	drvRemote := initSignerDriver(cfgRemote, store)
+	if drvRemote == nil {
+		t.Fatalf("expected non-nil remote driver")
+	}
+}
+
+func TestGetEnv(t *testing.T) {
+	if val := getEnv("NON_EXISTENT_VAR_XYZ", "default"); val != "default" {
+		t.Errorf("expected default, got %s", val)
+	}
+}

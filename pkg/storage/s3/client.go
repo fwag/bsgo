@@ -23,9 +23,9 @@ func NewS3Storage(ctx context.Context, endpoint, region, bucket, accessKey, secr
 	if region == "" {
 		region = "garage"
 	}
-	if accessKey == "" {
-		accessKey = "GKbf3351404239790955497192"
-		secretKey = "4b0c49dccb91c93a3991ddb7f0a1198546343c2dd967b55897f44ba24a33eefb"
+	accessKey, secretKey = resolveCredentials(accessKey, secretKey)
+	if accessKey == "" || secretKey == "" {
+		return nil, fmt.Errorf("missing S3 credentials (set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or config/s3-credentials.env)")
 	}
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx,
@@ -154,4 +154,65 @@ func (s *S3Storage) DownloadPrefix(ctx context.Context, s3Prefix, localDir strin
 		}
 	}
 	return count, nil
+}
+
+func resolveCredentials(accessKey, secretKey string) (string, string) {
+	if accessKey != "" && secretKey != "" {
+		return accessKey, secretKey
+	}
+
+	if accessKey == "" {
+		accessKey = os.Getenv("AWS_ACCESS_KEY_ID")
+		if accessKey == "" {
+			accessKey = os.Getenv("S3_ACCESS_KEY")
+		}
+	}
+	if secretKey == "" {
+		secretKey = os.Getenv("AWS_SECRET_ACCESS_KEY")
+		if secretKey == "" {
+			secretKey = os.Getenv("S3_SECRET_KEY")
+		}
+	}
+	if accessKey != "" && secretKey != "" {
+		return accessKey, secretKey
+	}
+
+	envMap := loadCredentialsFile("config/s3-credentials.env")
+	if accessKey == "" {
+		accessKey = envMap["AWS_ACCESS_KEY_ID"]
+		if accessKey == "" {
+			accessKey = envMap["S3_ACCESS_KEY"]
+		}
+	}
+	if secretKey == "" {
+		secretKey = envMap["AWS_SECRET_ACCESS_KEY"]
+		if secretKey == "" {
+			secretKey = envMap["S3_SECRET_KEY"]
+		}
+	}
+
+	return accessKey, secretKey
+}
+
+func loadCredentialsFile(path string) map[string]string {
+	res := make(map[string]string)
+	cleanPath := filepath.Clean(path)
+	// #nosec G304 -- loading optional credentials from sanitized path
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return res
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			k := strings.TrimSpace(parts[0])
+			v := strings.Trim(strings.TrimSpace(parts[1]), "\"'")
+			res[k] = v
+		}
+	}
+	return res
 }

@@ -5,19 +5,47 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/openSUSE/bsgo/pkg/signd"
 )
 
+func configureSecurity(server *signd.Server, allowCIDRs, tlsCert, tlsKey, clientCA string) error {
+	if allowCIDRs != "" {
+		cidrs := strings.Split(allowCIDRs, ",")
+		if err := server.SetAllowedCIDRs(cidrs); err != nil {
+			return fmt.Errorf("failed configuring allowed CIDRs: %w", err)
+		}
+	}
+
+	if tlsCert != "" && tlsKey != "" {
+		tlsCfg, err := signd.LoadServerTLSConfig(tlsCert, tlsKey, clientCA)
+		if err != nil {
+			return fmt.Errorf("failed configuring TLS: %w", err)
+		}
+		server.SetTLSConfig(tlsCfg)
+	}
+
+	return nil
+}
+
 func main() {
 	var (
 		listenAddr string
 		passphrase string
+		allowCIDRs string
+		tlsCert    string
+		tlsKey     string
+		clientCA   string
 	)
 
 	flag.StringVar(&listenAddr, "listen", "0.0.0.0:5167", "Network address to listen on")
 	flag.StringVar(&passphrase, "passphrase", "", "Master key passphrase (defaults to SIGNER_MASTER_KEY env)")
+	flag.StringVar(&allowCIDRs, "allow-cidrs", "", "Comma-separated list of allowed client IP addresses or CIDR subnets")
+	flag.StringVar(&tlsCert, "tls-cert", "", "Path to TLS server certificate PEM file")
+	flag.StringVar(&tlsKey, "tls-key", "", "Path to TLS server private key PEM file")
+	flag.StringVar(&clientCA, "client-ca", "", "Path to client CA certificate PEM file for mTLS authentication")
 	flag.Parse()
 
 	if passphrase == "" {
@@ -37,6 +65,11 @@ func main() {
 
 	engine := signd.NewSignEngine(masterKey, nil)
 	server := signd.NewServer(engine)
+
+	if err := configureSecurity(server, allowCIDRs, tlsCert, tlsKey, clientCA); err != nil {
+		fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
+		os.Exit(1)
+	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)

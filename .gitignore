@@ -24,6 +24,7 @@ go.work
 *.tmp
 *~
 .DS_Store
+*.env
 
 # Nested git repositories in test fixtures
 test/fixtures/**/.git/
