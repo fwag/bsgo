@@ -120,6 +120,9 @@ func (c *CascadeEngine) evaluateTargetPackages(ctx context.Context, prjName, tar
 		if !pkg.Build.Enabled || (prjName == event.Project && pkg.Package.Name == event.Package) {
 			continue
 		}
+		if c.gatekeeper.IsBuilding(prjName, pkg.Package.Name) {
+			continue
+		}
 
 		trig, err := c.checkPackageCascade(ctx, prjName, targetName, targetCfg, pkg, event)
 		if err != nil {

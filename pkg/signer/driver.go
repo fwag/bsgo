@@ -41,11 +41,13 @@ type SignerDriver interface {
 // ProjectKeyStore retrieves stored project keys from database or memory.
 type ProjectKeyStore interface {
 	GetProjectKey(ctx context.Context, projectName, flavor, keyType string) (*storage.ProjectSigningKey, error)
+	SaveProjectKey(ctx context.Context, key *storage.ProjectSigningKey) error
 }
 
 // SignDigestClient represents a client capable of signing digest over network or IPC.
 type SignDigestClient interface {
 	SignDigest(ctx context.Context, encryptedPrivKeyHex string, digest []byte) ([]byte, error)
+	GenerateKey(ctx context.Context, project, flavor, keyType string) (*storage.ProjectSigningKey, error)
 }
 
 // VerifyRSADetached parses an RSA public key and verifies a detached signature over SHA-256 digest of data.

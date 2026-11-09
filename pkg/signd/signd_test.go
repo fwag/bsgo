@@ -109,9 +109,15 @@ func TestServerClientProtocol(t *testing.T) {
 
 	client := signd.NewClient(addr)
 
-	keyModel, _ := engine.GenerateProjectKeypair("demo-project", "default", "gpg")
-	digest := sha256.Sum256([]byte("test-data-packet"))
+	keyModel, err := client.GenerateKey(context.Background(), "demo-project", "default", "gpg")
+	if err != nil {
+		t.Fatalf("client failed to generate key: %v", err)
+	}
+	if keyModel.PublicKeyArmored == "" || keyModel.EncryptedPrivateKey == "" {
+		t.Fatalf("expected non-empty keys in generated model")
+	}
 
+	digest := sha256.Sum256([]byte("test-data-packet"))
 	sig, err := client.SignDigest(context.Background(), keyModel.EncryptedPrivateKey, digest[:])
 	if err != nil {
 		t.Fatalf("client failed to sign digest: %v", err)

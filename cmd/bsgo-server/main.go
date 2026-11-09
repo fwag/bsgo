@@ -235,7 +235,11 @@ func processPublishMessage(ctx context.Context, msg jetstream.Msg, pub *publishe
 	res, err := pub.ProcessPublishRequest(ctx, req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[PUBLISHER] Failed publishing %s/%s: %v\n", req.Project, req.Package, err)
-		_ = msg.Nak()
+		if meta, mErr := msg.Metadata(); mErr == nil && meta.NumDelivered >= 3 {
+			_ = msg.Term()
+			return
+		}
+		_ = msg.NakWithDelay(2 * time.Second)
 		return
 	}
 
@@ -252,7 +256,7 @@ func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store stora
 	gatekeeper := scheduler.NewMemoryGatekeeper()
 
 	subscribeWorkerHeartbeats(nc, disp)
-	subscribeJobStatus(nc, gatekeeper, disp, pubService)
+	subscribeJobStatus(nc, gatekeeper, disp)
 
 	solverPool, _ := solv.NewWorkerPool("x86_64", 2)
 	pub := scheduler.NewNatsPublisher(func(pCtx context.Context, subject string, data []byte) error {
@@ -285,7 +289,7 @@ func subscribeWorkerHeartbeats(nc *nats.Conn, disp *dispatcher.Dispatcher) {
 	})
 }
 
-func subscribeJobStatus(nc *nats.Conn, gk *scheduler.MemoryGatekeeper, disp *dispatcher.Dispatcher, pub *publisher.Publisher) {
+func subscribeJobStatus(nc *nats.Conn, gk *scheduler.MemoryGatekeeper, disp *dispatcher.Dispatcher) {
 	_, _ = nc.Subscribe("bsgo.status", func(msg *nats.Msg) {
 		var st map[string]any
 		if err := json.Unmarshal(msg.Data, &st); err != nil {
@@ -313,27 +317,8 @@ func subscribeJobStatus(nc *nats.Conn, gk *scheduler.MemoryGatekeeper, disp *dis
 			}
 			workerID, _ := st["worker_id"].(string)
 			disp.RecordJobResult(jobID, workerID, prjName, exitCode, 30*time.Second)
-
-			if phase == "SUCCEEDED" && pub != nil {
-				go triggerPublisher(pub, jobID, prjName, pkgName)
-			}
 		}
 	})
-}
-
-func triggerPublisher(pub *publisher.Publisher, jobID, prjName, pkgName string) {
-	ctx := context.Background()
-	_, err := pub.ProcessPublishRequest(ctx, publisher.PublishRequest{
-		RequestID:    jobID,
-		Project:      prjName,
-		Target:       "standard",
-		Architecture: "x86_64",
-		Package:      pkgName,
-	})
-	if err == nil {
-		fmt.Printf("[%s] [PUBLISHER] Published %s/%s repodata (signed with repomd.xml.asc, repomd.xml.key)\n",
-			time.Now().Format("15:04:05"), prjName, pkgName)
-	}
 }
 
 type eventPubAdapter struct {
@@ -423,6 +408,8 @@ func subscribePublicationEvents(ctx context.Context, nc *nats.Conn, cascade *sch
 		if err := json.Unmarshal(msg.Data, &ev); err != nil {
 			return
 		}
+
+		cascade.Gatekeeper().SetBuilding(ev.Project, ev.Package, false)
 
 		fmt.Printf("[%s] [PUBLISHER] Received publication event: %s/%s (%s)\n",
 			time.Now().Format("15:04:05"), ev.Project, ev.Package, ev.Target)

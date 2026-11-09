@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
 // RemoteSignerDriver connects to bsgo-signd to perform remote cryptographic operations.
@@ -22,7 +24,23 @@ func NewRemoteSignerDriver(client SignDigestClient, keyStore ProjectKeyStore) *R
 	}
 }
 
-// PublicKey retrieves the public key for the project from the key store.
+func (r *RemoteSignerDriver) getOrGenerateKey(ctx context.Context, project, flavor, keyType string) (*storage.ProjectSigningKey, error) {
+	key, err := r.keyStore.GetProjectKey(ctx, project, flavor, keyType)
+	if err == nil && key != nil {
+		return key, nil
+	}
+
+	// Auto-provision keypair via bsgo-signd
+	newKey, err := r.client.GenerateKey(ctx, project, flavor, keyType)
+	if err != nil {
+		return nil, fmt.Errorf("failed generating signing key via signd: %w", err)
+	}
+
+	_ = r.keyStore.SaveProjectKey(ctx, newKey)
+	return newKey, nil
+}
+
+// PublicKey retrieves the public key for the project from the key store or provisions one.
 func (r *RemoteSignerDriver) PublicKey(ctx context.Context, opts SignOptions) ([]byte, error) {
 	flavor := opts.SignFlavor
 	if flavor == "" {
@@ -33,7 +51,7 @@ func (r *RemoteSignerDriver) PublicKey(ctx context.Context, opts SignOptions) ([
 		keyType = "gpg"
 	}
 
-	key, err := r.keyStore.GetProjectKey(ctx, opts.Project, flavor, keyType)
+	key, err := r.getOrGenerateKey(ctx, opts.Project, flavor, keyType)
 	if err != nil {
 		return nil, fmt.Errorf("failed fetching public key for %s: %w", opts.Project, err)
 	}
@@ -51,7 +69,7 @@ func (r *RemoteSignerDriver) SignDetached(ctx context.Context, data []byte, opts
 		keyType = "gpg"
 	}
 
-	key, err := r.keyStore.GetProjectKey(ctx, opts.Project, flavor, keyType)
+	key, err := r.getOrGenerateKey(ctx, opts.Project, flavor, keyType)
 	if err != nil {
 		return nil, fmt.Errorf("failed fetching signing key for %s: %w", opts.Project, err)
 	}

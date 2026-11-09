@@ -8,8 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
 // Server implements the bare-metal signing daemon protocol.
@@ -122,6 +126,8 @@ func (s *Server) Serve(ln net.Listener) error {
 		}
 
 		if !s.isAllowed(conn.RemoteAddr()) {
+			fmt.Printf("[%s] [signd] Rejected connection from unauthorized IP: %s\n",
+				time.Now().Format("15:04:05"), conn.RemoteAddr().String())
 			_ = conn.Close()
 			continue
 		}
@@ -151,6 +157,7 @@ func (s *Server) Close() error {
 
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
+	remoteAddr := conn.RemoteAddr().String()
 	reader := bufio.NewReader(conn)
 
 	for {
@@ -164,31 +171,35 @@ func (s *Server) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		if s.dispatchCommand(conn, line) {
+		if s.dispatchCommand(conn, line, remoteAddr) {
 			return
 		}
 	}
 }
 
-func (s *Server) dispatchCommand(conn io.Writer, line string) bool {
+func (s *Server) dispatchCommand(conn io.Writer, line, remoteAddr string) bool {
 	parts := strings.Split(line, " ")
 	cmd := strings.ToUpper(parts[0])
 
 	switch cmd {
 	case "SIGN_DIGEST":
-		s.handleSignDigest(conn, parts)
+		s.handleSignDigest(conn, parts, remoteAddr)
+	case "GEN_KEY":
+		s.handleGenKey(conn, parts, remoteAddr)
 	case "PING":
+		fmt.Printf("[%s] [signd] Responded to PING from %s\n", time.Now().Format("15:04:05"), remoteAddr)
 		_, _ = io.WriteString(conn, "PONG bsgo-signd ready\n")
 	case "QUIT":
 		_, _ = io.WriteString(conn, "BYE\n")
 		return true
 	default:
+		fmt.Printf("[%s] [signd] Unknown command %q from %s\n", time.Now().Format("15:04:05"), cmd, remoteAddr)
 		_, _ = io.WriteString(conn, fmt.Sprintf("ERROR: unknown command %q\n", cmd))
 	}
 	return false
 }
 
-func (s *Server) handleSignDigest(conn io.Writer, parts []string) {
+func (s *Server) handleSignDigest(conn io.Writer, parts []string, remoteAddr string) {
 	if len(parts) < 3 {
 		_, _ = io.WriteString(conn, "ERROR: missing arguments\n")
 		return
@@ -196,17 +207,56 @@ func (s *Server) handleSignDigest(conn io.Writer, parts []string) {
 	encKey := parts[1]
 	digest, err := hex.DecodeString(parts[2])
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] [signd] Invalid digest hex from %s: %v\n", time.Now().Format("15:04:05"), remoteAddr, err)
 		_, _ = io.WriteString(conn, fmt.Sprintf("ERROR: invalid digest hex: %v\n", err))
 		return
 	}
 
 	sig, err := s.engine.SignDigestWithProjectKey(encKey, digest)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] [signd] Signing failed for client %s: %v\n", time.Now().Format("15:04:05"), remoteAddr, err)
 		_, _ = io.WriteString(conn, fmt.Sprintf("ERROR: signing failed: %v\n", err))
 		return
 	}
 
+	dPreview := parts[2]
+	if len(dPreview) > 12 {
+		dPreview = dPreview[:12]
+	}
+	fmt.Printf("[%s] [signd] Successfully signed digest %s... for client %s\n",
+		time.Now().Format("15:04:05"), dPreview, remoteAddr)
+
 	_, _ = io.WriteString(conn, fmt.Sprintf("OK %s\n", hex.EncodeToString(sig)))
+}
+
+func (s *Server) handleGenKey(conn io.Writer, parts []string, remoteAddr string) {
+	if len(parts) < 2 {
+		_, _ = io.WriteString(conn, "ERROR: missing project argument\n")
+		return
+	}
+	project := parts[1]
+	flavor := "default"
+	if len(parts) >= 3 && parts[2] != "" {
+		flavor = parts[2]
+	}
+	keyType := "gpg"
+	if len(parts) >= 4 && parts[3] != "" {
+		keyType = parts[3]
+	}
+
+	keyModel, err := s.engine.GenerateProjectKeypair(project, flavor, keyType)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] [signd] Failed generating keypair for %s: %v\n",
+			time.Now().Format("15:04:05"), project, err)
+		_, _ = io.WriteString(conn, fmt.Sprintf("ERROR: key generation failed: %v\n", err))
+		return
+	}
+
+	fmt.Printf("[%s] [signd] Generated new RSA-2048 keypair for project: %s (flavor: %s, type: %s, fp: %s) requested by %s\n",
+		time.Now().Format("15:04:05"), project, flavor, keyType, keyModel.Fingerprint, remoteAddr)
+
+	pubHex := hex.EncodeToString([]byte(keyModel.PublicKeyArmored))
+	_, _ = io.WriteString(conn, fmt.Sprintf("OK %s %s %s\n", pubHex, keyModel.EncryptedPrivateKey, keyModel.Fingerprint))
 }
 
 // Client provides a helper to communicate with the bsgo-signd server over TCP/mTLS.
@@ -227,17 +277,17 @@ func (c *Client) SetTLSConfig(cfg *tls.Config) {
 	c.tlsConfig = cfg
 }
 
-func (c *Client) SignDigest(ctx context.Context, encryptedPrivKeyHex string, digest []byte) ([]byte, error) {
+func (c *Client) dial(ctx context.Context) (net.Conn, error) {
 	var d net.Dialer
-	var conn net.Conn
-	var err error
-
 	if c.tlsConfig != nil {
 		tlsDialer := &tls.Dialer{NetDialer: &d, Config: c.tlsConfig}
-		conn, err = tlsDialer.DialContext(ctx, "tcp", c.addr)
-	} else {
-		conn, err = d.DialContext(ctx, "tcp", c.addr)
+		return tlsDialer.DialContext(ctx, "tcp", c.addr)
 	}
+	return d.DialContext(ctx, "tcp", c.addr)
+}
+
+func (c *Client) SignDigest(ctx context.Context, encryptedPrivKeyHex string, digest []byte) ([]byte, error) {
+	conn, err := c.dial(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed connecting to bsgo-signd at %s: %w", c.addr, err)
 	}
@@ -261,4 +311,47 @@ func (c *Client) SignDigest(ctx context.Context, encryptedPrivKeyHex string, dig
 
 	sigHex := strings.TrimPrefix(resp, "OK ")
 	return hex.DecodeString(sigHex)
+}
+
+func (c *Client) GenerateKey(ctx context.Context, project, flavor, keyType string) (*storage.ProjectSigningKey, error) {
+	conn, err := c.dial(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed connecting to bsgo-signd at %s: %w", c.addr, err)
+	}
+	defer conn.Close()
+
+	cmd := fmt.Sprintf("GEN_KEY %s %s %s\n", project, flavor, keyType)
+	if _, err := io.WriteString(conn, cmd); err != nil {
+		return nil, err
+	}
+
+	reader := bufio.NewReader(conn)
+	resp, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+
+	resp = strings.TrimSpace(resp)
+	if !strings.HasPrefix(resp, "OK ") {
+		return nil, fmt.Errorf("signer daemon rejected keygen: %s", resp)
+	}
+
+	parts := strings.Split(strings.TrimPrefix(resp, "OK "), " ")
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("unexpected keygen response from signd: %s", resp)
+	}
+
+	pubBytes, err := hex.DecodeString(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("invalid public key hex: %w", err)
+	}
+
+	return &storage.ProjectSigningKey{
+		ProjectName:         project,
+		KeyFlavor:           flavor,
+		KeyType:             keyType,
+		PublicKeyArmored:    string(pubBytes),
+		EncryptedPrivateKey: parts[1],
+		Fingerprint:         parts[2],
+	}, nil
 }

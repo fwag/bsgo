@@ -67,18 +67,11 @@ func TestRemoteSignerDriver(t *testing.T) {
 	}()
 	defer server.Close()
 
-	// Provision project and key in storage
+	// Provision project in storage without key -> RemoteSignerDriver must auto-provision via signd!
 	memStore := storage.NewMemoryStore()
 	_ = memStore.CreateProject(ctx, &manifest.ProjectManifest{
 		Project: manifest.ProjectInfo{Name: "openSUSE:Factory"},
 	})
-	keyModel, err := engine.GenerateProjectKeypair("openSUSE:Factory", "default", "gpg")
-	if err != nil {
-		t.Fatalf("failed generating keypair: %v", err)
-	}
-	if err := memStore.SaveProjectKey(ctx, keyModel); err != nil {
-		t.Fatalf("failed saving project key: %v", err)
-	}
 
 	client := signd.NewClient(addr)
 	driver := signer.NewRemoteSignerDriver(client, memStore)
@@ -86,7 +79,15 @@ func TestRemoteSignerDriver(t *testing.T) {
 
 	pubKey, err := driver.PublicKey(ctx, opts)
 	if err != nil {
-		t.Fatalf("failed fetching public key: %v", err)
+		t.Fatalf("failed fetching public key (auto-provision): %v", err)
+	}
+	if len(pubKey) == 0 {
+		t.Fatalf("expected non-empty public key")
+	}
+
+	savedKey, err := memStore.GetProjectKey(ctx, "openSUSE:Factory", "default", "gpg")
+	if err != nil || savedKey == nil {
+		t.Fatalf("expected key to be automatically saved to storage: %v", err)
 	}
 
 	payload := []byte("data to sign via remote signd daemon")

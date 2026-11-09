@@ -51,6 +51,13 @@ func (d *Dispatcher) RecordJobResult(jobID, workerID, project string, exitCode i
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	for k, v := range d.activeBuilds {
+		if v == jobID {
+			delete(d.activeBuilds, k)
+			break
+		}
+	}
+
 	now := time.Now()
 	if exitCode == 0 {
 		d.registry.RecordJobSuccess(workerID)
@@ -80,6 +87,7 @@ func (d *Dispatcher) EnqueueJob(job *v1.BuildJob) {
 		d.signalAbort(oldJobID, "SUPERSEDED_BY_NEW_COMMIT")
 	}
 
+	d.queue.RemoveByBuildKey(job.Project, job.Package, job.Target, job.Architecture)
 	d.queue.Push(job)
 }
 

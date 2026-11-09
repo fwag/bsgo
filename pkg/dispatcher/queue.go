@@ -82,6 +82,21 @@ func (q *PriorityQueue) RemoveJob(jobID string) *v1.BuildJob {
 	return nil
 }
 
+// RemoveByBuildKey removes any pending job matching the given project, package, target, and arch.
+func (q *PriorityQueue) RemoveByBuildKey(project, pkg, target, arch string) *v1.BuildJob {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	for i, j := range q.jobs {
+		if j.Project == project && j.Package == pkg && j.Target == target && j.Architecture == arch {
+			job := q.jobs[i]
+			q.jobs = append(q.jobs[:i], q.jobs[i+1:]...)
+			return job
+		}
+	}
+	return nil
+}
+
 func (q *PriorityQueue) Snapshot() []*v1.BuildJob {
 	q.mu.Lock()
 	defer q.mu.Unlock()
