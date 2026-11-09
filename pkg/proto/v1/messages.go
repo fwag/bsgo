@@ -42,6 +42,8 @@ type BuildJob struct {
 	Architecture  string                 `json:"architecture"`
 	Priority      int32                  `json:"priority"`
 	Reason        string                 `json:"reason,omitempty"`
+	BuildType     string                 `json:"build_type,omitempty"`
+	BuildEngine   string                 `json:"build_engine,omitempty"`
 	Source        SourceSpec             `json:"source"`
 	Repositories  []RepositoryDependency `json:"repositories,omitempty"`
 	ChrootRPMs    []ChrootRPM            `json:"chroot_rpms"`
@@ -116,6 +118,7 @@ type PublishRequest struct {
 	Target       string   `json:"target"`
 	Architecture string   `json:"architecture"`
 	Package      string   `json:"package,omitempty"`
+	RepoTypes    []string `json:"repo_types,omitempty"`
 	NewRPMPaths  []string `json:"new_rpm_paths,omitempty"`
 	ArtifactKeys []string `json:"artifact_keys,omitempty"`
 }

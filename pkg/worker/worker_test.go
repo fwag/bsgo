@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
+	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/worker"
 )
@@ -365,5 +366,127 @@ func TestProcessSandboxDynamicRepositories(t *testing.T) {
 	}
 	if !hasLocal {
 		t.Errorf("expected local upstream-dep repo in args, got %v", args)
+	}
+}
+
+func TestRenderBuildConfig(t *testing.T) {
+	cfg := &manifest.ProjectConfig{
+		Preinstall:   []string{"bash", "coreutils", "rpm"},
+		VMinstall:    []string{"kernel-default"},
+		Order:        []string{"bash", "rpm"},
+		BuildEngine:  "podman",
+		BuildTypes:   []string{"docker"},
+		RepoTypes:    []string{"none"},
+		Prefer:       []string{"mariadb-server"},
+		Ignore:       []string{"broken-pkg"},
+		Substitute:   map[string][]string{"default-jdk": {"java-17-openjdk-devel"}},
+		Conflict:     [][]string{{"pkg-a", "pkg-b"}},
+		Optflags:     map[string]string{"x86_64": "-O2 -g"},
+		BuildFlags:   []string{"allowrootforbuild"},
+		PublishFlags: []string{"archsync"},
+		Macros:       "%vendor openSUSE\n%_target_image 1",
+	}
+
+	rendered := worker.RenderBuildConfig(cfg)
+
+	expectedDirectives := []string{
+		"Preinstall: bash coreutils rpm",
+		"VMinstall: kernel-default",
+		"Order: bash rpm",
+		"BuildEngine: podman",
+		"Type: docker",
+		"Repotype: none",
+		"Prefer: mariadb-server",
+		"Ignore: broken-pkg",
+		"Substitute: default-jdk java-17-openjdk-devel",
+		"Conflict: pkg-a pkg-b",
+		"Optflags: x86_64 -O2 -g",
+		"buildflags: allowrootforbuild",
+		"publishflags: archsync",
+		"Macros:\n%vendor openSUSE\n%_target_image 1\n:macros",
+	}
+
+	for _, d := range expectedDirectives {
+		if !strings.Contains(rendered, d) {
+			t.Errorf("expected rendered config to contain %q, but got:\n%s", d, rendered)
+		}
+	}
+}
+
+func TestWorkerSandboxBuildEnginePodman(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	sandbox := &worker.ProcessSandbox{WorkDir: tmpDir}
+
+	job := &v1.BuildJob{
+		JobID:        "job-podman-01",
+		Project:      "openSUSE:Containers",
+		Package:      "hello",
+		Target:       "containers",
+		Architecture: "x86_64",
+		BuildEngine:  "podman",
+		BuildType:    "docker",
+	}
+
+	var buf strings.Builder
+	res, err := sandbox.Execute(ctx, job, &buf)
+	if err != nil {
+		t.Fatalf("unexpected error executing podman build: %v", err)
+	}
+
+	if res.ExitCode != 0 {
+		t.Errorf("expected exit code 0, got %d", res.ExitCode)
+	}
+
+	// Verify that hello.tar was produced and recorded
+	foundTar := false
+	for _, art := range res.Artifacts {
+		if art.Filename == "hello.tar" {
+			foundTar = true
+			break
+		}
+	}
+	if !foundTar {
+		t.Errorf("expected hello.tar in artifacts, got %+v", res.Artifacts)
+	}
+}
+
+func TestWorkerSandboxBuildEngineHelm(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	sandbox := &worker.ProcessSandbox{WorkDir: tmpDir}
+
+	job := &v1.BuildJob{
+		JobID:        "job-helm-01",
+		Project:      "cloud-charts",
+		Package:      "my-chart",
+		Target:       "helm-repo",
+		Architecture: "x86_64",
+		BuildEngine:  "helm",
+		BuildType:    "helm",
+	}
+
+	var buf strings.Builder
+	res, err := sandbox.Execute(ctx, job, &buf)
+	if err != nil {
+		t.Fatalf("unexpected error executing helm build: %v", err)
+	}
+
+	if res.ExitCode != 0 {
+		t.Errorf("expected exit code 0, got %d", res.ExitCode)
+	}
+
+	// Verify that my-chart-0.1.0.tgz was produced and recorded
+	foundTgz := false
+	for _, art := range res.Artifacts {
+		if art.Filename == "my-chart-0.1.0.tgz" {
+			foundTgz = true
+			break
+		}
+	}
+	if !foundTgz {
+		t.Errorf("expected my-chart-0.1.0.tgz in artifacts, got %+v", res.Artifacts)
 	}
 }

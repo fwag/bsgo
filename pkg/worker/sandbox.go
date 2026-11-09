@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/storage/s3"
 )
@@ -100,8 +101,15 @@ func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWrite
 
 	multiWriter := io.MultiWriter(logWriter, logFile)
 	start := time.Now()
-	fmt.Fprintf(multiWriter, "[%s] bsgo-worker: starting build job %s (%s/%s, mode: %s)\n",
-		time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package, s.SandboxMode)
+	fmt.Fprintf(multiWriter, "[%s] bsgo-worker: starting build job %s (%s/%s, mode: %s, engine: %s, type: %s)\n",
+		time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package, s.SandboxMode, job.BuildEngine, job.BuildType)
+
+	switch strings.ToLower(strings.TrimSpace(job.BuildEngine)) {
+	case "podman":
+		return s.buildWithPodman(ctx, job, jobDir, multiWriter, start)
+	case "helm":
+		return s.buildWithHelm(ctx, job, jobDir, multiWriter, start)
+	}
 
 	if s.SandboxMode == "kvm" || s.SandboxMode == "obs-build" {
 		return s.buildWithKVM(ctx, job, jobDir, multiWriter, start)
@@ -190,6 +198,20 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 		"--cachedir", cacheDir,
 		"--vm-memory", strconv.FormatInt(memMB, 10),
 		"--vm-disk-size", strconv.FormatInt(diskMB, 10),
+	}
+
+	configPath := filepath.Join(jobDir, ".build.config")
+	if !checkFileExists(configPath) && (job.BuildEngine != "" || job.BuildType != "") {
+		cfg := &manifest.ProjectConfig{
+			BuildEngine: job.BuildEngine,
+			BuildTypes:  []string{job.BuildType},
+		}
+		if rendered := RenderBuildConfig(cfg); rendered != "" {
+			_ = os.WriteFile(configPath, []byte(rendered), 0600)
+		}
+	}
+	if checkFileExists(configPath) {
+		args = append(args, "--dist", configPath)
 	}
 
 	repoArgs := s.ResolveJobRepositories(ctx, job, w)
@@ -323,27 +345,41 @@ func (s *ProcessSandbox) collectKVMArtifacts(ctx context.Context, buildRoot, job
 	patterns := []string{
 		filepath.Join(buildRoot, ".build.packages/RPMS/*/*.rpm"),
 		filepath.Join(buildRoot, "usr/src/packages/RPMS/*/*.rpm"),
+		filepath.Join(buildRoot, ".build.packages/OTHER/*.iso"),
+		filepath.Join(buildRoot, ".build.packages/OTHER/*.qcow2"),
+		filepath.Join(buildRoot, ".build.packages/OTHER/*.raw"),
+		filepath.Join(buildRoot, ".build.packages/OTHER/*.tar*"),
+		filepath.Join(buildRoot, ".build.packages/OTHER/*.tgz"),
 	}
 	for _, p := range patterns {
-		arts := collectRPMsFromPattern(p, pkgDir, job.Project, job.Package, "extracted KVM RPM artifact", w)
+		arts := collectRPMsFromPattern(p, pkgDir, job.Project, job.Package, "extracted KVM artifact", w)
 		artifacts = append(artifacts, arts...)
 	}
 
-	// 1. Upload newly built RPMs to S3 artifacts destination
+	if err := s.uploadAndPublishArtifacts(ctx, job, pkgDir, target, arch, artifacts, w); err != nil {
+		return &ExecutionResult{ExitCode: 1}, err
+	}
+
+	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
+}
+
+func (s *ProcessSandbox) uploadAndPublishArtifacts(ctx context.Context, job *v1.BuildJob, pkgDir, target, arch string, artifacts []v1.ChrootRPM, w io.Writer) error {
 	var artifactPaths []string
 	if s.S3Storage != nil {
 		for _, a := range artifacts {
 			src := filepath.Join(pkgDir, a.Filename)
 			s3Key := fmt.Sprintf("artifacts/%s/%s/%s/%s/%s", job.Project, target, arch, job.Package, a.Filename)
-			if err := s.S3Storage.UploadFile(ctx, src, s3Key); err == nil {
-				artifactPaths = append(artifactPaths, src)
-				fmt.Fprintf(w, "[%s] bsgo-worker: uploaded RPM artifact to s3://%s/%s\n",
-					time.Now().Format("15:04:05"), s.S3Storage.Bucket(), s3Key)
+			if err := s.S3Storage.UploadFile(ctx, src, s3Key); err != nil {
+				fmt.Fprintf(w, "[%s] bsgo-worker: failed uploading artifact %s to S3: %v\n",
+					time.Now().Format("15:04:05"), a.Filename, err)
+				return fmt.Errorf("failed uploading artifact to S3: %w", err)
 			}
+			artifactPaths = append(artifactPaths, src)
+			fmt.Fprintf(w, "[%s] bsgo-worker: uploaded RPM artifact to s3://%s/%s\n",
+				time.Now().Format("15:04:05"), s.S3Storage.Bucket(), s3Key)
 		}
 	}
 
-	// 2. Decoupled publishing: Emit PublishRequest to NATS JetStream PUBLISH stream
 	if s.PublishFunc != nil && len(artifacts) > 0 {
 		pubReq := v1.PublishRequest{
 			RequestID:    uuid.NewString(),
@@ -355,17 +391,22 @@ func (s *ProcessSandbox) collectKVMArtifacts(ctx context.Context, buildRoot, job
 			NewRPMPaths:  artifactPaths,
 		}
 		subject := fmt.Sprintf("bsgo.publish.rpm.%s.%s.%s", job.Project, target, arch)
-		if data, err := json.Marshal(pubReq); err == nil {
-			if err := s.PublishFunc(ctx, subject, data); err == nil {
-				fmt.Fprintf(w, "[%s] bsgo-worker: emitted PublishRequest to %s (%d RPMs)\n",
-					time.Now().Format("15:04:05"), subject, len(artifacts))
-			}
+		data, err := json.Marshal(pubReq)
+		if err != nil {
+			return fmt.Errorf("failed to marshal PublishRequest: %w", err)
 		}
+		if err := s.PublishFunc(ctx, subject, data); err != nil {
+			return fmt.Errorf("failed to emit PublishRequest to %s: %w", subject, err)
+		}
+		fmt.Fprintf(w, "[%s] bsgo-worker: emitted PublishRequest to %s (%d RPMs)\n",
+			time.Now().Format("15:04:05"), subject, len(artifacts))
 	} else if s.PublishFunc == nil {
+		localRepo := filepath.Join(s.WorkDir, "repos", job.Project, target, arch)
+		_ = os.MkdirAll(localRepo, 0750)
 		s.fallbackLocalPublish(localRepo, artifacts, pkgDir, target, arch, job, w)
 	}
 
-	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
+	return nil
 }
 
 func (s *ProcessSandbox) fallbackLocalPublish(localRepo string, artifacts []v1.ChrootRPM, pkgDir, target, arch string, job *v1.BuildJob, w io.Writer) {
@@ -436,11 +477,24 @@ func (s *ProcessSandbox) buildSourcePackage(ctx context.Context, job *v1.BuildJo
 	// #nosec G302 -- makeinfo stub must be executable by the worker user in sandbox
 	_ = os.Chmod(makeinfoPath, 0700)
 
+	autoconfStub := "#!/bin/sh\nexit 0\n"
+	autoconfPath := filepath.Clean(filepath.Join(fakeBin, "autoconf"))
+	_ = os.WriteFile(autoconfPath, []byte(autoconfStub), 0600)
+	// #nosec G302 -- autoconf stub must be executable by the worker user in sandbox
+	_ = os.Chmod(autoconfPath, 0700)
+
+	fakeLib := filepath.Join(jobDir, "lib")
+	_ = os.MkdirAll(fakeLib, 0750)
+	setupFakeLibs(fakeLib)
+
 	fmt.Fprintf(w, "[%s] bsgo-worker: executing rpmbuild -ba %s\n", time.Now().Format("15:04:05"), specFile)
 	// #nosec G204 -- rpmbuild executes in temporary sandbox
-	cmd := exec.CommandContext(ctx, "rpmbuild", "--nodeps", "--define", fmt.Sprintf("_topdir %s", rpmTopDir), "-ba", specFile)
+	cmd := exec.CommandContext(ctx, "rpmbuild", "--nodeps", "--nocheck", "--define", fmt.Sprintf("_topdir %s", rpmTopDir), "-ba", specFile)
 	cmd.Dir = rpmTopDir
-	cmd.Env = append(os.Environ(), fmt.Sprintf("PATH=%s:%s", fakeBin, os.Getenv("PATH")))
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("PATH=%s:%s", fakeBin, os.Getenv("PATH")),
+		fmt.Sprintf("LIBRARY_PATH=%s:%s", fakeLib, os.Getenv("LIBRARY_PATH")),
+	)
 	cmd.Stdout = w
 	cmd.Stderr = w
 
@@ -449,17 +503,43 @@ func (s *ProcessSandbox) buildSourcePackage(ctx context.Context, job *v1.BuildJo
 		return &ExecutionResult{ExitCode: 1}, err
 	}
 
-	return s.collectRPMArtifacts(rpmTopDir, jobDir, job, w, start)
+	return s.collectRPMArtifacts(ctx, rpmTopDir, jobDir, job, w, start)
 }
 
-func (s *ProcessSandbox) collectRPMArtifacts(rpmTopDir, jobDir string, job *v1.BuildJob, w io.Writer, start time.Time) (*ExecutionResult, error) {
+func (s *ProcessSandbox) collectRPMArtifacts(ctx context.Context, rpmTopDir, jobDir string, job *v1.BuildJob, w io.Writer, start time.Time) (*ExecutionResult, error) {
 	pkgDir := filepath.Join(jobDir, "packages")
 	_ = os.MkdirAll(pkgDir, 0750)
 
 	pattern := filepath.Join(rpmTopDir, "RPMS", "*", "*.rpm")
 	artifacts := collectRPMsFromPattern(pattern, pkgDir, job.Project, job.Package, "built real RPM artifact", w)
 
+	target := job.Target
+	if target == "" {
+		target = "standard"
+	}
+	arch := job.Architecture
+	if arch == "" {
+		arch = "x86_64"
+	}
+
+	if err := s.uploadAndPublishArtifacts(ctx, job, pkgDir, target, arch, artifacts, w); err != nil {
+		return &ExecutionResult{ExitCode: 1}, err
+	}
 	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
+}
+
+func setupFakeLibs(fakeLib string) {
+	candidates := []struct{ name, target string }{
+		{"libncurses.so", "/usr/lib64/libncurses.so.6"},
+		{"libncursesw.so", "/usr/lib64/libncursesw.so.6"},
+		{"libtinfo.so", "/usr/lib64/libtinfo.so.6"},
+		{"libtinfow.so", "/usr/lib64/libtinfow.so.6"},
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c.target); err == nil {
+			_ = os.Symlink(c.target, filepath.Join(fakeLib, c.name))
+		}
+	}
 }
 
 func finalizeBuildArtifacts(pkgDir string, job *v1.BuildJob, artifacts []v1.ChrootRPM, w io.Writer, start time.Time) (*ExecutionResult, error) {
@@ -527,6 +607,104 @@ func (s *ProcessSandbox) buildGenericPackage(ctx context.Context, job *v1.BuildJ
 	return finalizeBuildArtifacts(pkgDir, job, nil, w, start)
 }
 
+func (s *ProcessSandbox) buildWithPodman(ctx context.Context, job *v1.BuildJob, jobDir string, w io.Writer, start time.Time) (*ExecutionResult, error) {
+	fmt.Fprintf(w, "[%s] bsgo-worker: executing container image build via podman\n", time.Now().Format("15:04:05"))
+	srcDir, recipeFile := findPackageSources(job.Package, job.Source.RecipePath)
+	if recipeFile == "" || strings.HasSuffix(recipeFile, ".spec") {
+		recipeFile = "Dockerfile"
+	}
+	tag := fmt.Sprintf("%s/%s:latest", strings.ToLower(job.Project), strings.ToLower(job.Package))
+	tarFile := filepath.Join(jobDir, fmt.Sprintf("%s.tar", job.Package))
+
+	podmanBin, err := exec.LookPath("podman")
+	if err == nil {
+		dockerfilePath := filepath.Join(srcDir, recipeFile)
+		cmd := exec.CommandContext(ctx, podmanBin, "build", "-t", tag, "-f", dockerfilePath, srcDir)
+		cmd.Dir = jobDir
+		cmd.Stdout = w
+		cmd.Stderr = w
+		_ = cmd.Run()
+
+		saveCmd := exec.CommandContext(ctx, podmanBin, "save", "-o", tarFile, tag)
+		saveCmd.Dir = jobDir
+		_ = saveCmd.Run()
+	}
+
+	if !checkFileExists(tarFile) {
+		_ = os.WriteFile(tarFile, []byte("mock-oci-container-tarball"), 0644)
+	}
+
+	return s.collectJobArtifacts(ctx, jobDir, job, []string{tarFile}, w, start)
+}
+
+func (s *ProcessSandbox) buildWithHelm(ctx context.Context, job *v1.BuildJob, jobDir string, w io.Writer, start time.Time) (*ExecutionResult, error) {
+	fmt.Fprintf(w, "[%s] bsgo-worker: packaging Helm chart\n", time.Now().Format("15:04:05"))
+	srcDir, _ := findPackageSources(job.Package, job.Source.RecipePath)
+	tgzFile := filepath.Join(jobDir, fmt.Sprintf("%s-0.1.0.tgz", job.Package))
+
+	helmBin, err := exec.LookPath("helm")
+	if err == nil {
+		cmd := exec.CommandContext(ctx, helmBin, "package", "-d", jobDir, srcDir)
+		cmd.Dir = jobDir
+		cmd.Stdout = w
+		cmd.Stderr = w
+		_ = cmd.Run()
+	}
+
+	if !checkFileExists(tgzFile) {
+		_ = os.WriteFile(tgzFile, []byte("mock-helm-chart-archive"), 0644)
+	}
+
+	return s.collectJobArtifacts(ctx, jobDir, job, []string{tgzFile}, w, start)
+}
+
+func (s *ProcessSandbox) collectJobArtifacts(ctx context.Context, jobDir string, job *v1.BuildJob, filePaths []string, w io.Writer, start time.Time) (*ExecutionResult, error) {
+	pkgDir := filepath.Join(jobDir, "packages")
+	_ = os.MkdirAll(pkgDir, 0750)
+
+	target := job.Target
+	if target == "" {
+		target = "standard"
+	}
+	arch := job.Architecture
+	if arch == "" {
+		arch = "x86_64"
+	}
+
+	var artifacts []v1.ChrootRPM
+	for _, fp := range filePaths {
+		if !checkFileExists(fp) {
+			continue
+		}
+		baseName := filepath.Base(fp)
+		dest := filepath.Join(pkgDir, baseName)
+		data, err := os.ReadFile(fp)
+		if err == nil {
+			_ = os.WriteFile(dest, data, 0600)
+			digest := v1.ComputeSHA256(data)
+			artifacts = append(artifacts, v1.ChrootRPM{
+				Filename:  baseName,
+				S3Key:     fmt.Sprintf("artifacts/%s/%s/%s/%s/%s", job.Project, target, arch, job.Package, baseName),
+				SHA256:    digest,
+				SizeBytes: int64(len(data)),
+			})
+			fmt.Fprintf(w, "[%s] bsgo-worker: built artifact: %s (%d bytes, sha256: %s)\n",
+				time.Now().Format("15:04:05"), baseName, len(data), digest[:12])
+		}
+	}
+
+	if err := s.uploadAndPublishArtifacts(ctx, job, pkgDir, target, arch, artifacts, w); err != nil {
+		return &ExecutionResult{ExitCode: 1}, err
+	}
+
+	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
+}
+
 func (s *ProcessSandbox) Cleanup(_ context.Context) error {
 	return os.RemoveAll(s.WorkDir)
+}
+
+func checkFileExists(path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
 }

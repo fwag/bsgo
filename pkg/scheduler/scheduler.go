@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,11 +74,12 @@ func (s *Scheduler) ProcessTrigger(ctx context.Context, trigger *v1.BuildTrigger
 
 	var generatedJobs []*v1.BuildJob
 	for targetName, targetCfg := range prj.Targets {
-		if !s.isTargetEligible(trigger, pkg, targetName, targetCfg) {
+		effectiveCfg := ResolveTargetConfig(ctx, s.store, prj, targetName)
+		if !s.isTargetEligible(trigger, pkg, targetName, targetCfg, effectiveCfg) {
 			continue
 		}
 
-		targetJobs, err := s.processTarget(ctx, trigger, targetName, targetCfg, pkg)
+		targetJobs, err := s.processTarget(ctx, trigger, targetName, targetCfg, effectiveCfg, pkg)
 		if err != nil {
 			return nil, err
 		}
@@ -99,12 +102,17 @@ func (s *Scheduler) ProcessCommitBatch(ctx context.Context, triggers []*v1.Build
 	return allJobs, nil
 }
 
-func (s *Scheduler) isTargetEligible(trigger *v1.BuildTrigger, pkg *manifest.PackageManifest, targetName string, targetCfg manifest.BuildTarget) bool {
+func (s *Scheduler) isTargetEligible(trigger *v1.BuildTrigger, pkg *manifest.PackageManifest, targetName string, targetCfg manifest.BuildTarget, effectiveCfg *manifest.ProjectConfig) bool {
 	if trigger.Target != "" && trigger.Target != targetName {
 		return false
 	}
 
 	if enabled, exists := pkg.Build.Targets[targetName]; exists && !enabled {
+		return false
+	}
+
+	recipeType := DetectRecipeBuildType(pkg.Source.Recipe)
+	if !effectiveCfg.HasBuildType(recipeType) {
 		return false
 	}
 
@@ -120,7 +128,7 @@ func (s *Scheduler) isTargetEligible(trigger *v1.BuildTrigger, pkg *manifest.Pac
 	return true
 }
 
-func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger, targetName string, targetCfg manifest.BuildTarget, pkg *manifest.PackageManifest) ([]*v1.BuildJob, error) {
+func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger, targetName string, targetCfg manifest.BuildTarget, effectiveCfg *manifest.ProjectConfig, pkg *manifest.PackageManifest) ([]*v1.BuildJob, error) {
 	var eligibleArchs []string
 	for _, arch := range targetCfg.Architectures {
 		if trigger.Architecture != "" && trigger.Architecture != arch {
@@ -141,7 +149,7 @@ func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger,
 			jobID = fmt.Sprintf("%s-%s", trigger.TriggerID, arch)
 		}
 
-		job, err := s.buildJobForArch(ctx, trigger, targetName, arch, pkg, targetCfg, jobID)
+		job, err := s.buildJobForArch(ctx, trigger, targetName, arch, pkg, targetCfg, effectiveCfg, jobID)
 		if err != nil {
 			return nil, err
 		}
@@ -160,7 +168,7 @@ func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger,
 	return jobs, nil
 }
 
-func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigger, targetName, arch string, pkg *manifest.PackageManifest, targetCfg manifest.BuildTarget, jobID string) (*v1.BuildJob, error) {
+func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigger, targetName, arch string, pkg *manifest.PackageManifest, targetCfg manifest.BuildTarget, effectiveCfg *manifest.ProjectConfig, jobID string) (*v1.BuildJob, error) {
 	req := solv.ExpansionRequest{
 		BuildRequires: []string{pkg.Package.Name},
 	}
@@ -181,6 +189,11 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 
 	prio := calculatePriority(trigger.NormalizedPriority(), len(chrootRPMs))
 	repos := resolveRepositoryDependencies(trigger, targetName, arch, targetCfg)
+	recipeType := DetectRecipeBuildType(pkg.Source.Recipe)
+	buildEngine := effectiveCfg.EffectiveBuildEngine()
+	if recipeType == "docker" && effectiveCfg.BuildEngine == "" {
+		buildEngine = "podman"
+	}
 
 	return &v1.BuildJob{
 		JobID:        jobID,
@@ -190,6 +203,8 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		Architecture: arch,
 		Priority:     prio,
 		Reason:       trigger.Reason,
+		BuildType:    recipeType,
+		BuildEngine:  buildEngine,
 		Source: v1.SourceSpec{
 			GitURL:     trigger.SourceGitURL,
 			CommitSHA:  trigger.CommitSHA,
@@ -208,6 +223,97 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		},
 		CreatedAtUnix: time.Now().Unix(),
 	}, nil
+}
+
+// DetectRecipeBuildType returns the build type based on the recipe filename or extension.
+func DetectRecipeBuildType(recipePath string) string {
+	base := strings.ToLower(filepath.Base(recipePath))
+	switch {
+	case strings.HasSuffix(base, ".spec"):
+		return "spec"
+	case strings.HasSuffix(base, ".kiwi"):
+		return "kiwi"
+	case strings.HasSuffix(base, ".productcompose"):
+		return "productcompose"
+	case strings.HasSuffix(base, ".dsc") || base == "debian.control":
+		return "dsc"
+	case base == "dockerfile" || strings.HasPrefix(base, "dockerfile."):
+		return "docker"
+	case base == "chart.yaml":
+		return "helm"
+	case base == "pkgbuild":
+		return "arch"
+	case base == "apkbuild":
+		return "apk"
+	default:
+		return "spec"
+	}
+}
+
+// ResolveTargetConfig resolves the effective configuration for a target across the dependency DAG.
+// If the target sets from_scratch: true, upstream dependencies and project defaults are omitted.
+func ResolveTargetConfig(ctx context.Context, store storage.Store, prj *manifest.ProjectManifest, targetName string) *manifest.ProjectConfig {
+	tgt, ok := prj.Targets[targetName]
+	if !ok {
+		if prj.Config != nil {
+			return prj.Config.Clone()
+		}
+		return &manifest.ProjectConfig{}
+	}
+
+	if tgt.Config != nil && tgt.Config.FromScratch {
+		return tgt.Config.Clone()
+	}
+
+	baseConfig := resolveDependencyConfigs(ctx, store, prj, tgt.Dependencies, targetName)
+
+	if prj.Config != nil {
+		if baseConfig == nil {
+			baseConfig = prj.Config.Clone()
+		} else {
+			baseConfig = baseConfig.Merge(prj.Config)
+		}
+	}
+
+	if tgt.Config != nil {
+		if baseConfig == nil {
+			baseConfig = tgt.Config.Clone()
+		} else {
+			baseConfig = baseConfig.Merge(tgt.Config)
+		}
+	}
+
+	if baseConfig == nil {
+		return &manifest.ProjectConfig{}
+	}
+	return baseConfig
+}
+
+func resolveDependencyConfigs(ctx context.Context, store storage.Store, prj *manifest.ProjectManifest, deps []manifest.DependencySource, targetName string) *manifest.ProjectConfig {
+	if store == nil {
+		return nil
+	}
+	var baseConfig *manifest.ProjectConfig
+	for _, dep := range deps {
+		if dep.Project == "" || dep.Project == prj.Project.Name {
+			continue
+		}
+		parentPrj, err := store.GetProject(ctx, dep.Project)
+		if err != nil || parentPrj == nil {
+			continue
+		}
+		depTarget := dep.Target
+		if depTarget == "" {
+			depTarget = targetName
+		}
+		parentCfg := parentPrj.EffectiveTargetConfig(depTarget)
+		if baseConfig == nil {
+			baseConfig = parentCfg.Clone()
+		} else {
+			baseConfig = baseConfig.Merge(parentCfg)
+		}
+	}
+	return baseConfig
 }
 
 func resolveRepositoryDependencies(trigger *v1.BuildTrigger, targetName, arch string, targetCfg manifest.BuildTarget) []v1.RepositoryDependency {

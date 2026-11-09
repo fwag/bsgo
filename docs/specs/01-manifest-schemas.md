@@ -17,6 +17,31 @@ project:
   title: "openSUSE Factory Distribution"
   description: "Rolling release base distribution"
 
+# Optional project-wide configuration defaults (replaces legacy OBS _config / prjconf)
+config:
+  build_types:
+    - "spec"
+  build_engine: "build"
+  repo_types:
+    - "rpm-md"
+  prefer:
+    - "mariadb-server"
+    - "java-17-openjdk-devel"
+  ignore:
+    - "broken-pkg"
+  substitute:
+    default-jdk: ["java-17-openjdk-devel"]
+  preinstall:
+    - "bash"
+    - "coreutils"
+    - "rpm"
+  vminstall:
+    - "kernel-default"
+  build_flags:
+    - "allowrootforbuild"
+  macros: |
+    %vendor openSUSE
+
 targets:
   standard:
     architectures:
@@ -43,6 +68,11 @@ targets:
     dependencies:
       - project: "openSUSE:Factory"
         target: "standard"
+    # Target-specific configuration overrides
+    config:
+      build_types: ["kiwi", "docker"]
+      build_engine: "podman"
+      repo_types: ["none"] # Disables RPM repodata generation for raw images
     flags:
       build: true
       publish: true
@@ -56,8 +86,26 @@ targets:
 | `project.name` | string | Yes | Unique canonical project identifier (e.g. `openSUSE:Factory`). |
 | `project.title` | string | No | Short human-readable display title. |
 | `project.description` | string | No | Markdown/text description. |
+| `config` | obj | No | Project-wide build, solver, and publication settings. |
+| `config.build_types` | list[str] | No | Allowed build recipe types (e.g. `["spec"]`, `["kiwi"]`, `["docker"]`, `["helm"]`). Defaults to `["spec"]`. |
+| `config.build_engine` | string | No | Toolchain execution engine (`"build"`, `"podman"`, `"mock"`, `"helm"`). Defaults to `"build"`. |
+| `config.repo_types` | list[str] | No | Published repository index formats (`["rpm-md"]`, `["none"]`, `["helm"]`). Defaults to `["rpm-md"]`. |
+| `config.from_scratch` | bool | No | If `true`, stops config inheritance from dependency targets (clean OBS `FromScratch:` replacement). |
+| `config.prefer` | list[str] | No | Preferred package list for resolving dependency ambiguities in `libsolv`. |
+| `config.ignore` | list[str] | No | Package list to ignore during dependency resolution. |
+| `config.substitute` | map[str, list[str]] | No | Virtual capability to concrete package substitutions. |
+| `config.conflict` | list[list[str]] | No | Declared mutual exclusions between packages in build chroot. |
+| `config.preinstall` | list[str] | No | Minimal packages extracted to bootstrap chroot before `rpm` runs (`bash`, `rpm`). |
+| `config.vminstall` | list[str] | No | Hypervisor packages required to boot worker KVM micro-VM. |
+| `config.order` | list[str] | No | Forced package installation order to break dependency cycles. |
+| `config.build_flags` | list[str] | No | Build execution flags (e.g. `allowrootforbuild`). |
+| `config.publish_flags` | list[str] | No | Publication behavior flags (e.g. `archsync`). |
+| `config.optflags` | map[str, str] | No | Architecture-specific compiler flags (e.g. `x86_64: "-O2 -g"`). |
+| `config.macros` | string | No | Inline RPM macro definitions passed to build toolchain. |
+| `config.macros_file` | string | No | Path to Git repository file containing distribution RPM macros. |
 | `targets.<name>` | map | Yes | Dictionary of build targets defined for this project. |
 | `targets.<name>.architectures` | list[str] | Yes | Build architectures supported (e.g. `x86_64`, `aarch64`). |
+| `targets.<name>.config` | obj | No | Target-specific configuration override merged hierarchically over project `config`. |
 | `targets.<name>.dependencies` | list[obj] | Yes | Ordered dependency layers for `libsolv`. Evaluated in order: top entry has highest priority. |
 | `targets.<name>.dependencies[].project` | string | Conditional | Reference to another `bsgo` project. |
 | `targets.<name>.dependencies[].target` | string | Conditional | Target within the referenced project. |

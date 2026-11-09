@@ -414,3 +414,197 @@ func TestSchedulerResolvesRepositoryDependencies(t *testing.T) {
 		t.Errorf("unexpected self repo: %+v", job.Repositories[2])
 	}
 }
+
+func TestDetectRecipeBuildType(t *testing.T) {
+	tests := []struct {
+		recipePath string
+		want       string
+	}{
+		{"ripgrep.spec", "spec"},
+		{"/path/to/ripgrep.spec", "spec"},
+		{"appliance.kiwi", "kiwi"},
+		{"suse.productcompose", "productcompose"},
+		{"debian.control", "dsc"},
+		{"pkg.dsc", "dsc"},
+		{"Dockerfile", "docker"},
+		{"Dockerfile.sub", "docker"},
+		{"Chart.yaml", "helm"},
+		{"PKGBUILD", "arch"},
+		{"APKBUILD", "apk"},
+		{"", "spec"},
+		{"unknown.file", "spec"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.recipePath, func(t *testing.T) {
+			got := scheduler.DetectRecipeBuildType(tt.recipePath)
+			if got != tt.want {
+				t.Errorf("DetectRecipeBuildType(%q) = %q, want %q", tt.recipePath, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSchedulerDAGConfigInheritanceAndFromScratch(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+
+	// Upstream base project
+	basePrj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "openSUSE:Base"},
+		Config: &manifest.ProjectConfig{
+			Prefer:      []string{"base-libc"},
+			BuildEngine: "build",
+			BuildTypes:  []string{"spec"},
+		},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {
+				Architectures: []string{"x86_64"},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, basePrj)
+
+	// Downstream child project with standard target inheriting base, and bootstrap with from_scratch
+	childPrj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "openSUSE:Child"},
+		Config: &manifest.ProjectConfig{
+			Prefer: []string{"child-util"},
+		},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {
+				Architectures: []string{"x86_64"},
+				Dependencies: []manifest.DependencySource{
+					{Project: "openSUSE:Base", Target: "standard"},
+				},
+			},
+			"bootstrap": {
+				Architectures: []string{"x86_64"},
+				Dependencies: []manifest.DependencySource{
+					{Project: "openSUSE:Base", Target: "standard"},
+				},
+				Config: &manifest.ProjectConfig{
+					FromScratch: true,
+					Preinstall:  []string{"busybox"},
+				},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, childPrj)
+
+	// 1. Standard target inherits base-libc from Base and child-util from Child
+	stdCfg := scheduler.ResolveTargetConfig(ctx, store, childPrj, "standard")
+	if len(stdCfg.Prefer) != 2 {
+		t.Fatalf("expected 2 prefer items, got %d (%v)", len(stdCfg.Prefer), stdCfg.Prefer)
+	}
+	if stdCfg.Prefer[0] != "base-libc" || stdCfg.Prefer[1] != "child-util" {
+		t.Errorf("unexpected prefer order/contents: %v", stdCfg.Prefer)
+	}
+
+	// 2. Bootstrap target with from_scratch: true drops both base and child project configs
+	bootCfg := scheduler.ResolveTargetConfig(ctx, store, childPrj, "bootstrap")
+	if len(bootCfg.Prefer) != 0 {
+		t.Errorf("expected 0 prefer items from scratch, got %d (%v)", len(bootCfg.Prefer), bootCfg.Prefer)
+	}
+	if len(bootCfg.Preinstall) != 1 || bootCfg.Preinstall[0] != "busybox" {
+		t.Errorf("expected busybox preinstall, got %v", bootCfg.Preinstall)
+	}
+}
+
+func TestSchedulerBuildTypeFiltering(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+
+	prj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "mixed-project"},
+		Targets: map[string]manifest.BuildTarget{
+			"packages": {
+				Architectures: []string{"x86_64"},
+				Config: &manifest.ProjectConfig{
+					BuildTypes: []string{"spec"},
+				},
+			},
+			"images": {
+				Architectures: []string{"x86_64"},
+				Config: &manifest.ProjectConfig{
+					BuildTypes:  []string{"kiwi", "docker"},
+					BuildEngine: "podman",
+					RepoTypes:   []string{"none"},
+				},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, prj)
+
+	// 1. RPM package: ripgrep with .spec
+	pkgSpec := &manifest.PackageManifest{
+		SchemaVersion: "v1",
+		Package:       manifest.PackageInfo{Name: "ripgrep"},
+		Source:        manifest.PackageSource{Git: "https://git/rg.git", Recipe: "ripgrep.spec"},
+		Build:         manifest.PackageBuild{Enabled: true},
+	}
+	_ = store.UpsertPackage(ctx, "mixed-project", pkgSpec)
+
+	// 2. Image package: appliance with .kiwi
+	pkgKiwi := &manifest.PackageManifest{
+		SchemaVersion: "v1",
+		Package:       manifest.PackageInfo{Name: "appliance"},
+		Source:        manifest.PackageSource{Git: "https://git/app.git", Recipe: "app.kiwi"},
+		Build:         manifest.PackageBuild{Enabled: true},
+	}
+	_ = store.UpsertPackage(ctx, "mixed-project", pkgKiwi)
+
+	// 3. Container package: web-app with Dockerfile
+	pkgDocker := &manifest.PackageManifest{
+		SchemaVersion: "v1",
+		Package:       manifest.PackageInfo{Name: "web-app"},
+		Source:        manifest.PackageSource{Git: "https://git/web.git", Recipe: "Dockerfile"},
+		Build:         manifest.PackageBuild{Enabled: true},
+	}
+	_ = store.UpsertPackage(ctx, "mixed-project", pkgDocker)
+
+	solver := &mockSolver{
+		pkgs: []solv.ResolvedPackage{{Name: "base", EVR: "1.0", Arch: "x86_64"}},
+	}
+	pub := scheduler.NewNatsPublisher(func(_ context.Context, _ string, _ []byte) error { return nil })
+	sched := scheduler.NewScheduler(store, solver, pub, scheduler.Config{S3Bucket: "artifacts"})
+
+	// Trigger for ripgrep: should only be scheduled on "packages" target, NOT "images"
+	rgJobs, err := sched.ProcessTrigger(ctx, v1.NewTrigger("mixed-project", "ripgrep", "https://git/rg.git", "c1", "main", "alice"))
+	if err != nil {
+		t.Fatalf("unexpected error for ripgrep: %v", err)
+	}
+	if len(rgJobs) != 1 || rgJobs[0].Target != "packages" {
+		t.Fatalf("expected 1 job on target 'packages', got %d", len(rgJobs))
+	}
+	if rgJobs[0].BuildType != "spec" || rgJobs[0].BuildEngine != "build" {
+		t.Errorf("ripgrep: expected build_type 'spec' and engine 'build', got %q, %q", rgJobs[0].BuildType, rgJobs[0].BuildEngine)
+	}
+
+	// Trigger for appliance: should only be scheduled on "images" target, NOT "packages"
+	kiwiJobs, err := sched.ProcessTrigger(ctx, v1.NewTrigger("mixed-project", "appliance", "https://git/app.git", "c2", "main", "alice"))
+	if err != nil {
+		t.Fatalf("unexpected error for appliance: %v", err)
+	}
+	if len(kiwiJobs) != 1 || kiwiJobs[0].Target != "images" {
+		t.Fatalf("expected 1 job on target 'images', got %d", len(kiwiJobs))
+	}
+	if kiwiJobs[0].BuildType != "kiwi" || kiwiJobs[0].BuildEngine != "podman" {
+		t.Errorf("appliance: expected build_type 'kiwi' and engine 'podman', got %q, %q", kiwiJobs[0].BuildType, kiwiJobs[0].BuildEngine)
+	}
+
+	// Trigger for web-app: should only be scheduled on "images" target, NOT "packages"
+	dockerJobs, err := sched.ProcessTrigger(ctx, v1.NewTrigger("mixed-project", "web-app", "https://git/web.git", "c3", "main", "alice"))
+	if err != nil {
+		t.Fatalf("unexpected error for web-app: %v", err)
+	}
+	if len(dockerJobs) != 1 || dockerJobs[0].Target != "images" {
+		t.Fatalf("expected 1 job on target 'images', got %d", len(dockerJobs))
+	}
+	if dockerJobs[0].BuildType != "docker" || dockerJobs[0].BuildEngine != "podman" {
+		t.Errorf("web-app: expected build_type 'docker' and engine 'podman', got %q, %q", dockerJobs[0].BuildType, dockerJobs[0].BuildEngine)
+	}
+}

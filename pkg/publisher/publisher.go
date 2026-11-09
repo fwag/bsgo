@@ -26,7 +26,8 @@ type PublishResult struct {
 	Project         string   `json:"project"`
 	Target          string   `json:"target"`
 	Architecture    string   `json:"architecture"`
-	RepomdXMLKey    string   `json:"repomd_xml_key"`
+	RepomdXMLKey    string   `json:"repomd_xml_key,omitempty"`
+	IndexYAMLKey    string   `json:"index_yaml_key,omitempty"`
 	UploadedXMLKeys []string `json:"uploaded_xml_keys"`
 }
 
@@ -81,12 +82,13 @@ func (m *LocalLockManager) AcquireLock(_ context.Context, key string) (func(), e
 }
 
 type Publisher struct {
-	crExecutor CreateRepoExecutor
-	s3Client   S3Client
-	lockMgr    LockManager
-	workDir    string
-	eventPub   EventPublisher
-	signer     MetadataSigner
+	crExecutor   CreateRepoExecutor
+	helmExecutor HelmIndexExecutor
+	s3Client     S3Client
+	lockMgr      LockManager
+	workDir      string
+	eventPub     EventPublisher
+	signer       MetadataSigner
 }
 
 func NewPublisher(cr CreateRepoExecutor, s3 S3Client, lockMgr LockManager, workDir string) *Publisher {
@@ -106,6 +108,10 @@ func (p *Publisher) SetMetadataSigner(ms MetadataSigner) {
 	p.signer = ms
 }
 
+func (p *Publisher) SetHelmExecutor(he HelmIndexExecutor) {
+	p.helmExecutor = he
+}
+
 func (p *Publisher) ProcessPublishRequest(ctx context.Context, req PublishRequest) (*PublishResult, error) {
 	if !isValidPathSegment(req.Project) || !isValidPathSegment(req.Target) || !isValidPathSegment(req.Architecture) {
 		return nil, fmt.Errorf("invalid publish request: path traversal detected in project, target, or architecture")
@@ -118,11 +124,58 @@ func (p *Publisher) ProcessPublishRequest(ctx context.Context, req PublishReques
 	}
 	defer unlock()
 
-	repoDir := filepath.Join(p.workDir, req.Project, req.Target, req.Architecture)
-	oldMetaDir := filepath.Join(repoDir, "repodata")
-	_ = os.MkdirAll(repoDir, 0750)
+	repoTypes := req.RepoTypes
+	if len(repoTypes) == 0 {
+		repoTypes = []string{"rpm-md"}
+	}
 
+	res := &PublishResult{
+		Project:      req.Project,
+		Target:       req.Target,
+		Architecture: req.Architecture,
+	}
+
+	// 1. RepoType: "none" suppresses repodata generation completely (ISOs, appliance images, raw binaries)
+	if hasRepoType(repoTypes, "none") {
+		p.emitPublicationEvent(ctx, req, "")
+		return res, nil
+	}
+
+	repoDir := filepath.Join(p.workDir, req.Project, req.Target, req.Architecture)
+	_ = os.MkdirAll(repoDir, 0750)
 	s3Prefix := fmt.Sprintf("repos/%s/%s/%s/", req.Project, req.Target, req.Architecture)
+
+	// 2. RepoType: "rpm-md" generates RPM metadata via createrepo_c
+	if hasRepoType(repoTypes, "rpm-md") {
+		rpmRes, err := p.processRPMRepo(ctx, req, repoDir, s3Prefix)
+		if err != nil {
+			return nil, err
+		}
+		res.RepomdXMLKey = rpmRes.RepomdXMLKey
+		res.UploadedXMLKeys = append(res.UploadedXMLKeys, rpmRes.UploadedXMLKeys...)
+	}
+
+	// 3. RepoType: "helm" generates Helm chart repository index.yaml
+	if hasRepoType(repoTypes, "helm") {
+		helmKey, err := p.processHelmRepo(ctx, repoDir, s3Prefix)
+		if err != nil {
+			return nil, err
+		}
+		res.IndexYAMLKey = helmKey
+		res.UploadedXMLKeys = append(res.UploadedXMLKeys, helmKey)
+	}
+
+	eventKey := res.RepomdXMLKey
+	if eventKey == "" {
+		eventKey = res.IndexYAMLKey
+	}
+	p.emitPublicationEvent(ctx, req, eventKey)
+
+	return res, nil
+}
+
+func (p *Publisher) processRPMRepo(ctx context.Context, req PublishRequest, repoDir, s3Prefix string) (*PublishResult, error) {
+	oldMetaDir := filepath.Join(repoDir, "repodata")
 	_ = p.s3Client.DownloadMetadata(ctx, s3Prefix+"repodata", oldMetaDir)
 
 	hasOldMeta := checkFileExists(filepath.Join(oldMetaDir, "repomd.xml"))
@@ -140,19 +193,50 @@ func (p *Publisher) ProcessPublishRequest(ctx context.Context, req PublishReques
 		return nil, fmt.Errorf("metadata generation failed: %w", err)
 	}
 
-	res, err := p.uploadMetadataAtomic(ctx, repoDir, s3Prefix, req)
-	if err != nil {
-		return nil, err
+	return p.uploadMetadataAtomic(ctx, repoDir, s3Prefix, req)
+}
+
+func (p *Publisher) processHelmRepo(ctx context.Context, repoDir, s3Prefix string) (string, error) {
+	executor := p.helmExecutor
+	if executor == nil {
+		executor = NewRealHelmIndexExecutor()
 	}
 
-	if p.eventPub != nil {
-		event := v1.NewPublicationEvent(req.Project, req.Target, req.Architecture, req.Package, req.NewRPMPaths, res.RepomdXMLKey)
-		if data, err := json.Marshal(event); err == nil {
-			_ = p.eventPub.PublishEvent(ctx, natsqueue.SubjectEventsPublished, data)
+	opts := HelmIndexOptions{
+		Dir: repoDir,
+	}
+	if err := executor.Run(ctx, opts); err != nil {
+		return "", fmt.Errorf("helm indexing failed: %w", err)
+	}
+
+	indexLocal := filepath.Join(repoDir, "index.yaml")
+	indexKey := s3Prefix + "index.yaml"
+	if checkFileExists(indexLocal) {
+		if err := p.s3Client.UploadFile(ctx, indexLocal, indexKey); err != nil {
+			return "", fmt.Errorf("failed to upload helm index.yaml: %w", err)
 		}
 	}
+	return indexKey, nil
+}
 
-	return res, nil
+func (p *Publisher) emitPublicationEvent(ctx context.Context, req PublishRequest, primaryKey string) {
+	if p.eventPub == nil {
+		return
+	}
+	event := v1.NewPublicationEvent(req.Project, req.Target, req.Architecture, req.Package, req.NewRPMPaths, primaryKey)
+	if data, err := json.Marshal(event); err == nil {
+		_ = p.eventPub.PublishEvent(ctx, natsqueue.SubjectEventsPublished, data)
+	}
+}
+
+func hasRepoType(types []string, expected string) bool {
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	for _, t := range types {
+		if strings.ToLower(strings.TrimSpace(t)) == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Publisher) uploadMetadataAtomic(ctx context.Context, repoDir, s3Prefix string, req PublishRequest) (*PublishResult, error) {

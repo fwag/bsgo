@@ -56,6 +56,10 @@ Deliver an architectural specification, core schemas, and prototype contracts fo
 - [26: Publisher: Debounce Batching, Tombstones & S3 Metadata Garbage Collection](issues/26-publisher-debounce-batching-and-metadata-gc.md)
 - [27: Worker: Ephemeral Storage (tmpfs/RAM Disk) & KVM Performance Hardening](issues/27-worker-ephemeral-ramdisk-and-kvm-performance-hardening.md)
 - [28: Worker: Dynamic Multi-Job Host Supervision & Resource Bin-Packing](issues/28-worker-dynamic-resource-allocation-and-host-supervisor.md)
+- [29: Manifest: Project & Target Config Schema, Hierarchy & Merging](issues/29-manifest-project-and-target-config-schema.md) (resolved)
+- [30: Scheduler: Config DAG Inheritance, FromScratch & BuildType Filtering](issues/30-scheduler-config-inheritance-and-buildtype-filtering.md) (resolved)
+- [31: Publisher: Multi-RepoType Dispatching & Helm Support](issues/31-publisher-repotype-dispatch-and-helm-support.md) (resolved)
+- [32: Worker: BuildEngine Sandbox Dispatch & Just-In-Time obs-build Config Rendering](issues/32-worker-buildengine-sandbox-dispatch-and-config-rendering.md) (resolved)
 
 ## Not yet specified
 

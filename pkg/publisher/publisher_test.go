@@ -2,11 +2,13 @@ package publisher_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/publisher"
 )
 
@@ -133,5 +135,169 @@ func TestPublisherPathTraversalRejection(t *testing.T) {
 		if err == nil {
 			t.Errorf("expected error for malicious publish request %+v, got nil", req)
 		}
+	}
+}
+
+type MockEventPublisher struct {
+	PublishedEvents []v1.PublicationEvent
+}
+
+func (m *MockEventPublisher) PublishEvent(_ context.Context, _ string, data []byte) error {
+	var event v1.PublicationEvent
+	if err := json.Unmarshal(data, &event); err == nil {
+		m.PublishedEvents = append(m.PublishedEvents, event)
+	}
+	return nil
+}
+
+type MockHelmIndexExecutor struct {
+	Invoked bool
+	Dir     string
+}
+
+func (m *MockHelmIndexExecutor) Run(_ context.Context, opts publisher.HelmIndexOptions) error {
+	m.Invoked = true
+	m.Dir = opts.Dir
+	// Create mock index.yaml
+	indexPath := filepath.Join(opts.Dir, "index.yaml")
+	return os.WriteFile(indexPath, []byte("apiVersion: v1\nentries: {}\n"), 0644)
+}
+
+type MockCreateRepoExecutor struct {
+	Invoked bool
+}
+
+func (m *MockCreateRepoExecutor) Run(_ context.Context, opts publisher.CreateRepoOptions) error {
+	m.Invoked = true
+	repodataDir := filepath.Join(opts.Dir, "repodata")
+	_ = os.MkdirAll(repodataDir, 0755)
+	_ = os.WriteFile(filepath.Join(repodataDir, "primary.xml.gz"), []byte("mock-primary"), 0644)
+	_ = os.WriteFile(filepath.Join(repodataDir, "repomd.xml"), []byte("<repomd/>"), 0644)
+	return nil
+}
+
+func TestPublisherRepoTypeNoneBypass(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	mockCR := &MockCreateRepoExecutor{}
+	mockS3 := NewMockS3Client()
+	mockEvents := &MockEventPublisher{}
+	lockMgr := publisher.NewLocalLockManager()
+
+	pub := publisher.NewPublisher(mockCR, mockS3, lockMgr, tmpDir)
+	pub.SetEventPublisher(mockEvents)
+
+	req := publisher.PublishRequest{
+		RequestID:    "req-none-01",
+		Project:      "openSUSE:Images",
+		Target:       "appliance",
+		Architecture: "x86_64",
+		RepoTypes:    []string{"none"},
+	}
+
+	res, err := pub.ProcessPublishRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error for repo_types: ['none']: %v", err)
+	}
+
+	if mockCR.Invoked {
+		t.Errorf("createrepo_c should NOT be invoked when repo_types is ['none']")
+	}
+	if len(mockS3.UploadedKeys) != 0 {
+		t.Errorf("expected 0 uploads to S3 for 'none', got %d (%v)", len(mockS3.UploadedKeys), mockS3.UploadedKeys)
+	}
+	if res.RepomdXMLKey != "" {
+		t.Errorf("expected empty RepomdXMLKey for 'none', got %q", res.RepomdXMLKey)
+	}
+	if len(mockEvents.PublishedEvents) != 1 {
+		t.Fatalf("expected 1 publication event emitted, got %d", len(mockEvents.PublishedEvents))
+	}
+	if mockEvents.PublishedEvents[0].RepomdKey != "" {
+		t.Errorf("expected empty RepomdKey in event, got %q", mockEvents.PublishedEvents[0].RepomdKey)
+	}
+}
+
+func TestPublisherRepoTypeHelm(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	mockCR := &MockCreateRepoExecutor{}
+	mockHelm := &MockHelmIndexExecutor{}
+	mockS3 := NewMockS3Client()
+	mockEvents := &MockEventPublisher{}
+	lockMgr := publisher.NewLocalLockManager()
+
+	pub := publisher.NewPublisher(mockCR, mockS3, lockMgr, tmpDir)
+	pub.SetHelmExecutor(mockHelm)
+	pub.SetEventPublisher(mockEvents)
+
+	req := publisher.PublishRequest{
+		RequestID:    "req-helm-01",
+		Project:      "cloud-charts",
+		Target:       "helm-repo",
+		Architecture: "x86_64",
+		RepoTypes:    []string{"helm"},
+	}
+
+	res, err := pub.ProcessPublishRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error for repo_types: ['helm']: %v", err)
+	}
+
+	if mockCR.Invoked {
+		t.Errorf("createrepo_c should NOT be invoked when repo_types is strictly ['helm']")
+	}
+	if !mockHelm.Invoked {
+		t.Errorf("expected helm executor to be invoked")
+	}
+	expectedKey := "repos/cloud-charts/helm-repo/x86_64/index.yaml"
+	if res.IndexYAMLKey != expectedKey {
+		t.Errorf("expected IndexYAMLKey %q, got %q", expectedKey, res.IndexYAMLKey)
+	}
+	if len(mockS3.UploadedKeys) != 1 || mockS3.UploadedKeys[0] != expectedKey {
+		t.Errorf("expected S3 upload of %q, got %v", expectedKey, mockS3.UploadedKeys)
+	}
+	if len(mockEvents.PublishedEvents) != 1 || mockEvents.PublishedEvents[0].RepomdKey != expectedKey {
+		t.Errorf("expected event RepomdKey %q, got %v", expectedKey, mockEvents.PublishedEvents)
+	}
+}
+
+func TestPublisherMultiRepoTypes(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	mockCR := &MockCreateRepoExecutor{}
+	mockHelm := &MockHelmIndexExecutor{}
+	mockS3 := NewMockS3Client()
+	lockMgr := publisher.NewLocalLockManager()
+
+	pub := publisher.NewPublisher(mockCR, mockS3, lockMgr, tmpDir)
+	pub.SetHelmExecutor(mockHelm)
+
+	req := publisher.PublishRequest{
+		RequestID:    "req-multi-01",
+		Project:      "mixed-repo",
+		Target:       "standard",
+		Architecture: "x86_64",
+		RepoTypes:    []string{"rpm-md", "helm"},
+	}
+
+	res, err := pub.ProcessPublishRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error for multi repo types: %v", err)
+	}
+
+	if !mockCR.Invoked {
+		t.Errorf("expected createrepo_c to be invoked for rpm-md")
+	}
+	if !mockHelm.Invoked {
+		t.Errorf("expected helm index to be invoked for helm")
+	}
+	if res.RepomdXMLKey == "" {
+		t.Errorf("expected non-empty RepomdXMLKey")
+	}
+	if res.IndexYAMLKey == "" {
+		t.Errorf("expected non-empty IndexYAMLKey")
 	}
 }
