@@ -6,6 +6,7 @@ worker:
   arch: "x86_64"
   work_dir: "/home/ta/bsgo-worker-kvm"
   cache_dir: "/home/ta/bsgo-worker-kvm/cache"
+  disk_dir: "/home/ta/bsgo-worker-kvm/disks"
 
 nats:
   url: "nats://localhost:4222"

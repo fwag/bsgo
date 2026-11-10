@@ -79,6 +79,8 @@ type WorkerConfig struct {
 	S3SecretKey  string
 	WorkDir      string
 	CacheDir     string
+	DiskDir      string
+	ObsBuildBin  string
 	Hardware     v1.WorkerHardware
 	SandboxMode  string
 }
@@ -89,6 +91,7 @@ type WorkerConfigFile struct {
 		Arch     string `yaml:"arch"`
 		WorkDir  string `yaml:"work_dir"`
 		CacheDir string `yaml:"cache_dir"`
+		DiskDir  string `yaml:"disk_dir"`
 	} `yaml:"worker"`
 	Nats struct {
 		URL string `yaml:"url"`

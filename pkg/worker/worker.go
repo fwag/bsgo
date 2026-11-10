@@ -18,8 +18,11 @@ type WorkerDaemon struct {
 	sandbox      Sandbox
 	status       string
 	activeJobID  string
+	activeCancel context.CancelFunc
 	stopChan     chan struct{}
+	stopOnce     sync.Once
 	cachedHashes []string
+	wg           sync.WaitGroup
 }
 
 func NewWorkerDaemon(cfg WorkerConfig, nc *nats.Conn, sandbox Sandbox) *WorkerDaemon {
@@ -34,6 +37,10 @@ func NewWorkerDaemon(cfg WorkerConfig, nc *nats.Conn, sandbox Sandbox) *WorkerDa
 }
 
 func (w *WorkerDaemon) Start(ctx context.Context) error {
+	if oc, ok := w.sandbox.(interface{ CleanupOrphans(context.Context) error }); ok {
+		_ = oc.CleanupOrphans(ctx)
+	}
+
 	go w.runHeartbeats(ctx)
 
 	subject := fmt.Sprintf("bsgo.workers.%s.job", w.cfg.WorkerID)
@@ -42,7 +49,11 @@ func (w *WorkerDaemon) Start(ctx context.Context) error {
 		if err := json.Unmarshal(msg.Data, &job); err != nil {
 			return
 		}
-		go w.processJob(ctx, &job)
+		w.wg.Add(1)
+		go func() {
+			defer w.wg.Done()
+			w.processJob(ctx, &job)
+		}()
 	})
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to worker job inbox: %w", err)
@@ -58,11 +69,20 @@ func (w *WorkerDaemon) Start(ctx context.Context) error {
 	case <-ctx.Done():
 	case <-w.stopChan:
 	}
-	return sub.Unsubscribe()
+	_ = sub.Unsubscribe()
+	w.wg.Wait()
+	return nil
 }
 
 func (w *WorkerDaemon) Stop() {
-	close(w.stopChan)
+	w.stopOnce.Do(func() {
+		close(w.stopChan)
+		w.mu.Lock()
+		if w.activeCancel != nil {
+			w.activeCancel()
+		}
+		w.mu.Unlock()
+	})
 }
 
 func (w *WorkerDaemon) Status() string {
@@ -118,6 +138,15 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 
 	jobCtx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
+
+	w.mu.Lock()
+	w.activeCancel = cancel
+	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		w.activeCancel = nil
+		w.mu.Unlock()
+	}()
 
 	ctrlSub, _ := w.nc.Subscribe(fmt.Sprintf("bsgo.jobs.%s.control", job.JobID), func(msg *nats.Msg) {
 		var ctrl v1.JobControl

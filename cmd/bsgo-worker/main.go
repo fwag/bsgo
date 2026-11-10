@@ -22,6 +22,7 @@ func main() {
 		natsURL    string
 		s3Bucket   string
 		workDir    string
+		diskDir    string
 	)
 
 	flag.StringVar(&configFile, "config", "config/worker.yaml", "Path to YAML configuration file")
@@ -30,9 +31,10 @@ func main() {
 	flag.StringVar(&natsURL, "nats-url", "", "NATS JetStream connection URL (overrides config)")
 	flag.StringVar(&s3Bucket, "s3-bucket", "", "S3 bucket for artifact upload (overrides config)")
 	flag.StringVar(&workDir, "work-dir", "", "Root workspace directory for build jobs")
+	flag.StringVar(&diskDir, "disk-dir", "", "Dedicated directory for VM disk block devices (overrides config)")
 	flag.Parse()
 
-	cfg := resolveWorkerConfig(configFile, workerID, arch, natsURL, s3Bucket, workDir)
+	cfg := resolveWorkerConfig(configFile, workerID, arch, natsURL, s3Bucket, workDir, diskDir)
 
 	nc, err := nats.Connect(cfg.NatsURL)
 	if err != nil {
@@ -51,7 +53,9 @@ func main() {
 
 	sandbox := &worker.ProcessSandbox{
 		WorkDir:     cfg.WorkDir,
+		DiskDir:     cfg.DiskDir,
 		SandboxMode: cfg.SandboxMode,
+		ObsBuildBin: cfg.ObsBuildBin,
 		S3Storage:   s3Storage,
 		PublishFunc: func(_ context.Context, subject string, data []byte) error {
 			return nc.Publish(subject, data)
@@ -68,7 +72,7 @@ func main() {
 	fmt.Println("\nbsgo-worker stopped cleanly.")
 }
 
-func resolveWorkerConfig(configFile, flagID, flagArch, flagNats, flagBucket, flagWork string) worker.WorkerConfig {
+func resolveWorkerConfig(configFile, flagID, flagArch, flagNats, flagBucket, flagWork, flagDisk string) worker.WorkerConfig {
 	cfg := worker.WorkerConfig{
 		WorkerID:     "worker-local-01",
 		Architecture: "x86_64",
@@ -89,7 +93,7 @@ func resolveWorkerConfig(configFile, flagID, flagArch, flagNats, flagBucket, fla
 		applyFileConfig(&cfg, fileCfg)
 	}
 
-	applyFlagOverrides(&cfg, flagID, flagArch, flagNats, flagBucket, flagWork)
+	applyFlagOverrides(&cfg, flagID, flagArch, flagNats, flagBucket, flagWork, flagDisk)
 	return cfg
 }
 
@@ -102,6 +106,12 @@ func applyFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile)
 	}
 	if fileCfg.Worker.WorkDir != "" {
 		cfg.WorkDir = fileCfg.Worker.WorkDir
+	}
+	if fileCfg.Worker.CacheDir != "" {
+		cfg.CacheDir = fileCfg.Worker.CacheDir
+	}
+	if fileCfg.Worker.DiskDir != "" {
+		cfg.DiskDir = fileCfg.Worker.DiskDir
 	}
 	if fileCfg.Nats.URL != "" {
 		cfg.NatsURL = fileCfg.Nats.URL
@@ -125,9 +135,12 @@ func applyFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile)
 		cfg.SandboxMode = fileCfg.Sandbox.Mode
 		cfg.Hardware.SandboxType = fileCfg.Sandbox.Mode
 	}
+	if fileCfg.Sandbox.ObsBuildBin != "" {
+		cfg.ObsBuildBin = fileCfg.Sandbox.ObsBuildBin
+	}
 }
 
-func applyFlagOverrides(cfg *worker.WorkerConfig, flagID, flagArch, flagNats, flagBucket, flagWork string) {
+func applyFlagOverrides(cfg *worker.WorkerConfig, flagID, flagArch, flagNats, flagBucket, flagWork, flagDisk string) {
 	if flagID != "" {
 		cfg.WorkerID = flagID
 	}
@@ -142,5 +155,8 @@ func applyFlagOverrides(cfg *worker.WorkerConfig, flagID, flagArch, flagNats, fl
 	}
 	if flagWork != "" {
 		cfg.WorkDir = flagWork
+	}
+	if flagDisk != "" {
+		cfg.DiskDir = flagDisk
 	}
 }

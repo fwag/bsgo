@@ -66,6 +66,7 @@ func (s *MockSandbox) Cleanup(_ context.Context) error {
 
 type ProcessSandbox struct {
 	WorkDir     string
+	DiskDir     string
 	SandboxMode string
 	ObsBuildBin string
 	S3Storage   *s3.S3Storage
@@ -129,6 +130,9 @@ func findPackageSources(pkgName, recipePath string) (string, string) {
 		filepath.Join("test/fixtures/demo-fast", pkgName),
 		filepath.Join("test/fixtures/demo", pkgName),
 		filepath.Join("test/fixtures", pkgName),
+		filepath.Join("../../test/fixtures/demo-fast", pkgName),
+		filepath.Join("../../test/fixtures/demo", pkgName),
+		filepath.Join("../../test/fixtures", pkgName),
 	}
 	for _, dir := range candidates {
 		if stat, err := os.Stat(dir); err == nil && stat.IsDir() {
@@ -150,12 +154,11 @@ func findPackageSources(pkgName, recipePath string) (string, string) {
 	return "test/fixtures/hello", "hello.spec"
 }
 
-func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, jobDir string, w io.Writer, start time.Time) (*ExecutionResult, error) {
-	obsBin := s.ObsBuildBin
-	if obsBin == "" {
-		obsBin = "/usr/bin/build"
+func (s *ProcessSandbox) setupKVMSources(job *v1.BuildJob, jobDir string) (string, error) {
+	sourcesDir := filepath.Join(jobDir, "sources")
+	if err := os.MkdirAll(sourcesDir, 0750); err != nil {
+		return "", err
 	}
-	fmt.Fprintf(w, "[%s] bsgo-worker: preparing KVM micro-VM sandbox via %s\n", time.Now().Format("15:04:05"), obsBin)
 
 	srcDir, specName := findPackageSources(job.Package, job.Source.RecipePath)
 	srcEntries, _ := filepath.Glob(filepath.Join(srcDir, "*"))
@@ -163,25 +166,41 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 		cleanF := filepath.Clean(f)
 		data, err := os.ReadFile(cleanF)
 		if err == nil {
-			destFile := filepath.Clean(filepath.Join(jobDir, filepath.Base(cleanF)))
-			// #nosec G703 -- destination file is written within validated jobDir sandbox
+			destFile := filepath.Clean(filepath.Join(sourcesDir, filepath.Base(cleanF)))
+			// #nosec G703 -- destination file is written within validated jobDir/sources sandbox
 			_ = os.WriteFile(destFile, data, 0600)
 		}
 	}
+	return filepath.Join(sourcesDir, specName), nil
+}
 
-	cacheDir := filepath.Join(s.WorkDir, "cache")
-	_ = os.MkdirAll(cacheDir, 0750)
+func (s *ProcessSandbox) setupKVMDisks(job *v1.BuildJob) (string, string, error) {
+	diskDir := s.DiskDir
+	if diskDir == "" {
+		diskDir = filepath.Join(s.WorkDir, "disks")
+	}
+	if err := os.MkdirAll(diskDir, 0750); err != nil {
+		return "", "", err
+	}
 
-	buildRoot := filepath.Join(jobDir, "build-root")
-	specFile := filepath.Join(jobDir, specName)
+	vmDisk := filepath.Join(diskDir, fmt.Sprintf("%s.img", job.JobID))
+	vmSwap := filepath.Join(diskDir, fmt.Sprintf("%s.swap", job.JobID))
+	return vmDisk, vmSwap, nil
+}
 
-	defer func() {
-		// Clean up heavy ephemeral VM disk images and chroot tree after artifact extraction
-		_ = os.Remove(filepath.Join(jobDir, "build-root.img"))
-		_ = os.Remove(filepath.Join(jobDir, "build-root.swap"))
-		_ = os.RemoveAll(buildRoot)
-	}()
+func cleanupKVMRun(jobDir, buildRoot, vmDisk, vmSwap string) {
+	_ = os.Remove(vmDisk)
+	_ = os.Remove(vmSwap)
+	_ = os.Remove(vmDisk + ".size")
+	_ = os.Remove(vmSwap + ".size")
+	_ = os.Remove(filepath.Join(jobDir, "build-root.img"))
+	_ = os.Remove(filepath.Join(jobDir, "build-root.swap"))
+	_ = os.Remove(filepath.Join(jobDir, "build-root.img.size"))
+	_ = os.Remove(filepath.Join(jobDir, "build-root.swap.size"))
+	_ = os.RemoveAll(buildRoot)
+}
 
+func (s *ProcessSandbox) buildKVMArgs(ctx context.Context, job *v1.BuildJob, buildRoot, vmDisk, vmSwap, cacheDir, specFile, configPath string, w io.Writer) []string {
 	memMB := int64(job.Resources.MemoryMB)
 	if memMB <= 0 {
 		memMB = 4096
@@ -195,10 +214,70 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 		"--clean",
 		"--vm-type", "kvm",
 		"--root", buildRoot,
+		"--vm-disk", vmDisk,
+		"--vm-swap", vmSwap,
 		"--cachedir", cacheDir,
 		"--vm-memory", strconv.FormatInt(memMB, 10),
 		"--vm-disk-size", strconv.FormatInt(diskMB, 10),
 	}
+	if checkFileExists(configPath) {
+		args = append(args, "--dist", configPath)
+	}
+
+	repoArgs := s.ResolveJobRepositories(ctx, job, w)
+	args = append(args, repoArgs...)
+	args = append(args, "--repo", "zypp://", specFile)
+	return args
+}
+
+// CleanupOrphans removes stale VM disk images, swap files, and orphaned chroot trees from previous runs.
+func (s *ProcessSandbox) CleanupOrphans(_ context.Context) error {
+	diskDir := s.DiskDir
+	if diskDir == "" {
+		diskDir = filepath.Join(s.WorkDir, "disks")
+	}
+
+	if entries, err := filepath.Glob(filepath.Join(diskDir, "*")); err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e, ".img") || strings.HasSuffix(e, ".swap") || strings.HasSuffix(e, ".size") {
+				_ = os.Remove(e)
+			}
+		}
+	}
+
+	jobsDir := filepath.Join(s.WorkDir, "jobs")
+	for _, pattern := range []string{"*/build-root.img*", "*/build-root.swap*", "*/build-root"} {
+		if entries, err := filepath.Glob(filepath.Join(jobsDir, pattern)); err == nil {
+			for _, e := range entries {
+				_ = os.RemoveAll(e)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, jobDir string, w io.Writer, start time.Time) (*ExecutionResult, error) {
+	obsBin := s.ObsBuildBin
+	if obsBin == "" {
+		obsBin = "/usr/bin/build"
+	}
+	fmt.Fprintf(w, "[%s] bsgo-worker: preparing KVM micro-VM sandbox via %s\n", time.Now().Format("15:04:05"), obsBin)
+
+	specFile, err := s.setupKVMSources(job, jobDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed setting up package sources: %w", err)
+	}
+
+	cacheDir := filepath.Join(s.WorkDir, "cache")
+	_ = os.MkdirAll(cacheDir, 0750)
+
+	buildRoot := filepath.Join(jobDir, "build-root")
+	vmDisk, vmSwap, err := s.setupKVMDisks(job)
+	if err != nil {
+		return nil, fmt.Errorf("failed configuring VM disks: %w", err)
+	}
+
+	defer cleanupKVMRun(jobDir, buildRoot, vmDisk, vmSwap)
 
 	configPath := filepath.Join(jobDir, ".build.config")
 	if !checkFileExists(configPath) && (job.BuildEngine != "" || job.BuildType != "") {
@@ -210,14 +289,8 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 			_ = os.WriteFile(configPath, []byte(rendered), 0600)
 		}
 	}
-	if checkFileExists(configPath) {
-		args = append(args, "--dist", configPath)
-	}
 
-	repoArgs := s.ResolveJobRepositories(ctx, job, w)
-	args = append(args, repoArgs...)
-	args = append(args, "--repo", "zypp://")
-	args = append(args, specFile)
+	args := s.buildKVMArgs(ctx, job, buildRoot, vmDisk, vmSwap, cacheDir, specFile, configPath, w)
 
 	fmt.Fprintf(w, "[%s] bsgo-worker: executing %s %s\n", time.Now().Format("15:04:05"), obsBin, strings.Join(args, " "))
 	// #nosec G204 -- obs-build runner executes parameterized sandbox binary
