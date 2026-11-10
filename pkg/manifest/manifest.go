@@ -362,6 +362,7 @@ type PackageBuild struct {
 	Enabled       bool            `yaml:"enabled"`
 	Targets       map[string]bool `yaml:"targets,omitempty"`
 	Architectures ArchFilter      `yaml:"architectures,omitempty"`
+	Requires      []string        `yaml:"requires,omitempty"`
 }
 
 type ArchFilter struct {

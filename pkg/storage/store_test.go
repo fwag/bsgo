@@ -70,4 +70,32 @@ func TestMemoryStore(t *testing.T) {
 	if len(pkgs) != 1 {
 		t.Errorf("expected 1 package, got %d", len(pkgs))
 	}
+
+	// 3. Target Solv operations
+	solv := &storage.TargetSolv{
+		ProjectName: "openSUSE:Factory",
+		TargetName:  "standard",
+		Arch:        "x86_64",
+		SolvBlob:    []byte("binary-solv-data"),
+		ContentHash: "hash-1234",
+	}
+	if err := store.SaveTargetSolv(ctx, solv); err != nil {
+		t.Fatalf("failed to save target solv: %v", err)
+	}
+
+	gotSolv, err := store.GetTargetSolv(ctx, "openSUSE:Factory", "standard", "x86_64")
+	if err != nil {
+		t.Fatalf("failed to get target solv: %v", err)
+	}
+	if string(gotSolv.SolvBlob) != "binary-solv-data" || gotSolv.ContentHash != "hash-1234" {
+		t.Errorf("unexpected target solv: %+v", gotSolv)
+	}
+
+	solvs, err := store.ListTargetSolvs(ctx, "openSUSE:Factory")
+	if err != nil {
+		t.Fatalf("failed to list target solvs: %v", err)
+	}
+	if len(solvs) != 1 {
+		t.Errorf("expected 1 target solv, got %d", len(solvs))
+	}
 }

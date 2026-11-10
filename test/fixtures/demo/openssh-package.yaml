@@ -10,6 +10,8 @@ source:
   recipe: "openssh.spec"
 build:
   enabled: true
+  requires:
+    - "openssl"
   targets:
     standard: true
   architectures:

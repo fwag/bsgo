@@ -232,3 +232,68 @@ func (s *PostgresStore) ListProjectKeys(ctx context.Context, projectName string)
 	}
 	return list, nil
 }
+
+func (s *PostgresStore) SaveTargetSolv(ctx context.Context, solv *storage.TargetSolv) error {
+	query := `
+		INSERT INTO target_solv_cache (project_name, target_name, arch, solv_blob, content_hash, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (project_name, target_name, arch) DO UPDATE SET
+			solv_blob = EXCLUDED.solv_blob,
+			content_hash = EXCLUDED.content_hash,
+			updated_at = NOW()`
+	_, err := s.pool.Exec(ctx, query, solv.ProjectName, solv.TargetName, solv.Arch, solv.SolvBlob, solv.ContentHash)
+	if err != nil {
+		return fmt.Errorf("failed to save target solv cache: %w", err)
+	}
+	return nil
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTargetSolv(row rowScanner) (*storage.TargetSolv, error) {
+	var solv storage.TargetSolv
+	if err := row.Scan(&solv.ProjectName, &solv.TargetName, &solv.Arch, &solv.SolvBlob, &solv.ContentHash, &solv.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &solv, nil
+}
+
+func (s *PostgresStore) GetTargetSolv(ctx context.Context, projectName, targetName, arch string) (*storage.TargetSolv, error) {
+	query := `
+		SELECT project_name, target_name, arch, solv_blob, content_hash, updated_at
+		FROM target_solv_cache
+		WHERE project_name = $1 AND target_name = $2 AND arch = $3`
+	solv, err := scanTargetSolv(s.pool.QueryRow(ctx, query, projectName, targetName, arch))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, storage.ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to query target solv cache: %w", err)
+	}
+	return solv, nil
+}
+
+func (s *PostgresStore) ListTargetSolvs(ctx context.Context, projectName string) ([]*storage.TargetSolv, error) {
+	query := `
+		SELECT project_name, target_name, arch, solv_blob, content_hash, updated_at
+		FROM target_solv_cache
+		WHERE project_name = $1
+		ORDER BY target_name, arch`
+	rows, err := s.pool.Query(ctx, query, projectName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list target solv caches: %w", err)
+	}
+	defer rows.Close()
+
+	var list []*storage.TargetSolv
+	for rows.Next() {
+		solv, err := scanTargetSolv(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, solv)
+	}
+	return list, nil
+}

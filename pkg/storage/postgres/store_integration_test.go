@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/openSUSE/bsgo/pkg/manifest"
+	"github.com/openSUSE/bsgo/pkg/storage"
 	"github.com/openSUSE/bsgo/pkg/storage/postgres"
 )
 
@@ -111,5 +112,33 @@ func TestPostgresMigrationsAndStore(t *testing.T) {
 	}
 	if len(pkgs) != 1 {
 		t.Errorf("expected 1 package, got %d", len(pkgs))
+	}
+
+	// 4. Verify TargetSolv operations
+	solv := &storage.TargetSolv{
+		ProjectName: testPrjName,
+		TargetName:  "standard",
+		Arch:        "x86_64",
+		SolvBlob:    []byte("binary-solv-test-data"),
+		ContentHash: "sha256-dummy-hash",
+	}
+	if err := store.SaveTargetSolv(ctx, solv); err != nil {
+		t.Fatalf("failed to save target solv: %v", err)
+	}
+
+	gotSolv, err := store.GetTargetSolv(ctx, testPrjName, "standard", "x86_64")
+	if err != nil {
+		t.Fatalf("failed to get target solv: %v", err)
+	}
+	if string(gotSolv.SolvBlob) != "binary-solv-test-data" || gotSolv.ContentHash != "sha256-dummy-hash" {
+		t.Errorf("unexpected target solv: %+v", gotSolv)
+	}
+
+	solvs, err := store.ListTargetSolvs(ctx, testPrjName)
+	if err != nil {
+		t.Fatalf("failed to list target solvs: %v", err)
+	}
+	if len(solvs) != 1 {
+		t.Errorf("expected 1 target solv, got %d", len(solvs))
 	}
 }

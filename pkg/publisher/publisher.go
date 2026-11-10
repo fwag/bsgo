@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,8 @@ import (
 
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
+	"github.com/openSUSE/bsgo/pkg/solv"
+	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
 func isValidPathSegment(s string) bool {
@@ -89,6 +92,7 @@ type Publisher struct {
 	workDir      string
 	eventPub     EventPublisher
 	signer       MetadataSigner
+	store        storage.Store
 }
 
 func NewPublisher(cr CreateRepoExecutor, s3 S3Client, lockMgr LockManager, workDir string) *Publisher {
@@ -98,6 +102,10 @@ func NewPublisher(cr CreateRepoExecutor, s3 S3Client, lockMgr LockManager, workD
 		lockMgr:    lockMgr,
 		workDir:    workDir,
 	}
+}
+
+func (p *Publisher) SetStore(s storage.Store) {
+	p.store = s
 }
 
 func (p *Publisher) SetEventPublisher(ep EventPublisher) {
@@ -193,7 +201,60 @@ func (p *Publisher) processRPMRepo(ctx context.Context, req PublishRequest, repo
 		return nil, fmt.Errorf("metadata generation failed: %w", err)
 	}
 
-	return p.uploadMetadataAtomic(ctx, repoDir, s3Prefix, req)
+	res, err := p.uploadMetadataAtomic(ctx, repoDir, s3Prefix, req)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = p.updateTargetSolvCache(ctx, req, repoDir)
+	return res, nil
+}
+
+func (p *Publisher) updateTargetSolvCache(ctx context.Context, req PublishRequest, repoDir string) error {
+	if p.store == nil {
+		return nil
+	}
+
+	rpmMap := make(map[string]bool)
+	for _, path := range req.NewRPMPaths {
+		rpmMap[filepath.Base(path)] = true
+	}
+	if matches, err := filepath.Glob(filepath.Join(repoDir, "*.rpm")); err == nil {
+		for _, m := range matches {
+			rpmMap[filepath.Base(m)] = true
+		}
+	}
+
+	var specs []solv.PackageSpec
+	for rpm := range rpmMap {
+		specs = append(specs, solv.ParseRPMFilename(rpm))
+	}
+	if len(specs) == 0 {
+		return nil
+	}
+
+	var existingBlob []byte
+	existing, err := p.store.GetTargetSolv(ctx, req.Project, req.Target, req.Architecture)
+	if err == nil && existing != nil {
+		existingBlob = existing.SolvBlob
+	}
+
+	repoName := fmt.Sprintf("%s:%s", req.Project, req.Target)
+	newBlob, err := solv.MergeAndDumpSolv(existingBlob, req.Architecture, repoName, specs)
+	if err != nil {
+		return fmt.Errorf("failed generating solv cache for %s: %w", repoName, err)
+	}
+
+	hash := fmt.Sprintf("%x", sha256.Sum256(newBlob))
+	solvRecord := &storage.TargetSolv{
+		ProjectName: req.Project,
+		TargetName:  req.Target,
+		Arch:        req.Architecture,
+		SolvBlob:    newBlob,
+		ContentHash: hash,
+	}
+
+	return p.store.SaveTargetSolv(ctx, solvRecord)
 }
 
 func (p *Publisher) processHelmRepo(ctx context.Context, repoDir, s3Prefix string) (string, error) {

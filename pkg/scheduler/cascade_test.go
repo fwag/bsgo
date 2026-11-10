@@ -2,6 +2,7 @@ package scheduler_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/openSUSE/bsgo/pkg/manifest"
@@ -148,4 +149,120 @@ func (m *cascadeMockSolver) Resolve(_ context.Context, req solv.ExpansionRequest
 		}
 	}
 	return &solv.ExpansionResult{Packages: pkgs}, nil
+}
+
+func TestCascadeEngineWithTargetSolvCache(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+
+	// Upstream: Base:System
+	prjBase := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "Base:System"},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {
+				Architectures: []string{"x86_64"},
+				Flags:         manifest.TargetFlags{Build: true, Rebuild: "transitive"},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, prjBase)
+
+	// Downstream: Shells
+	prjShells := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "Shells"},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {
+				Architectures: []string{"x86_64"},
+				Dependencies: []manifest.DependencySource{
+					{Project: "Base:System", Target: "standard"},
+				},
+				Flags: manifest.TargetFlags{Build: true, Rebuild: "transitive"},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, prjShells)
+
+	// bash depends on readline
+	pkgBash := &manifest.PackageManifest{
+		SchemaVersion: "v1",
+		Package:       manifest.PackageInfo{Name: "bash"},
+		Source:        manifest.PackageSource{Git: "https://git/bash.git", Commit: "100"},
+		Build: manifest.PackageBuild{
+			Enabled:  true,
+			Requires: []string{"readline"},
+		},
+	}
+	_ = store.UpsertPackage(ctx, "Shells", pkgBash)
+
+	// curl does NOT depend on readline
+	pkgCurl := &manifest.PackageManifest{
+		SchemaVersion: "v1",
+		Package:       manifest.PackageInfo{Name: "curl"},
+		Source:        manifest.PackageSource{Git: "https://git/curl.git", Commit: "200"},
+		Build: manifest.PackageBuild{
+			Enabled:  true,
+			Requires: []string{"libcurl-devel"},
+		},
+	}
+	_ = store.UpsertPackage(ctx, "Shells", pkgCurl)
+
+	// Pre-populate target solv cache in PostgreSQL/Memory store for Base:System:standard:x86_64
+	solvSpecs := []solv.PackageSpec{
+		{
+			Name:     "readline",
+			EVR:      "8.3.6-1",
+			Arch:     "x86_64",
+			Provides: []string{"readline = 8.3.6-1", "libreadline.so.8()(64bit)"},
+		},
+	}
+	solvBlob, err := solv.MergeAndDumpSolv(nil, "x86_64", "Base:System:standard", solvSpecs)
+	if err != nil {
+		t.Fatalf("failed creating solv blob: %v", err)
+	}
+
+	_ = store.SaveTargetSolv(ctx, &storage.TargetSolv{
+		ProjectName: "Base:System",
+		TargetName:  "standard",
+		Arch:        "x86_64",
+		SolvBlob:    solvBlob,
+		ContentHash: "hash-readline",
+	})
+
+	var triggeredPackages []string
+	pub := scheduler.NewNatsPublisher(func(_ context.Context, _ string, data []byte) error {
+		var tr v1.BuildTrigger
+		if err := json.Unmarshal(data, &tr); err == nil {
+			triggeredPackages = append(triggeredPackages, tr.Package)
+		}
+		return nil
+	})
+
+	engine := scheduler.NewCascadeEngine(store, nil, pub, nil)
+
+	// 1. Publish readline: only bash should be triggered, NOT curl
+	ev := v1.NewPublicationEvent("Base:System", "standard", "x86_64", "readline", []string{"readline-8.3.6-1.rpm"}, "repomd.xml")
+	triggers, err := engine.ProcessPublicationEvent(ctx, ev)
+	if err != nil {
+		t.Fatalf("ProcessPublicationEvent failed: %v", err)
+	}
+
+	if len(triggers) != 1 {
+		t.Fatalf("expected exactly 1 cascade trigger (bash), got %d: %+v", len(triggers), triggers)
+	}
+	if triggers[0].Package != "bash" {
+		t.Errorf("expected bash triggered, got %s", triggers[0].Package)
+	}
+
+	// 2. Publish an unrelated package (e.g. zlib): neither bash nor curl should trigger
+	triggeredPackages = nil
+	evUnrelated := v1.NewPublicationEvent("Base:System", "standard", "x86_64", "zlib", []string{"zlib-1.3.rpm"}, "repomd.xml")
+	triggers2, err := engine.ProcessPublicationEvent(ctx, evUnrelated)
+	if err != nil {
+		t.Fatalf("ProcessPublicationEvent for unrelated package failed: %v", err)
+	}
+	if len(triggers2) != 0 {
+		t.Errorf("expected 0 triggers for unrelated package, got %d: %+v", len(triggers2), triggers2)
+	}
 }

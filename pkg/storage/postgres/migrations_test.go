@@ -23,8 +23,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 		t.Fatalf("failed to collect migrations: %v", err)
 	}
 
-	if len(migrations) != 3 {
-		t.Fatalf("expected 3 migrations, got %d", len(migrations))
+	if len(migrations) != 4 {
+		t.Fatalf("expected 4 migrations, got %d", len(migrations))
 	}
 
 	if migrations[0].Version != 1 {
@@ -35,6 +35,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if migrations[2].Version != 3 {
 		t.Errorf("expected migration 2 version 3, got %d", migrations[2].Version)
+	}
+	if migrations[3].Version != 4 {
+		t.Errorf("expected migration 3 version 4, got %d", migrations[3].Version)
 	}
 
 	// Verify each migration contains expected statements
@@ -60,5 +63,13 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if len(m3Content) == 0 {
 		t.Error("migration 3 content is empty")
+	}
+
+	m4Content, err := fs.ReadFile(subFS, "00004_target_solv_cache.sql")
+	if err != nil {
+		t.Fatalf("failed to read migration 4: %v", err)
+	}
+	if len(m4Content) == 0 {
+		t.Error("migration 4 content is empty")
 	}
 }

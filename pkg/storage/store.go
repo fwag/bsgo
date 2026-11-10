@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/openSUSE/bsgo/pkg/manifest"
 )
@@ -23,6 +24,15 @@ type ProjectSigningKey struct {
 	Fingerprint         string `json:"fingerprint"`
 }
 
+type TargetSolv struct {
+	ProjectName string    `json:"project_name"`
+	TargetName  string    `json:"target_name"`
+	Arch        string    `json:"arch"`
+	SolvBlob    []byte    `json:"solv_blob"`
+	ContentHash string    `json:"content_hash"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 type Store interface {
 	CreateProject(ctx context.Context, prj *manifest.ProjectManifest) error
 	GetProject(ctx context.Context, name string) (*manifest.ProjectManifest, error)
@@ -35,6 +45,10 @@ type Store interface {
 	SaveProjectKey(ctx context.Context, key *ProjectSigningKey) error
 	GetProjectKey(ctx context.Context, projectName, flavor, keyType string) (*ProjectSigningKey, error)
 	ListProjectKeys(ctx context.Context, projectName string) ([]*ProjectSigningKey, error)
+
+	SaveTargetSolv(ctx context.Context, solv *TargetSolv) error
+	GetTargetSolv(ctx context.Context, projectName, targetName, arch string) (*TargetSolv, error)
+	ListTargetSolvs(ctx context.Context, projectName string) ([]*TargetSolv, error)
 }
 
 type MemoryStore struct {
@@ -42,6 +56,7 @@ type MemoryStore struct {
 	projects map[string]*manifest.ProjectManifest
 	packages map[string]map[string]*manifest.PackageManifest
 	keys     map[string]map[string]*ProjectSigningKey // key: project -> flavor:type -> key
+	solvs    map[string]*TargetSolv                   // key: project:target:arch -> solv
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -49,6 +64,7 @@ func NewMemoryStore() *MemoryStore {
 		projects: make(map[string]*manifest.ProjectManifest),
 		packages: make(map[string]map[string]*manifest.PackageManifest),
 		keys:     make(map[string]map[string]*ProjectSigningKey),
+		solvs:    make(map[string]*TargetSolv),
 	}
 }
 
@@ -174,6 +190,45 @@ func (s *MemoryStore) ListProjectKeys(_ context.Context, projectName string) ([]
 	var list []*ProjectSigningKey
 	for _, k := range prjKeys {
 		list = append(list, k)
+	}
+	return list, nil
+}
+
+func (s *MemoryStore) SaveTargetSolv(_ context.Context, solv *TargetSolv) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.projects[solv.ProjectName]; !exists {
+		return ErrNotFound
+	}
+
+	key := fmt.Sprintf("%s:%s:%s", solv.ProjectName, solv.TargetName, solv.Arch)
+	s.solvs[key] = solv
+	return nil
+}
+
+func (s *MemoryStore) GetTargetSolv(_ context.Context, projectName, targetName, arch string) (*TargetSolv, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	key := fmt.Sprintf("%s:%s:%s", projectName, targetName, arch)
+	solv, found := s.solvs[key]
+	if !found {
+		return nil, ErrNotFound
+	}
+	return solv, nil
+}
+
+func (s *MemoryStore) ListTargetSolvs(_ context.Context, projectName string) ([]*TargetSolv, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	prefix := projectName + ":"
+	var list []*TargetSolv
+	for k, v := range s.solvs {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			list = append(list, v)
+		}
 	}
 	return list, nil
 }

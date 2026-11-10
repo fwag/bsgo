@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/openSUSE/bsgo/pkg/manifest"
@@ -135,14 +136,45 @@ func (c *CascadeEngine) evaluateTargetPackages(ctx context.Context, prjName, tar
 	return triggers, nil
 }
 
+func (c *CascadeEngine) resolveFromTargetSolv(ctx context.Context, event *v1.PublicationEvent, req solv.ExpansionRequest) (*solv.ExpansionResult, bool) {
+	if c.store == nil {
+		return nil, false
+	}
+	solvRec, err := c.store.GetTargetSolv(ctx, event.Project, event.Target, event.Architecture)
+	if err != nil || solvRec == nil || len(solvRec.SolvBlob) == 0 {
+		return nil, false
+	}
+
+	pool, err := solv.NewPool(event.Architecture)
+	if err != nil {
+		return nil, true
+	}
+	defer pool.Close()
+
+	repoName := fmt.Sprintf("%s:%s", event.Project, event.Target)
+	if _, err := pool.LoadRepoFromMemory(repoName, solvRec.SolvBlob); err != nil {
+		return nil, true
+	}
+	res, _ := pool.Resolve(req)
+	return res, true
+}
+
 func (c *CascadeEngine) checkPackageCascade(ctx context.Context, prjName, targetName string, targetCfg manifest.BuildTarget, pkg *manifest.PackageManifest, event *v1.PublicationEvent) (*v1.BuildTrigger, error) {
+	reqs := pkg.Build.Requires
+	if len(reqs) == 0 {
+		reqs = []string{pkg.Package.Name}
+	}
 	req := solv.ExpansionRequest{
-		BuildRequires: []string{pkg.Package.Name},
+		BuildRequires: reqs,
 		Architecture:  event.Architecture,
 	}
-	res, _ := c.solver.Resolve(ctx, req)
 
-	if !checkDependencyMatch(res, prjName, event.Project, event.Package) {
+	res, hasSolvCache := c.resolveFromTargetSolv(ctx, event, req)
+	if res == nil && c.solver != nil {
+		res, _ = c.solver.Resolve(ctx, req)
+	}
+
+	if !checkDependencyMatch(res, prjName, event.Project, event.Package, reqs, hasSolvCache) {
 		return nil, nil
 	}
 
@@ -170,13 +202,21 @@ func (c *CascadeEngine) checkPackageCascade(ctx context.Context, prjName, target
 	return trig, nil
 }
 
-func checkDependencyMatch(res *solv.ExpansionResult, prjName, eventPrj, eventPkg string) bool {
-	if res != nil {
+func checkDependencyMatch(res *solv.ExpansionResult, prjName, eventPrj, eventPkg string, reqs []string, hasSolvCache bool) bool {
+	if res != nil && len(res.Packages) > 0 {
 		for _, p := range res.Packages {
-			if p.Name == eventPkg {
+			if p.Name == eventPkg || strings.HasPrefix(p.Name, eventPkg) {
 				return true
 			}
 		}
+		return false
+	}
+	for _, r := range reqs {
+		if r == eventPkg || strings.HasPrefix(r, eventPkg) {
+			return true
+		}
+	}
+	if hasSolvCache {
 		return false
 	}
 	return prjName != eventPrj

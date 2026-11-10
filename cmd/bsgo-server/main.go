@@ -166,6 +166,7 @@ func initPublisherService(ctx context.Context, cfg ServerConfig, nc *nats.Conn, 
 		lockMgr,
 		cfg.WorkDir,
 	)
+	pubService.SetStore(store)
 	pubService.SetEventPublisher(&eventPubAdapter{nc: nc})
 
 	signerDrv := initSignerDriver(cfg, store)
