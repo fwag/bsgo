@@ -22,23 +22,61 @@ func ShardPath(packageName string) string {
 }
 
 type ProjectManifest struct {
-	SchemaVersion string                 `yaml:"schema_version"`
-	Project       ProjectInfo            `yaml:"project"`
-	Config        *ProjectConfig         `yaml:"config,omitempty"`
-	Targets       map[string]BuildTarget `yaml:"targets"`
+	SchemaVersion   string                    `yaml:"schema_version"`
+	Project         ProjectInfo               `yaml:"project"`
+	PublicConfig    *ProjectConfig            `yaml:"public_config,omitempty"`
+	Config          *ProjectConfig            `yaml:"config,omitempty"` // Alias for PublicConfig
+	ProtectedConfig *ProjectConfig            `yaml:"protected_config,omitempty"`
+	Protected       *ProjectConfig            `yaml:"protected,omitempty"`        // Alias for ProtectedConfig
+	NamespaceScoped *ProjectConfig            `yaml:"namespace_scoped,omitempty"` // Alias for ProtectedConfig
+	PrivateConfig   *ProjectConfig            `yaml:"private_config,omitempty"`
+	Private         *ProjectConfig            `yaml:"private,omitempty"` // Alias for PrivateConfig
+	ArchConfig      map[string]*ProjectConfig `yaml:"arch_config,omitempty"`
+	Targets         map[string]BuildTarget    `yaml:"targets"`
+}
+
+// GetPublicConfig returns the public project configuration.
+func (prj *ProjectManifest) GetPublicConfig() *ProjectConfig {
+	if prj.PublicConfig != nil {
+		return prj.PublicConfig
+	}
+	return prj.Config
+}
+
+// GetProtectedConfig returns the namespace-scoped / protected configuration.
+func (prj *ProjectManifest) GetProtectedConfig() *ProjectConfig {
+	if prj.ProtectedConfig != nil {
+		return prj.ProtectedConfig
+	}
+	if prj.Protected != nil {
+		return prj.Protected
+	}
+	return prj.NamespaceScoped
+}
+
+// GetPrivateConfig returns the project-private configuration.
+func (prj *ProjectManifest) GetPrivateConfig() *ProjectConfig {
+	if prj.PrivateConfig != nil {
+		return prj.PrivateConfig
+	}
+	return prj.Private
 }
 
 type ProjectInfo struct {
-	Name        string `yaml:"name"`
-	Title       string `yaml:"title,omitempty"`
-	Description string `yaml:"description,omitempty"`
+	Name        string   `yaml:"name"`
+	Title       string   `yaml:"title,omitempty"`
+	Description string   `yaml:"description,omitempty"`
+	Namespace   string   `yaml:"namespace,omitempty"`
+	SCMSync     string   `yaml:"scm_sync,omitempty"`
+	Maintainers []string `yaml:"maintainers,omitempty"`
 }
 
 type BuildTarget struct {
-	Architectures []string           `yaml:"architectures"`
-	Dependencies  []DependencySource `yaml:"dependencies"`
-	Config        *ProjectConfig     `yaml:"config,omitempty"`
-	Flags         TargetFlags        `yaml:"flags,omitempty"`
+	Architectures []string                  `yaml:"architectures"`
+	Dependencies  []DependencySource        `yaml:"dependencies"`
+	Config        *ProjectConfig            `yaml:"config,omitempty"`
+	ArchConfig    map[string]*ProjectConfig `yaml:"arch_config,omitempty"`
+	Flags         TargetFlags               `yaml:"flags,omitempty"`
 }
 
 // ProjectConfig defines project-wide or target-specific build, solver, and publication settings.
@@ -53,6 +91,12 @@ type ProjectConfig struct {
 	Conflict     [][]string          `yaml:"conflict,omitempty"`
 	Preinstall   []string            `yaml:"preinstall,omitempty"`
 	VMinstall    []string            `yaml:"vminstall,omitempty"`
+	Support      []string            `yaml:"support,omitempty"`
+	Required     []string            `yaml:"required,omitempty"`
+	ExpandFlags  []string            `yaml:"expand_flags,omitempty"`
+	ExportFilter []string            `yaml:"export_filter,omitempty"`
+	Constraints  []string            `yaml:"constraints,omitempty"`
+	FileProvides map[string][]string `yaml:"file_provides,omitempty"`
 	Order        []string            `yaml:"order,omitempty"`
 	BuildFlags   []string            `yaml:"build_flags,omitempty"`
 	PublishFlags []string            `yaml:"publish_flags,omitempty"`
@@ -123,6 +167,12 @@ func (c *ProjectConfig) Clone() *ProjectConfig {
 	cloned.Ignore = cloneSlice(c.Ignore)
 	cloned.Preinstall = cloneSlice(c.Preinstall)
 	cloned.VMinstall = cloneSlice(c.VMinstall)
+	cloned.Support = cloneSlice(c.Support)
+	cloned.Required = cloneSlice(c.Required)
+	cloned.ExpandFlags = cloneSlice(c.ExpandFlags)
+	cloned.ExportFilter = cloneSlice(c.ExportFilter)
+	cloned.Constraints = cloneSlice(c.Constraints)
+	cloned.FileProvides = cloneSubstituteMap(c.FileProvides)
 	cloned.Order = cloneSlice(c.Order)
 	cloned.BuildFlags = cloneSlice(c.BuildFlags)
 	cloned.PublishFlags = cloneSlice(c.PublishFlags)
@@ -163,6 +213,12 @@ func (c *ProjectConfig) Merge(override *ProjectConfig) *ProjectConfig {
 	merged.Ignore = mergeSlices(merged.Ignore, override.Ignore)
 	merged.Preinstall = mergeSlices(merged.Preinstall, override.Preinstall)
 	merged.VMinstall = mergeSlices(merged.VMinstall, override.VMinstall)
+	merged.Support = mergeSlices(merged.Support, override.Support)
+	merged.Required = mergeSlices(merged.Required, override.Required)
+	merged.ExpandFlags = mergeSlices(merged.ExpandFlags, override.ExpandFlags)
+	merged.ExportFilter = mergeSlices(merged.ExportFilter, override.ExportFilter)
+	merged.Constraints = mergeSlices(merged.Constraints, override.Constraints)
+	merged.FileProvides = mergeSubstituteMaps(merged.FileProvides, override.FileProvides)
 	merged.Order = mergeSlices(merged.Order, override.Order)
 	merged.BuildFlags = mergeSlices(merged.BuildFlags, override.BuildFlags)
 	merged.PublishFlags = mergeSlices(merged.PublishFlags, override.PublishFlags)
@@ -184,17 +240,104 @@ func (c *ProjectConfig) Merge(override *ProjectConfig) *ProjectConfig {
 	return merged
 }
 
-// EffectiveTargetConfig returns the merged configuration for a target, combining
-// project-level defaults with any target-specific overrides.
-func (prj *ProjectManifest) EffectiveTargetConfig(targetName string) *ProjectConfig {
-	tgt, ok := prj.Targets[targetName]
-	if !ok {
-		if prj.Config != nil {
-			return prj.Config.Clone()
-		}
-		return &ProjectConfig{}
+// ProjectNamespace returns the explicit or inferred namespace of the project (e.g. "SUSE:SLFO").
+func (prj *ProjectManifest) ProjectNamespace() string {
+	if prj.Project.Namespace != "" {
+		return prj.Project.Namespace
 	}
-	return prj.Config.Merge(tgt.Config)
+	parts := strings.Split(prj.Project.Name, ":")
+	if len(parts) >= 2 {
+		return strings.Join(parts[:2], ":")
+	}
+	return prj.Project.Name
+}
+
+// IsInNamespace reports whether another project belongs to this project's namespace hierarchy.
+func (prj *ProjectManifest) IsInNamespace(otherProject string) bool {
+	if otherProject == "" {
+		return false
+	}
+	if otherProject == prj.Project.Name {
+		return true
+	}
+	if strings.HasPrefix(otherProject, prj.Project.Name+":") {
+		return true
+	}
+	if strings.HasPrefix(prj.Project.Name, otherProject+":") {
+		return true
+	}
+	ns := prj.ProjectNamespace()
+	return ns != "" && (otherProject == ns || strings.HasPrefix(otherProject, ns+":"))
+}
+
+// EffectiveConfigForConsumer returns the resolved target configuration for a specific consumer project,
+// enforcing public, namespace-scoped, and private boundaries.
+func (prj *ProjectManifest) EffectiveConfigForConsumer(targetName, consumerProject string) *ProjectConfig {
+	tgt, hasTgt := prj.Targets[targetName]
+	if hasTgt && tgt.Config != nil && tgt.Config.FromScratch {
+		return tgt.Config.Clone()
+	}
+
+	pubCfg := prj.GetPublicConfig()
+	var base *ProjectConfig
+	if pubCfg != nil {
+		base = pubCfg.Clone()
+	} else {
+		base = &ProjectConfig{}
+	}
+
+	// Apply protected (namespace-scoped) configuration if consumer is in the same namespace
+	protCfg := prj.GetProtectedConfig()
+	if protCfg != nil && (consumerProject == "" || prj.IsInNamespace(consumerProject)) {
+		base = base.Merge(protCfg)
+	}
+
+	// Apply private configuration only if consumer is this exact project
+	privCfg := prj.GetPrivateConfig()
+	if privCfg != nil && (consumerProject == "" || consumerProject == prj.Project.Name) {
+		base = base.Merge(privCfg)
+	}
+
+	// Merge target-specific overrides
+	if hasTgt && tgt.Config != nil {
+		base = base.Merge(tgt.Config)
+	}
+
+	return base
+}
+
+// EffectiveConfigForArch returns the resolved target configuration for a specific architecture and consumer project,
+// enforcing public, namespace-scoped, and private boundaries, as well as arch-specific overrides.
+func (prj *ProjectManifest) EffectiveConfigForArch(targetName, arch, consumerProject string) *ProjectConfig {
+	base := prj.EffectiveConfigForConsumer(targetName, consumerProject)
+
+	// Merge project-level arch config if present
+	if arch != "" && prj.ArchConfig != nil {
+		if archCfg, ok := prj.ArchConfig[arch]; ok && archCfg != nil {
+			base = base.Merge(archCfg)
+		}
+	}
+
+	// Merge target-level arch config if present
+	if arch != "" {
+		if tgt, ok := prj.Targets[targetName]; ok && tgt.ArchConfig != nil {
+			if tgtArchCfg, ok := tgt.ArchConfig[arch]; ok && tgtArchCfg != nil {
+				base = base.Merge(tgtArchCfg)
+			}
+		}
+	}
+
+	return base
+}
+
+// EffectiveTargetConfig returns the resolved configuration for a target within this project itself.
+func (prj *ProjectManifest) EffectiveTargetConfig(targetName string) *ProjectConfig {
+	return prj.EffectiveConfigForArch(targetName, "", prj.Project.Name)
+}
+
+// EffectiveTargetArchConfig returns the resolved configuration for a target and architecture within this project itself.
+func (prj *ProjectManifest) EffectiveTargetArchConfig(targetName, arch string) *ProjectConfig {
+	return prj.EffectiveConfigForArch(targetName, arch, prj.Project.Name)
 }
 
 func cloneSlice(s []string) []string {
@@ -243,15 +386,31 @@ func mergeSlices(base, override []string) []string {
 	if len(base) == 0 && len(override) == 0 {
 		return nil
 	}
+	removals := make(map[string]struct{})
+	for _, item := range override {
+		if strings.HasPrefix(item, "-") {
+			removals[strings.TrimPrefix(item, "-")] = struct{}{}
+		} else if strings.HasPrefix(item, "!") {
+			removals[strings.TrimPrefix(item, "!")] = struct{}{}
+		}
+	}
+
 	seen := make(map[string]struct{}, len(base)+len(override))
 	var result []string
 	for _, item := range base {
+		clean := strings.TrimPrefix(strings.TrimPrefix(item, "-"), "!")
+		if _, removed := removals[clean]; removed {
+			continue
+		}
 		if _, exists := seen[item]; !exists {
 			seen[item] = struct{}{}
 			result = append(result, item)
 		}
 	}
 	for _, item := range override {
+		if strings.HasPrefix(item, "-") || strings.HasPrefix(item, "!") {
+			continue
+		}
 		if _, exists := seen[item]; !exists {
 			seen[item] = struct{}{}
 			result = append(result, item)
@@ -390,7 +549,39 @@ func ParseProject(data []byte) (*ProjectManifest, error) {
 		return nil, errors.New("missing required field: project.name")
 	}
 
+	normalizePublicConfig(&prj)
+	normalizeProtectedConfig(&prj)
+	normalizePrivateConfig(&prj)
+
 	return &prj, nil
+}
+
+func normalizePublicConfig(prj *ProjectManifest) {
+	cfg := prj.GetPublicConfig()
+	if cfg == nil {
+		return
+	}
+	prj.PublicConfig = cfg
+	prj.Config = cfg
+}
+
+func normalizeProtectedConfig(prj *ProjectManifest) {
+	cfg := prj.GetProtectedConfig()
+	if cfg == nil {
+		return
+	}
+	prj.ProtectedConfig = cfg
+	prj.Protected = cfg
+	prj.NamespaceScoped = cfg
+}
+
+func normalizePrivateConfig(prj *ProjectManifest) {
+	cfg := prj.GetPrivateConfig()
+	if cfg == nil {
+		return
+	}
+	prj.PrivateConfig = cfg
+	prj.Private = cfg
 }
 
 func ParsePackage(data []byte) (*PackageManifest, error) {

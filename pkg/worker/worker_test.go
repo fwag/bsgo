@@ -411,6 +411,16 @@ func TestRenderBuildConfig(t *testing.T) {
 			t.Errorf("expected rendered config to contain %q, but got:\n%s", d, rendered)
 		}
 	}
+
+	// Verify sanitization when Macros input already carries outer delimiters
+	cfgWithDelims := &manifest.ProjectConfig{
+		Macros: "Macros:\n%sle_version 0\n:macros",
+	}
+	renderedWithDelims := worker.RenderBuildConfig(cfgWithDelims)
+	expectedClean := "Macros:\n%sle_version 0\n:macros\n"
+	if renderedWithDelims != expectedClean {
+		t.Errorf("expected clean rendered macros %q, got %q", expectedClean, renderedWithDelims)
+	}
 }
 
 func TestWorkerSandboxBuildEnginePodman(t *testing.T) {

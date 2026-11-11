@@ -513,6 +513,155 @@ func TestSchedulerDAGConfigInheritanceAndFromScratch(t *testing.T) {
 	}
 }
 
+func TestSchedulerDAGNamespaceScoping(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+
+	// Upstream distribution project
+	distPrj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "SUSE:SLFO:1.2"},
+		PublicConfig: &manifest.ProjectConfig{
+			Prefer:     []string{"mariadb-server"},
+			BuildFlags: []string{"setvcs"},
+		},
+		ProtectedConfig: &manifest.ProjectConfig{
+			BuildFlags: []string{"excludebuild:lttng-modules"},
+			Macros:     "%_without_apparmor 1",
+		},
+		PrivateConfig: &manifest.ProjectConfig{
+			BuildFlags: []string{"onlybuild:ALP-dummy-release"},
+		},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {Architectures: []string{"x86_64"}},
+		},
+	}
+	_ = store.CreateProject(ctx, distPrj)
+
+	// Child in the same namespace: SUSE:SLFO:1.2:PullRequest
+	prPrj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "SUSE:SLFO:1.2:PullRequest"},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {
+				Architectures: []string{"x86_64"},
+				Dependencies: []manifest.DependencySource{
+					{Project: "SUSE:SLFO:1.2", Target: "standard"},
+				},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, prPrj)
+
+	// Child outside namespace: home:developer:branches:SLFO
+	homePrj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "home:developer:branches:SLFO"},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {
+				Architectures: []string{"x86_64"},
+				Dependencies: []manifest.DependencySource{
+					{Project: "SUSE:SLFO:1.2", Target: "standard"},
+				},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, homePrj)
+
+	hasFlag := func(flags []string, flag string) bool {
+		for _, f := range flags {
+			if f == flag {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 1. PullRequest (same namespace) inherits public + namespace_scoped, but NOT private
+	prCfg := scheduler.ResolveTargetConfig(ctx, store, prPrj, "standard")
+	if !hasFlag(prCfg.BuildFlags, "setvcs") {
+		t.Errorf("PR expected public flag 'setvcs'")
+	}
+	if !hasFlag(prCfg.BuildFlags, "excludebuild:lttng-modules") {
+		t.Errorf("PR expected namespace-scoped flag 'excludebuild:lttng-modules'")
+	}
+	if hasFlag(prCfg.BuildFlags, "onlybuild:ALP-dummy-release") {
+		t.Errorf("PR must NOT inherit private flag 'onlybuild:ALP-dummy-release'")
+	}
+	if prCfg.Macros != "%_without_apparmor 1" {
+		t.Errorf("PR expected protected macros '%%_without_apparmor 1', got %q", prCfg.Macros)
+	}
+
+	// 2. Home project (outside namespace) inherits ONLY public, NOT protected, NOT private
+	homeCfg := scheduler.ResolveTargetConfig(ctx, store, homePrj, "standard")
+	if !hasFlag(homeCfg.BuildFlags, "setvcs") {
+		t.Errorf("home expected public flag 'setvcs'")
+	}
+	if hasFlag(homeCfg.BuildFlags, "excludebuild:lttng-modules") {
+		t.Errorf("home must NOT inherit protected flag 'excludebuild:lttng-modules'")
+	}
+	if hasFlag(homeCfg.BuildFlags, "onlybuild:ALP-dummy-release") {
+		t.Errorf("home must NOT inherit private flag 'onlybuild:ALP-dummy-release'")
+	}
+	if homeCfg.Macros != "" {
+		t.Errorf("home project must NOT inherit protected macros, got %q", homeCfg.Macros)
+	}
+}
+
+func TestSchedulerDAGArchConfigResolution(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+
+	prj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "multi-arch-prj"},
+		PublicConfig: &manifest.ProjectConfig{
+			BuildFlags: []string{"setvcs"},
+		},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {
+				Architectures: []string{"x86_64", "s390x"},
+				ArchConfig: map[string]*manifest.ProjectConfig{
+					"s390x": {
+						Constraints: []string{"hardware:cpu:flag vxd"},
+						BuildFlags:  []string{"signflavor:2025-01-22"},
+					},
+					"x86_64": {
+						BuildFlags: []string{"signflavor:2023-05-10"},
+					},
+				},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, prj)
+
+	// Resolve for x86_64
+	x86Cfg := scheduler.ResolveTargetConfig(ctx, store, prj, "standard", "x86_64")
+	if len(x86Cfg.Constraints) != 0 {
+		t.Errorf("x86_64 must have 0 constraints, got %v", x86Cfg.Constraints)
+	}
+	hasFlag := func(flags []string, f string) bool {
+		for _, x := range flags {
+			if x == f {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasFlag(x86Cfg.BuildFlags, "signflavor:2023-05-10") {
+		t.Errorf("x86_64 expected signflavor:2023-05-10")
+	}
+
+	// Resolve for s390x
+	s390Cfg := scheduler.ResolveTargetConfig(ctx, store, prj, "standard", "s390x")
+	if len(s390Cfg.Constraints) != 1 || s390Cfg.Constraints[0] != "hardware:cpu:flag vxd" {
+		t.Errorf("s390x expected vxd constraint, got %v", s390Cfg.Constraints)
+	}
+	if !hasFlag(s390Cfg.BuildFlags, "signflavor:2025-01-22") {
+		t.Errorf("s390x expected signflavor:2025-01-22")
+	}
+}
+
 func TestSchedulerBuildTypeFiltering(t *testing.T) {
 	ctx := context.Background()
 	store := storage.NewMemoryStore()

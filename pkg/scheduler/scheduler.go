@@ -79,7 +79,7 @@ func (s *Scheduler) ProcessTrigger(ctx context.Context, trigger *v1.BuildTrigger
 			continue
 		}
 
-		targetJobs, err := s.processTarget(ctx, trigger, targetName, targetCfg, effectiveCfg, pkg)
+		targetJobs, err := s.processTarget(ctx, trigger, targetName, targetCfg, prj, pkg)
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +128,7 @@ func (s *Scheduler) isTargetEligible(trigger *v1.BuildTrigger, pkg *manifest.Pac
 	return true
 }
 
-func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger, targetName string, targetCfg manifest.BuildTarget, effectiveCfg *manifest.ProjectConfig, pkg *manifest.PackageManifest) ([]*v1.BuildJob, error) {
+func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger, targetName string, targetCfg manifest.BuildTarget, prj *manifest.ProjectManifest, pkg *manifest.PackageManifest) ([]*v1.BuildJob, error) {
 	var eligibleArchs []string
 	for _, arch := range targetCfg.Architectures {
 		if trigger.Architecture != "" && trigger.Architecture != arch {
@@ -149,7 +149,8 @@ func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger,
 			jobID = fmt.Sprintf("%s-%s", trigger.TriggerID, arch)
 		}
 
-		job, err := s.buildJobForArch(ctx, trigger, targetName, arch, pkg, targetCfg, effectiveCfg, jobID)
+		archEffectiveCfg := ResolveTargetConfig(ctx, s.store, prj, targetName, arch)
+		job, err := s.buildJobForArch(ctx, trigger, targetName, arch, pkg, targetCfg, archEffectiveCfg, jobID)
 		if err != nil {
 			return nil, err
 		}
@@ -195,6 +196,16 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		buildEngine = "podman"
 	}
 
+	var buildFlags []string
+	var macros string
+	if effectiveCfg != nil {
+		if len(effectiveCfg.BuildFlags) > 0 {
+			buildFlags = make([]string, len(effectiveCfg.BuildFlags))
+			copy(buildFlags, effectiveCfg.BuildFlags)
+		}
+		macros = effectiveCfg.Macros
+	}
+
 	return &v1.BuildJob{
 		JobID:        jobID,
 		Project:      trigger.Project,
@@ -205,6 +216,8 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		Reason:       trigger.Reason,
 		BuildType:    recipeType,
 		BuildEngine:  buildEngine,
+		Macros:       macros,
+		BuildFlags:   buildFlags,
 		Source: v1.SourceSpec{
 			GitURL:     trigger.SourceGitURL,
 			CommitSHA:  trigger.CommitSHA,
@@ -250,37 +263,34 @@ func DetectRecipeBuildType(recipePath string) string {
 	}
 }
 
-// ResolveTargetConfig resolves the effective configuration for a target across the dependency DAG.
+// ResolveTargetConfig resolves the effective configuration for a target and architecture across the dependency DAG.
 // If the target sets from_scratch: true, upstream dependencies and project defaults are omitted.
-func ResolveTargetConfig(ctx context.Context, store storage.Store, prj *manifest.ProjectManifest, targetName string) *manifest.ProjectConfig {
+func ResolveTargetConfig(ctx context.Context, store storage.Store, prj *manifest.ProjectManifest, targetName string, arch ...string) *manifest.ProjectConfig {
+	selectedArch := ""
+	if len(arch) > 0 {
+		selectedArch = arch[0]
+	}
+
 	tgt, ok := prj.Targets[targetName]
 	if !ok {
-		if prj.Config != nil {
-			return prj.Config.Clone()
-		}
-		return &manifest.ProjectConfig{}
+		return prj.EffectiveTargetArchConfig(targetName, selectedArch)
 	}
 
 	if tgt.Config != nil && tgt.Config.FromScratch {
-		return tgt.Config.Clone()
+		res := tgt.Config.Clone()
+		if selectedArch != "" && tgt.ArchConfig != nil && tgt.ArchConfig[selectedArch] != nil {
+			res = res.Merge(tgt.ArchConfig[selectedArch])
+		}
+		return res
 	}
 
-	baseConfig := resolveDependencyConfigs(ctx, store, prj, tgt.Dependencies, targetName)
+	baseConfig := resolveDependencyConfigs(ctx, store, prj, tgt.Dependencies, targetName, selectedArch)
 
-	if prj.Config != nil {
-		if baseConfig == nil {
-			baseConfig = prj.Config.Clone()
-		} else {
-			baseConfig = baseConfig.Merge(prj.Config)
-		}
-	}
-
-	if tgt.Config != nil {
-		if baseConfig == nil {
-			baseConfig = tgt.Config.Clone()
-		} else {
-			baseConfig = baseConfig.Merge(tgt.Config)
-		}
+	ownConfig := prj.EffectiveTargetArchConfig(targetName, selectedArch)
+	if baseConfig == nil {
+		baseConfig = ownConfig.Clone()
+	} else {
+		baseConfig = baseConfig.Merge(ownConfig)
 	}
 
 	if baseConfig == nil {
@@ -289,7 +299,7 @@ func ResolveTargetConfig(ctx context.Context, store storage.Store, prj *manifest
 	return baseConfig
 }
 
-func resolveDependencyConfigs(ctx context.Context, store storage.Store, prj *manifest.ProjectManifest, deps []manifest.DependencySource, targetName string) *manifest.ProjectConfig {
+func resolveDependencyConfigs(ctx context.Context, store storage.Store, prj *manifest.ProjectManifest, deps []manifest.DependencySource, targetName, arch string) *manifest.ProjectConfig {
 	if store == nil {
 		return nil
 	}
@@ -306,7 +316,7 @@ func resolveDependencyConfigs(ctx context.Context, store storage.Store, prj *man
 		if depTarget == "" {
 			depTarget = targetName
 		}
-		parentCfg := parentPrj.EffectiveTargetConfig(depTarget)
+		parentCfg := parentPrj.EffectiveConfigForArch(depTarget, arch, prj.Project.Name)
 		if baseConfig == nil {
 			baseConfig = parentCfg.Clone()
 		} else {

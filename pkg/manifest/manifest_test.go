@@ -283,3 +283,235 @@ func TestProjectConfigDefaults(t *testing.T) {
 		t.Errorf("expected HasRepoType(rpm-md) to be true for nil config")
 	}
 }
+
+func TestNamespaceScopedAndPrivateConfig(t *testing.T) {
+	yamlData := []byte(`
+schema_version: "v1"
+project:
+  name: "SUSE:SLFO:1.2"
+  title: "SLFO 1.2"
+
+config:
+  prefer: ["mariadb-server", "python313"]
+  build_flags: ["setvcs"]
+
+namespace_scoped:
+  build_flags: ["excludebuild:lttng-modules"]
+  macros: "%_without_apparmor 1"
+
+private:
+  build_flags: ["onlybuild:ALP-dummy-release"]
+
+targets:
+  standard:
+    architectures: ["x86_64"]
+`)
+
+	prj, err := manifest.ParseProject(yamlData)
+	if err != nil {
+		t.Fatalf("failed parsing project: %v", err)
+	}
+
+	if prj.ProjectNamespace() != "SUSE:SLFO" {
+		t.Errorf("expected namespace 'SUSE:SLFO', got %q", prj.ProjectNamespace())
+	}
+
+	if !prj.IsInNamespace("SUSE:SLFO:1.2") {
+		t.Errorf("expected exact project to be in namespace")
+	}
+	if !prj.IsInNamespace("SUSE:SLFO:1.2:PullRequest") {
+		t.Errorf("expected subproject to be in namespace")
+	}
+	if !prj.IsInNamespace("SUSE:SLFO:Products:SLES") {
+		t.Errorf("expected sibling subproject in SUSE:SLFO to be in namespace")
+	}
+	if prj.IsInNamespace("home:developer:branches:SLFO") {
+		t.Errorf("home project must NOT be in namespace")
+	}
+
+	// 1. Self build: gets Config + NamespaceScoped + Private
+	selfCfg := prj.EffectiveTargetConfig("standard")
+	hasFlag := func(flags []string, flag string) bool {
+		for _, f := range flags {
+			if f == flag {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasFlag(selfCfg.BuildFlags, "setvcs") {
+		t.Errorf("self expected public flag 'setvcs'")
+	}
+	if !hasFlag(selfCfg.BuildFlags, "excludebuild:lttng-modules") {
+		t.Errorf("self expected namespace-scoped flag 'excludebuild:lttng-modules'")
+	}
+	if !hasFlag(selfCfg.BuildFlags, "onlybuild:ALP-dummy-release") {
+		t.Errorf("self expected private flag 'onlybuild:ALP-dummy-release'")
+	}
+	if selfCfg.Macros != "%_without_apparmor 1" {
+		t.Errorf("self expected macro '%%_without_apparmor 1', got %q", selfCfg.Macros)
+	}
+
+	// 2. Same-namespace consumer: gets Config + NamespaceScoped, but NO Private
+	subPrjCfg := prj.EffectiveConfigForConsumer("standard", "SUSE:SLFO:1.2:PullRequest")
+	if !hasFlag(subPrjCfg.BuildFlags, "setvcs") {
+		t.Errorf("subproject expected public flag 'setvcs'")
+	}
+	if !hasFlag(subPrjCfg.BuildFlags, "excludebuild:lttng-modules") {
+		t.Errorf("subproject expected namespace-scoped flag 'excludebuild:lttng-modules'")
+	}
+	if hasFlag(subPrjCfg.BuildFlags, "onlybuild:ALP-dummy-release") {
+		t.Errorf("subproject must NOT inherit private flag 'onlybuild:ALP-dummy-release'")
+	}
+
+	// 3. Outside-namespace consumer: gets ONLY Config (public)
+	homeCfg := prj.EffectiveConfigForConsumer("standard", "home:developer:branches:SLFO")
+	if !hasFlag(homeCfg.BuildFlags, "setvcs") {
+		t.Errorf("home project expected public flag 'setvcs'")
+	}
+	if hasFlag(homeCfg.BuildFlags, "excludebuild:lttng-modules") {
+		t.Errorf("home project must NOT inherit namespace-scoped 'excludebuild:lttng-modules'")
+	}
+	if hasFlag(homeCfg.BuildFlags, "onlybuild:ALP-dummy-release") {
+		t.Errorf("home project must NOT inherit private flag 'onlybuild:ALP-dummy-release'")
+	}
+	if homeCfg.Macros != "" {
+		t.Errorf("home project must NOT inherit namespace-scoped macros, got %q", homeCfg.Macros)
+	}
+}
+
+func TestSubtractiveCancellationMerging(t *testing.T) {
+	base := &manifest.ProjectConfig{
+		Prefer:     []string{"mariadb-server", "postfix", "gcc"},
+		BuildFlags: []string{"setvcs", "useccache:git"},
+	}
+	override := &manifest.ProjectConfig{
+		Prefer:     []string{"-mariadb-server", "!postfix", "mysql-server"},
+		BuildFlags: []string{"!useccache:git", "cumulaterpms"},
+	}
+
+	merged := base.Merge(override)
+	if len(merged.Prefer) != 2 || merged.Prefer[0] != "gcc" || merged.Prefer[1] != "mysql-server" {
+		t.Errorf("expected prefer ['gcc', 'mysql-server'], got %v", merged.Prefer)
+	}
+	if len(merged.BuildFlags) != 2 || merged.BuildFlags[0] != "setvcs" || merged.BuildFlags[1] != "cumulaterpms" {
+		t.Errorf("expected buildflags ['setvcs', 'cumulaterpms'], got %v", merged.BuildFlags)
+	}
+}
+
+func TestProjectConfigScopesNamingAndAliases(t *testing.T) {
+	yamlCanonical := []byte(`
+schema_version: "v1"
+project:
+  name: "SUSE:SLFO:1.2"
+  namespace: "SUSE:SLFO"
+
+public_config:
+  prefer: ["mariadb-server"]
+
+protected_config:
+  build_flags: ["excludebuild:lttng-modules"]
+
+private_config:
+  build_flags: ["onlybuild:ALP-dummy-release"]
+
+targets:
+  standard:
+    architectures: ["x86_64"]
+`)
+
+	prj, err := manifest.ParseProject(yamlCanonical)
+	if err != nil {
+		t.Fatalf("failed parsing canonical scopes: %v", err)
+	}
+
+	if prj.GetPublicConfig() == nil || len(prj.GetPublicConfig().Prefer) != 1 {
+		t.Errorf("expected public_config to be populated")
+	}
+	if prj.GetProtectedConfig() == nil || len(prj.GetProtectedConfig().BuildFlags) != 1 {
+		t.Errorf("expected protected_config to be populated")
+	}
+	if prj.GetPrivateConfig() == nil || len(prj.GetPrivateConfig().BuildFlags) != 1 {
+		t.Errorf("expected private_config to be populated")
+	}
+
+	if prj.Config != prj.PublicConfig {
+		t.Errorf("expected Config alias to match PublicConfig")
+	}
+	if prj.Protected != prj.ProtectedConfig || prj.NamespaceScoped != prj.ProtectedConfig {
+		t.Errorf("expected Protected and NamespaceScoped aliases to match ProtectedConfig")
+	}
+	if prj.Private != prj.PrivateConfig {
+		t.Errorf("expected Private alias to match PrivateConfig")
+	}
+}
+
+func TestTargetArchConfigResolution(t *testing.T) {
+	yamlData := []byte(`
+schema_version: "v1"
+project:
+  name: "SUSE:SLFO:1.2"
+
+public_config:
+  prefer: ["mariadb-server"]
+  build_flags: ["setvcs"]
+
+targets:
+  standard:
+    architectures: ["x86_64", "ppc64le", "s390x"]
+    config:
+      build_types: ["spec"]
+    arch_config:
+      x86_64:
+        build_flags: ["signflavor:2023-05-10"]
+        prefer: ["kernel-default-base"]
+      ppc64le:
+        build_flags: ["signflavor:2025-01-22"]
+        constraints: ["hardware:cpu:flag power9"]
+      s390x:
+        build_flags: ["signflavor:2025-01-22"]
+        prefer: ["kernel-default"]
+        constraints: ["hardware:cpu:flag vxd"]
+`)
+
+	prj, err := manifest.ParseProject(yamlData)
+	if err != nil {
+		t.Fatalf("failed parsing project: %v", err)
+	}
+
+	hasFlag := func(flags []string, f string) bool {
+		for _, x := range flags {
+			if x == f {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 1. x86_64 resolution
+	x86Cfg := prj.EffectiveTargetArchConfig("standard", "x86_64")
+	if len(x86Cfg.Constraints) != 0 {
+		t.Errorf("x86_64 must have no constraints, got %v", x86Cfg.Constraints)
+	}
+	if !hasFlag(x86Cfg.BuildFlags, "signflavor:2023-05-10") {
+		t.Errorf("x86_64 expected signflavor:2023-05-10")
+	}
+
+	// 2. ppc64le resolution
+	ppcCfg := prj.EffectiveTargetArchConfig("standard", "ppc64le")
+	if len(ppcCfg.Constraints) != 1 || ppcCfg.Constraints[0] != "hardware:cpu:flag power9" {
+		t.Errorf("ppc64le expected power9 constraint, got %v", ppcCfg.Constraints)
+	}
+	if !hasFlag(ppcCfg.BuildFlags, "signflavor:2025-01-22") {
+		t.Errorf("ppc64le expected signflavor:2025-01-22")
+	}
+
+	// 3. s390x resolution
+	s390Cfg := prj.EffectiveTargetArchConfig("standard", "s390x")
+	if len(s390Cfg.Constraints) != 1 || s390Cfg.Constraints[0] != "hardware:cpu:flag vxd" {
+		t.Errorf("s390x expected vxd constraint, got %v", s390Cfg.Constraints)
+	}
+	if !hasFlag(s390Cfg.Prefer, "kernel-default") {
+		t.Errorf("s390x expected kernel-default prefer, got %v", s390Cfg.Prefer)
+	}
+}

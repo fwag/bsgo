@@ -44,6 +44,8 @@ type BuildJob struct {
 	Reason        string                 `json:"reason,omitempty"`
 	BuildType     string                 `json:"build_type,omitempty"`
 	BuildEngine   string                 `json:"build_engine,omitempty"`
+	Macros        string                 `json:"macros,omitempty"`
+	BuildFlags    []string               `json:"build_flags,omitempty"`
 	Source        SourceSpec             `json:"source"`
 	Repositories  []RepositoryDependency `json:"repositories,omitempty"`
 	ChrootRPMs    []ChrootRPM            `json:"chroot_rpms"`

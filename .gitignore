@@ -28,3 +28,10 @@ go.work
 
 # Nested git repositories in test fixtures
 test/fixtures/**/.git/
+
+# Git LFS hook artifacts from core.hooksPath="" environments
+/post-checkout
+/post-commit
+/post-merge
+/pre-push
+

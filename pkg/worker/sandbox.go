@@ -280,10 +280,12 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	defer cleanupKVMRun(jobDir, buildRoot, vmDisk, vmSwap)
 
 	configPath := filepath.Join(jobDir, ".build.config")
-	if !checkFileExists(configPath) && (job.BuildEngine != "" || job.BuildType != "") {
+	if !checkFileExists(configPath) && (job.BuildEngine != "" || job.BuildType != "" || job.Macros != "" || len(job.BuildFlags) > 0) {
 		cfg := &manifest.ProjectConfig{
 			BuildEngine: job.BuildEngine,
 			BuildTypes:  []string{job.BuildType},
+			Macros:      job.Macros,
+			BuildFlags:  job.BuildFlags,
 		}
 		if rendered := RenderBuildConfig(cfg); rendered != "" {
 			_ = os.WriteFile(configPath, []byte(rendered), 0600)
