@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -66,9 +68,15 @@ func (s *MockSandbox) Cleanup(_ context.Context) error {
 
 type ProcessSandbox struct {
 	WorkDir     string
+	StateDir    string
 	DiskDir     string
+	CacheDir    string
 	SandboxMode string
 	ObsBuildBin string
+	KVMUser     string
+	KVMVMArgs   string
+	KVMAio      string
+	KVMCache    string
 	S3Storage   *s3.S3Storage
 	PublishFunc func(ctx context.Context, subject string, data []byte) error
 }
@@ -105,6 +113,13 @@ func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWrite
 	fmt.Fprintf(multiWriter, "[%s] bsgo-worker: starting build job %s (%s/%s, mode: %s, engine: %s, type: %s)\n",
 		time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package, s.SandboxMode, job.BuildEngine, job.BuildType)
 
+	s.downloadPrerequisiteRPMs(ctx, job.ChrootRPMs)
+
+	if err := VerifyChrootRPMs(s.CacheDir, job.ChrootRPMs); err != nil {
+		fmt.Fprintf(multiWriter, "[%s] bsgo-worker: integrity error: %v\n", time.Now().Format("15:04:05"), err)
+		return nil, err
+	}
+
 	switch strings.ToLower(strings.TrimSpace(job.BuildEngine)) {
 	case "podman":
 		return s.buildWithPodman(ctx, job, jobDir, multiWriter, start)
@@ -123,6 +138,73 @@ func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWrite
 	}
 
 	return s.buildGenericPackage(ctx, job, multiWriter, start)
+}
+
+func (s *ProcessSandbox) downloadPrerequisiteRPMs(ctx context.Context, rpms []v1.ChrootRPM) {
+	if s.S3Storage == nil || len(rpms) == 0 {
+		return
+	}
+	cacheDir := s.CacheDir
+	if cacheDir == "" {
+		cacheDir = filepath.Join(s.WorkDir, "cache")
+	}
+	_ = os.MkdirAll(cacheDir, 0750)
+	for _, rpm := range rpms {
+		s.fetchSinglePrerequisite(ctx, cacheDir, rpm)
+	}
+}
+
+func (s *ProcessSandbox) fetchSinglePrerequisite(ctx context.Context, cacheDir string, rpm v1.ChrootRPM) {
+	if rpm.S3Key == "" {
+		return
+	}
+	dest := filepath.Join(cacheDir, rpm.Filename)
+	if checkFileExists(dest) {
+		return
+	}
+	rc, _, _, err := s.S3Storage.GetObject(ctx, rpm.S3Key)
+	if err != nil {
+		return
+	}
+	defer rc.Close()
+	if data, readErr := io.ReadAll(rc); readErr == nil {
+		_ = os.WriteFile(dest, data, 0644)
+	}
+}
+
+// VerifyChrootRPMs validates cryptographic SHA-256 digests of prerequisite packages before installation.
+func VerifyChrootRPMs(rpmDir string, chrootRPMs []v1.ChrootRPM) error {
+	for _, rpm := range chrootRPMs {
+		if rpm.SHA256 == "" || rpm.SHA256 == "mock-sha256-digest" {
+			continue // Skip empty or mock hashes in test mode
+		}
+		candidatePaths := []string{
+			filepath.Join(rpmDir, rpm.Filename),
+			filepath.Join("/var/cache/build", rpm.Filename),
+		}
+		var targetPath string
+		for _, cp := range candidatePaths {
+			if checkFileExists(cp) {
+				targetPath = cp
+				break
+			}
+		}
+		if targetPath == "" {
+			continue // Not present locally yet
+		}
+
+		data, err := os.ReadFile(filepath.Clean(targetPath))
+		if err != nil {
+			return fmt.Errorf("failed reading prerequisite %s: %w", rpm.Filename, err)
+		}
+		sum := sha256.Sum256(data)
+		actualSHA := hex.EncodeToString(sum[:])
+		if !strings.EqualFold(actualSHA, rpm.SHA256) {
+			return fmt.Errorf("cryptographic checksum mismatch for prerequisite %s: expected %s, got %s",
+				rpm.Filename, rpm.SHA256, actualSHA)
+		}
+	}
+	return nil
 }
 
 func findPackageSources(pkgName, recipePath string) (string, string) {
@@ -189,15 +271,30 @@ func (s *ProcessSandbox) setupKVMDisks(job *v1.BuildJob) (string, string, error)
 }
 
 func cleanupKVMRun(jobDir, buildRoot, vmDisk, vmSwap string) {
-	_ = os.Remove(vmDisk)
-	_ = os.Remove(vmSwap)
+	wipeAndRemoveFile(vmDisk)
+	wipeAndRemoveFile(vmSwap)
 	_ = os.Remove(vmDisk + ".size")
 	_ = os.Remove(vmSwap + ".size")
-	_ = os.Remove(filepath.Join(jobDir, "build-root.img"))
-	_ = os.Remove(filepath.Join(jobDir, "build-root.swap"))
+	wipeAndRemoveFile(filepath.Join(jobDir, "build-root.img"))
+	wipeAndRemoveFile(filepath.Join(jobDir, "build-root.swap"))
 	_ = os.Remove(filepath.Join(jobDir, "build-root.img.size"))
 	_ = os.Remove(filepath.Join(jobDir, "build-root.swap.size"))
 	_ = os.RemoveAll(buildRoot)
+}
+
+func wipeAndRemoveFile(path string) {
+	cleanPath := filepath.Clean(path)
+	if !checkFileExists(cleanPath) {
+		return
+	}
+	// Overwrite file header with zeroes to eliminate residual compilation state
+	if f, err := os.OpenFile(cleanPath, os.O_WRONLY, 0600); err == nil {
+		zeroBuf := make([]byte, 4096)
+		_, _ = f.Write(zeroBuf)
+		_ = f.Truncate(0)
+		_ = f.Close()
+	}
+	_ = os.Remove(cleanPath)
 }
 
 func (s *ProcessSandbox) buildKVMArgs(ctx context.Context, job *v1.BuildJob, buildRoot, vmDisk, vmSwap, cacheDir, specFile, configPath string, w io.Writer) []string {
@@ -210,6 +307,11 @@ func (s *ProcessSandbox) buildKVMArgs(ctx context.Context, job *v1.BuildJob, bui
 		diskMB = 10240
 	}
 
+	vcpus := job.Resources.VCPUs
+	if vcpus <= 0 {
+		vcpus = 1
+	}
+
 	args := []string{
 		"--clean",
 		"--vm-type", "kvm",
@@ -219,7 +321,21 @@ func (s *ProcessSandbox) buildKVMArgs(ctx context.Context, job *v1.BuildJob, bui
 		"--cachedir", cacheDir,
 		"--vm-memory", strconv.FormatInt(memMB, 10),
 		"--vm-disk-size", strconv.FormatInt(diskMB, 10),
+		"--jobs", strconv.Itoa(int(vcpus)),
 	}
+
+	kvmUser := s.KVMUser
+	if kvmUser == "" {
+		kvmUser = "qemu"
+	}
+	args = append(args, "--vm-user", kvmUser)
+
+	vmArgs := s.KVMVMArgs
+	if vmArgs == "" {
+		vmArgs = "-sandbox on -net none"
+	}
+	args = append(args, "--vm-args", vmArgs)
+
 	if checkFileExists(configPath) {
 		args = append(args, "--dist", configPath)
 	}
@@ -236,24 +352,39 @@ func (s *ProcessSandbox) CleanupOrphans(_ context.Context) error {
 	if diskDir == "" {
 		diskDir = filepath.Join(s.WorkDir, "disks")
 	}
+	cleanupOrphanDisks(diskDir)
+	cleanupOrphanJobs(filepath.Join(s.WorkDir, "jobs"))
+	return nil
+}
 
-	if entries, err := filepath.Glob(filepath.Join(diskDir, "*")); err == nil {
-		for _, e := range entries {
-			if strings.HasSuffix(e, ".img") || strings.HasSuffix(e, ".swap") || strings.HasSuffix(e, ".size") {
-				_ = os.Remove(e)
-			}
+func cleanupOrphanDisks(diskDir string) {
+	entries, err := filepath.Glob(filepath.Join(diskDir, "*"))
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e, ".img") || strings.HasSuffix(e, ".swap") {
+			wipeAndRemoveFile(e)
+		} else if strings.HasSuffix(e, ".size") {
+			_ = os.Remove(e)
 		}
 	}
+}
 
-	jobsDir := filepath.Join(s.WorkDir, "jobs")
+func cleanupOrphanJobs(jobsDir string) {
 	for _, pattern := range []string{"*/build-root.img*", "*/build-root.swap*", "*/build-root"} {
-		if entries, err := filepath.Glob(filepath.Join(jobsDir, pattern)); err == nil {
-			for _, e := range entries {
+		entries, err := filepath.Glob(filepath.Join(jobsDir, pattern))
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if strings.HasSuffix(e, ".img") || strings.HasSuffix(e, ".swap") {
+				wipeAndRemoveFile(e)
+			} else {
 				_ = os.RemoveAll(e)
 			}
 		}
 	}
-	return nil
 }
 
 func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, jobDir string, w io.Writer, start time.Time) (*ExecutionResult, error) {

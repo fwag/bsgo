@@ -266,3 +266,95 @@ func TestSupersededCommitCancellation(t *testing.T) {
 		t.Errorf("expected job-v1 to be aborted, got: %s", abortedJob)
 	}
 }
+
+func TestDispatcherMultiJobCapacityBinPacking(t *testing.T) {
+	ctx := context.Background()
+	mockPub := dispatcher.NewMockPublisher(nil)
+	disp := dispatcher.NewDispatcher(mockPub, 30*time.Second)
+
+	disp.Registry().UpdateHeartbeat(v1.WorkerHeartbeat{
+		WorkerID:     "worker-multi-01",
+		Architecture: "x86_64",
+		Status:       "IDLE",
+		Hardware: v1.WorkerHardware{
+			TotalVCPUs:        8,
+			TotalMemoryMB:     16384,
+			AvailableVCPUs:    8,
+			AvailableMemoryMB: 16384,
+			AvailableDiskGB:   100,
+			SandboxType:       "kvm",
+		},
+		TimestampUnix: time.Now().Unix(),
+	})
+
+	job1 := &v1.BuildJob{
+		JobID:        "job-1",
+		Project:      "prjA",
+		Package:      "pkg1",
+		Architecture: "x86_64",
+		Priority:     10,
+		Resources:    v1.ResourceRequirements{MemoryMB: 4096, VCPUs: 2, DiskGB: 10, SandboxType: "kvm"},
+	}
+	job2 := &v1.BuildJob{
+		JobID:        "job-2",
+		Project:      "prjA",
+		Package:      "pkg2",
+		Architecture: "x86_64",
+		Priority:     10,
+		Resources:    v1.ResourceRequirements{MemoryMB: 4096, VCPUs: 2, DiskGB: 10, SandboxType: "kvm"},
+	}
+	job3 := &v1.BuildJob{
+		JobID:        "job-3",
+		Project:      "prjA",
+		Package:      "pkg3",
+		Architecture: "x86_64",
+		Priority:     10,
+		Resources:    v1.ResourceRequirements{MemoryMB: 8192, VCPUs: 4, DiskGB: 10, SandboxType: "kvm"},
+	}
+	job4 := &v1.BuildJob{
+		JobID:        "job-4",
+		Project:      "prjA",
+		Package:      "pkg4",
+		Architecture: "x86_64",
+		Priority:     10,
+		Resources:    v1.ResourceRequirements{MemoryMB: 4096, VCPUs: 2, DiskGB: 10, SandboxType: "kvm"},
+	}
+
+	disp.EnqueueJob(job1)
+	disp.EnqueueJob(job2)
+	disp.EnqueueJob(job3)
+	disp.EnqueueJob(job4)
+
+	// 1. Dispatch job 1 (4GB, 2 vCPUs) -> fits
+	w1, j1, err := disp.DispatchNext(ctx)
+	if err != nil || j1 == nil || w1 != "worker-multi-01" {
+		t.Fatalf("failed dispatching job 1: w=%s, j=%v, err=%v", w1, j1, err)
+	}
+
+	// 2. Dispatch job 2 (4GB, 2 vCPUs) -> fits concurrently on same worker!
+	w2, j2, err := disp.DispatchNext(ctx)
+	if err != nil || j2 == nil || w2 != "worker-multi-01" {
+		t.Fatalf("failed dispatching job 2 concurrently: w=%s, j=%v, err=%v", w2, j2, err)
+	}
+
+	// 3. Dispatch job 3 (8GB, 4 vCPUs) -> fits remaining capacity (8GB, 4 vCPUs)!
+	w3, j3, err := disp.DispatchNext(ctx)
+	if err != nil || j3 == nil || w3 != "worker-multi-01" {
+		t.Fatalf("failed dispatching job 3: w=%s, j=%v, err=%v", w3, j3, err)
+	}
+
+	// 4. Dispatch job 4 (4GB, 2 vCPUs) -> capacity fully saturated (0GB, 0 vCPUs left), must NOT dispatch
+	w4, j4, _ := disp.DispatchNext(ctx)
+	if j4 != nil {
+		t.Fatalf("job 4 should NOT be dispatched while worker capacity is exhausted, got: %s on %s", j4.JobID, w4)
+	}
+
+	// 5. Complete job 1 -> releases 4GB and 2 vCPUs
+	disp.RecordJobResult("job-1", "worker-multi-01", "prjA", 0, 5*time.Second)
+
+	// 6. Now job 4 fits into the released capacity!
+	w4, j4, err = disp.DispatchNext(ctx)
+	if err != nil || j4 == nil || w4 != "worker-multi-01" || j4.JobID != "job-4" {
+		t.Fatalf("job 4 should be dispatched after job 1 releases capacity: w=%s, j=%v, err=%v", w4, j4, err)
+	}
+}

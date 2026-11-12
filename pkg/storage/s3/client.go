@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -154,6 +155,57 @@ func (s *S3Storage) DownloadPrefix(ctx context.Context, s3Prefix, localDir strin
 		}
 	}
 	return count, nil
+}
+
+// S3ObjectInfo represents metadata for an object in an S3 bucket.
+type S3ObjectInfo struct {
+	Key          string
+	LastModified time.Time
+	Size         int64
+}
+
+// ListObjects retrieves all objects matching the given prefix.
+func (s *S3Storage) ListObjects(ctx context.Context, prefix string) ([]S3ObjectInfo, error) {
+	paginator := awss3.NewListObjectsV2Paginator(s.client, &awss3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(prefix),
+	})
+
+	var res []S3ObjectInfo
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed listing objects for prefix %s: %w", prefix, err)
+		}
+		for _, obj := range page.Contents {
+			var mod time.Time
+			if obj.LastModified != nil {
+				mod = *obj.LastModified
+			}
+			var size int64
+			if obj.Size != nil {
+				size = *obj.Size
+			}
+			res = append(res, S3ObjectInfo{
+				Key:          aws.ToString(obj.Key),
+				LastModified: mod,
+				Size:         size,
+			})
+		}
+	}
+	return res, nil
+}
+
+// DeleteObject deletes an object from S3 by its key.
+func (s *S3Storage) DeleteObject(ctx context.Context, s3Key string) error {
+	_, err := s.client.DeleteObject(ctx, &awss3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s3Key),
+	})
+	if err != nil {
+		return fmt.Errorf("failed deleting object s3://%s/%s: %w", s.bucket, s3Key, err)
+	}
+	return nil
 }
 
 func resolveCredentials(accessKey, secretKey string) (string, string) {

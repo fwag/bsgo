@@ -8,9 +8,9 @@ Harden the publisher against mass-rebuild storms and long-term repository bloat:
 
 **Blocked by:** 23: Publisher: Standalone bsgo-publisher Daemon & Worker Decoupling
 
-**Status:** open
+**Status:** resolved
 
-- [ ] Implement per-repository debounce window in `bsgo-publisher` to batch bursty build completions.
-- [ ] Add `PackageDeletionRequest` message contract and handler for removing deleted packages from repodata.
-- [ ] Implement background S3 metadata garbage collector purging unreferenced hash-prefixed XML files older than retention threshold.
-- [ ] Integration tests verifying mass-build batching efficiency and tombstone removal.
+- [x] Implement per-repository debounce window in `bsgo-publisher` to batch bursty build completions.
+- [x] Add `PackageDeletionRequest` message contract and handler for removing deleted packages from repodata.
+- [x] Implement background S3 metadata garbage collector purging unreferenced hash-prefixed XML files older than retention threshold.
+- [x] Integration tests verifying mass-build batching efficiency and tombstone removal.

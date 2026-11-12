@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -180,10 +181,10 @@ func TestWorkerAbortSignal(t *testing.T) {
 	jobData, _ := json.Marshal(job)
 	_ = nc.Publish("bsgo.workers.worker-abort-01.job", jobData)
 
-	// Wait for worker to become BUSY before sending abort signal
+	// Wait for worker to register active job before sending abort signal
 	for i := 0; i < 50; i++ {
 		time.Sleep(10 * time.Millisecond)
-		if daemon.Status() == "BUSY" {
+		if daemon.Status() == "BUSY" || len(daemon.ActiveJobs()) > 0 {
 			break
 		}
 	}
@@ -499,4 +500,152 @@ func TestWorkerSandboxBuildEngineHelm(t *testing.T) {
 	if !foundTgz {
 		t.Errorf("expected my-chart-0.1.0.tgz in artifacts, got %+v", res.Artifacts)
 	}
+}
+
+type controllableSandbox struct {
+	mu       sync.Mutex
+	running  map[string]chan struct{}
+	finished map[string]bool
+}
+
+func newControllableSandbox() *controllableSandbox {
+	return &controllableSandbox{
+		running:  make(map[string]chan struct{}),
+		finished: make(map[string]bool),
+	}
+}
+
+func (c *controllableSandbox) Execute(ctx context.Context, job *v1.BuildJob, _ io.Writer) (*worker.ExecutionResult, error) {
+	gate := make(chan struct{})
+	c.mu.Lock()
+	c.running[job.JobID] = gate
+	c.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return &worker.ExecutionResult{ExitCode: 137}, ctx.Err()
+	case <-gate:
+		c.mu.Lock()
+		c.finished[job.JobID] = true
+		c.mu.Unlock()
+		return &worker.ExecutionResult{ExitCode: 0}, nil
+	}
+}
+
+func (c *controllableSandbox) Release(jobID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ch, ok := c.running[jobID]; ok {
+		close(ch)
+	}
+}
+
+func (c *controllableSandbox) Cleanup(_ context.Context) error {
+	return nil
+}
+
+func TestWorkerDynamicResourceBinPacking(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_, natsURL := runEmbeddedNATS(t)
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		t.Fatalf("failed to connect to embedded NATS: %v", err)
+	}
+	defer nc.Close()
+
+	cfg := worker.WorkerConfig{
+		WorkerID:     "worker-binpack-01",
+		Architecture: "x86_64",
+		Hardware: v1.WorkerHardware{
+			TotalVCPUs:        8,
+			TotalMemoryMB:     16384,
+			AvailableVCPUs:    8,
+			AvailableMemoryMB: 16384,
+			AvailableDiskGB:   100,
+			SandboxType:       "kvm",
+		},
+	}
+
+	mockSandbox := newControllableSandbox()
+	daemon := worker.NewWorkerDaemon(cfg, nc, mockSandbox)
+
+	go func() {
+		_ = daemon.Start(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Send Job 1 (4GB, 2 vCPUs)
+	job1 := &v1.BuildJob{
+		JobID:        "job-1",
+		Project:      "prjA",
+		Package:      "pkg1",
+		Architecture: "x86_64",
+		Resources:    v1.ResourceRequirements{MemoryMB: 4096, VCPUs: 2, DiskGB: 10, SandboxType: "kvm"},
+	}
+	data1, _ := json.Marshal(job1)
+	_ = nc.Publish("bsgo.workers.worker-binpack-01.job", data1)
+
+	// Send Job 2 (8GB, 4 vCPUs)
+	job2 := &v1.BuildJob{
+		JobID:        "job-2",
+		Project:      "prjA",
+		Package:      "pkg2",
+		Architecture: "x86_64",
+		Resources:    v1.ResourceRequirements{MemoryMB: 8192, VCPUs: 4, DiskGB: 10, SandboxType: "kvm"},
+	}
+	data2, _ := json.Marshal(job2)
+	_ = nc.Publish("bsgo.workers.worker-binpack-01.job", data2)
+
+	// Wait for both jobs to be concurrently active
+	var active []string
+	for i := 0; i < 20; i++ {
+		active = daemon.ActiveJobs()
+		if len(active) == 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if len(active) != 2 {
+		t.Fatalf("expected 2 concurrently running jobs, got %d (%v)", len(active), active)
+	}
+
+	// Release Job 1 -> finishes build and recovers resources
+	mockSandbox.Release("job-1")
+
+	for i := 0; i < 20; i++ {
+		active = daemon.ActiveJobs()
+		if len(active) == 1 && active[0] == "job-2" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if len(active) != 1 || active[0] != "job-2" {
+		t.Fatalf("expected 1 active job (job-2) after job-1 completion, got %v", active)
+	}
+
+	// Release Job 2 -> finishes build, zero active jobs
+	mockSandbox.Release("job-2")
+
+	for i := 0; i < 20; i++ {
+		active = daemon.ActiveJobs()
+		if len(active) == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if len(active) != 0 {
+		t.Fatalf("expected 0 active jobs after all jobs finished, got %v", active)
+	}
+
+	if daemon.Status() != "IDLE" {
+		t.Errorf("expected worker status IDLE after completion, got %s", daemon.Status())
+	}
+
+	daemon.Stop()
 }

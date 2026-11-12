@@ -7,11 +7,17 @@ import (
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 )
 
+type jobAllocation struct {
+	memoryMB int64
+	vcpus    int32
+}
+
 type WorkerRecord struct {
 	v1.WorkerHeartbeat
 	LastSeen          time.Time
 	ConsecutiveErrors int
 	QuarantineUntil   time.Time
+	Allocations       map[string]jobAllocation
 }
 
 type WorkerRegistry struct {
@@ -74,6 +80,115 @@ func (r *WorkerRegistry) SetWorkerStatus(workerID, status, activeJob string) {
 	if exists {
 		w.Status = status
 		w.ActiveJobID = activeJob
+		if status == "IDLE" {
+			w.Hardware.AvailableMemoryMB = w.Hardware.TotalMemoryMB
+			w.Hardware.AvailableVCPUs = w.Hardware.TotalVCPUs
+			w.ActiveJobIDs = nil
+		}
+	}
+}
+
+// AllocateJobResources deducts resources from the worker's capacity pool upon dispatch.
+func (r *WorkerRegistry) AllocateJobResources(workerID string, job *v1.BuildJob) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	w, exists := r.workers[workerID]
+	if !exists {
+		return
+	}
+
+	// If worker did not advertise dynamic available capacity, treat as single-job worker
+	if w.Hardware.AvailableMemoryMB <= 0 && w.Hardware.AvailableVCPUs <= 0 && len(w.ActiveJobIDs) == 0 {
+		w.Status = "BUSY"
+		w.ActiveJobID = job.JobID
+		w.ActiveJobIDs = []string{job.JobID}
+		return
+	}
+
+	reqMem := int64(job.Resources.MemoryMB)
+	if reqMem <= 0 {
+		reqMem = 2048
+	}
+	reqVCPUs := int32(job.Resources.VCPUs)
+	if reqVCPUs <= 0 {
+		reqVCPUs = 1
+	}
+
+	w.Hardware.AvailableMemoryMB -= reqMem
+	if w.Hardware.AvailableMemoryMB < 0 {
+		w.Hardware.AvailableMemoryMB = 0
+	}
+	w.Hardware.AvailableVCPUs -= reqVCPUs
+	if w.Hardware.AvailableVCPUs < 0 {
+		w.Hardware.AvailableVCPUs = 0
+	}
+
+	if w.Allocations == nil {
+		w.Allocations = make(map[string]jobAllocation)
+	}
+	w.Allocations[job.JobID] = jobAllocation{memoryMB: reqMem, vcpus: reqVCPUs}
+
+	w.ActiveJobID = job.JobID
+	w.ActiveJobIDs = append(w.ActiveJobIDs, job.JobID)
+
+	if w.Hardware.AvailableMemoryMB < 1024 || w.Hardware.AvailableVCPUs < 1 {
+		w.Status = "BUSY"
+	} else {
+		w.Status = "IDLE"
+	}
+}
+
+// ReleaseJobResources restores resources back to the worker's capacity pool upon completion.
+func (r *WorkerRegistry) ReleaseJobResources(workerID, jobID string, req *v1.ResourceRequirements) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	w, exists := r.workers[workerID]
+	if !exists {
+		return
+	}
+
+	var reqMem int64
+	var reqVCPUs int32
+	if alloc, ok := w.Allocations[jobID]; ok {
+		reqMem = alloc.memoryMB
+		reqVCPUs = alloc.vcpus
+		delete(w.Allocations, jobID)
+	} else if req != nil {
+		reqMem = int64(req.MemoryMB)
+		reqVCPUs = int32(req.VCPUs)
+	} else {
+		reqMem = 2048
+		reqVCPUs = 1
+	}
+
+	w.Hardware.AvailableMemoryMB += reqMem
+	if w.Hardware.AvailableMemoryMB > w.Hardware.TotalMemoryMB {
+		w.Hardware.AvailableMemoryMB = w.Hardware.TotalMemoryMB
+	}
+	w.Hardware.AvailableVCPUs += reqVCPUs
+	if w.Hardware.AvailableVCPUs > w.Hardware.TotalVCPUs {
+		w.Hardware.AvailableVCPUs = w.Hardware.TotalVCPUs
+	}
+
+	var remaining []string
+	for _, id := range w.ActiveJobIDs {
+		if id != jobID {
+			remaining = append(remaining, id)
+		}
+	}
+	w.ActiveJobIDs = remaining
+	if len(remaining) > 0 {
+		w.ActiveJobID = remaining[len(remaining)-1]
+	} else {
+		w.ActiveJobID = ""
+	}
+
+	if w.Hardware.AvailableMemoryMB >= 1024 && w.Hardware.AvailableVCPUs >= 1 {
+		w.Status = "IDLE"
+	} else {
+		w.Status = "BUSY"
 	}
 }
 
@@ -171,7 +286,10 @@ func (r *WorkerRegistry) isWorkerEligible(w *WorkerRecord, job *v1.BuildJob, now
 		w.ConsecutiveErrors = 0
 	}
 
-	if w.Status != "IDLE" {
+	if w.Status == "DRAINING" || w.Status == "BADHOST" {
+		return false
+	}
+	if w.Status == "BUSY" && (w.Hardware.AvailableMemoryMB < 1024 || w.Hardware.AvailableVCPUs < 1) {
 		return false
 	}
 	if w.Architecture != job.Architecture {
@@ -184,13 +302,23 @@ func (r *WorkerRegistry) isWorkerEligible(w *WorkerRecord, job *v1.BuildJob, now
 }
 
 func matchesConstraints(hw *v1.WorkerHardware, req *v1.ResourceRequirements) bool {
-	if req.MemoryMB > 0 && hw.TotalMemoryMB < req.MemoryMB {
+	availMem := hw.AvailableMemoryMB
+	if availMem <= 0 && hw.TotalMemoryMB > 0 {
+		availMem = hw.TotalMemoryMB
+	}
+	if req.MemoryMB > 0 && availMem < int64(req.MemoryMB) {
 		return false
 	}
-	if req.VCPUs > 0 && hw.TotalVCPUs < req.VCPUs {
+
+	availVCPUs := hw.AvailableVCPUs
+	if availVCPUs <= 0 && hw.TotalVCPUs > 0 {
+		availVCPUs = hw.TotalVCPUs
+	}
+	if req.VCPUs > 0 && availVCPUs < int32(req.VCPUs) {
 		return false
 	}
-	if req.DiskGB > 0 && hw.AvailableDiskGB < req.DiskGB {
+
+	if req.DiskGB > 0 && hw.AvailableDiskGB < int64(req.DiskGB) {
 		return false
 	}
 	if req.SandboxType != "" && hw.SandboxType != "" && req.SandboxType != hw.SandboxType {

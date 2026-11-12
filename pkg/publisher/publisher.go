@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
 	"github.com/openSUSE/bsgo/pkg/solv"
 	"github.com/openSUSE/bsgo/pkg/storage"
+	"github.com/openSUSE/bsgo/pkg/storage/s3"
 )
 
 func isValidPathSegment(s string) bool {
@@ -25,18 +27,31 @@ func isValidPathSegment(s string) bool {
 
 type PublishRequest = v1.PublishRequest
 
-type PublishResult struct {
-	Project         string   `json:"project"`
-	Target          string   `json:"target"`
-	Architecture    string   `json:"architecture"`
+type SubRepoResult struct {
+	SubRepo         string   `json:"sub_repo"`
+	S3Prefix        string   `json:"s3_prefix"`
 	RepomdXMLKey    string   `json:"repomd_xml_key,omitempty"`
-	IndexYAMLKey    string   `json:"index_yaml_key,omitempty"`
 	UploadedXMLKeys []string `json:"uploaded_xml_keys"`
 }
+
+type PublishResult struct {
+	Project         string                   `json:"project"`
+	Target          string                   `json:"target"`
+	Architecture    string                   `json:"architecture"`
+	RepomdXMLKey    string                   `json:"repomd_xml_key,omitempty"`
+	IndexYAMLKey    string                   `json:"index_yaml_key,omitempty"`
+	UploadedXMLKeys []string                 `json:"uploaded_xml_keys"`
+	SubRepositories map[string]SubRepoResult `json:"sub_repositories,omitempty"`
+}
+
+// S3ObjectInfo represents metadata for an S3 object.
+type S3ObjectInfo = s3.S3ObjectInfo
 
 type S3Client interface {
 	DownloadMetadata(ctx context.Context, prefix, localDir string) error
 	UploadFile(ctx context.Context, localPath, s3Key string) error
+	ListObjects(ctx context.Context, prefix string) ([]S3ObjectInfo, error)
+	DeleteObject(ctx context.Context, s3Key string) error
 }
 
 type LockManager interface {
@@ -86,6 +101,7 @@ func (m *LocalLockManager) AcquireLock(_ context.Context, key string) (func(), e
 
 type Publisher struct {
 	crExecutor   CreateRepoExecutor
+	mrExecutor   ModifyRepoExecutor
 	helmExecutor HelmIndexExecutor
 	s3Client     S3Client
 	lockMgr      LockManager
@@ -98,6 +114,7 @@ type Publisher struct {
 func NewPublisher(cr CreateRepoExecutor, s3 S3Client, lockMgr LockManager, workDir string) *Publisher {
 	return &Publisher{
 		crExecutor: cr,
+		mrExecutor: NewRealModifyRepoExecutor(),
 		s3Client:   s3,
 		lockMgr:    lockMgr,
 		workDir:    workDir,
@@ -106,6 +123,10 @@ func NewPublisher(cr CreateRepoExecutor, s3 S3Client, lockMgr LockManager, workD
 
 func (p *Publisher) SetStore(s storage.Store) {
 	p.store = s
+}
+
+func (p *Publisher) SetModifyRepoExecutor(mr ModifyRepoExecutor) {
+	p.mrExecutor = mr
 }
 
 func (p *Publisher) SetEventPublisher(ep EventPublisher) {
@@ -153,14 +174,15 @@ func (p *Publisher) ProcessPublishRequest(ctx context.Context, req PublishReques
 	_ = os.MkdirAll(repoDir, 0750)
 	s3Prefix := fmt.Sprintf("repos/%s/%s/%s/", req.Project, req.Target, req.Architecture)
 
-	// 2. RepoType: "rpm-md" generates RPM metadata via createrepo_c
+	// 2. RepoType: "rpm-md" generates RPM metadata via createrepo_c across partitioned sub-repositories
 	if hasRepoType(repoTypes, "rpm-md") {
-		rpmRes, err := p.processRPMRepo(ctx, req, repoDir, s3Prefix)
+		rpmRes, err := p.processRPMSubRepos(ctx, req, repoDir)
 		if err != nil {
 			return nil, err
 		}
 		res.RepomdXMLKey = rpmRes.RepomdXMLKey
 		res.UploadedXMLKeys = append(res.UploadedXMLKeys, rpmRes.UploadedXMLKeys...)
+		res.SubRepositories = rpmRes.SubRepositories
 	}
 
 	// 3. RepoType: "helm" generates Helm chart repository index.yaml
@@ -182,14 +204,110 @@ func (p *Publisher) ProcessPublishRequest(ctx context.Context, req PublishReques
 	return res, nil
 }
 
-func (p *Publisher) processRPMRepo(ctx context.Context, req PublishRequest, repoDir, s3Prefix string) (*PublishResult, error) {
-	oldMetaDir := filepath.Join(repoDir, "repodata")
-	_ = p.s3Client.DownloadMetadata(ctx, s3Prefix+"repodata", oldMetaDir)
+func (p *Publisher) processRPMSubRepos(ctx context.Context, req PublishRequest, repoDir string) (*PublishResult, error) {
+	classified := p.partitionRPMs(req, repoDir)
+	activeSubRepos := p.determineActiveSubRepos(req, classified, repoDir)
 
+	res := &PublishResult{
+		Project:         req.Project,
+		Target:          req.Target,
+		Architecture:    req.Architecture,
+		SubRepositories: make(map[string]SubRepoResult),
+	}
+
+	for _, sr := range activeSubRepos {
+		srRes, err := p.processSingleSubRepo(ctx, req, sr, classified[sr])
+		if err != nil {
+			return nil, err
+		}
+		res.SubRepositories[string(sr)] = *srRes
+		res.UploadedXMLKeys = append(res.UploadedXMLKeys, srRes.UploadedXMLKeys...)
+		if sr == SubRepoStandard || res.RepomdXMLKey == "" {
+			res.RepomdXMLKey = srRes.RepomdXMLKey
+		}
+	}
+
+	stdDir := SubRepoWorkDir(p.workDir, req.Project, req.Target, req.Architecture, SubRepoStandard)
+	_ = p.updateTargetSolvCache(ctx, req, stdDir)
+
+	return res, nil
+}
+
+func (p *Publisher) partitionRPMs(req PublishRequest, repoDir string) map[SubRepoType][]string {
+	classified := make(map[SubRepoType][]string)
+	for _, path := range req.NewRPMPaths {
+		sr := ClassifyRPM(path)
+		classified[sr] = append(classified[sr], path)
+	}
+
+	// Check files already in repoDir that belong to debug or src sub-repositories
+	if matches, err := filepath.Glob(filepath.Join(repoDir, "*.rpm")); err == nil {
+		for _, m := range matches {
+			sr := ClassifyRPM(m)
+			if sr != SubRepoStandard {
+				classified[sr] = append(classified[sr], m)
+			}
+		}
+	}
+	return classified
+}
+
+func (p *Publisher) determineActiveSubRepos(req PublishRequest, classified map[SubRepoType][]string, repoDir string) []SubRepoType {
+	if len(req.SubRepos) > 0 {
+		return parseRequestedSubRepos(req.SubRepos)
+	}
+
+	active := []SubRepoType{SubRepoStandard}
+	if len(classified[SubRepoDebug]) > 0 || checkSubRepoHasRPMs(p.workDir, req.Project, req.Target, req.Architecture, SubRepoDebug) {
+		active = append(active, SubRepoDebug)
+	}
+	if len(classified[SubRepoSource]) > 0 || checkSubRepoHasRPMs(p.workDir, req.Project, req.Target, req.Architecture, SubRepoSource) {
+		active = append(active, SubRepoSource)
+	}
+	return active
+}
+
+func parseRequestedSubRepos(subRepos []string) []SubRepoType {
+	var res []SubRepoType
+	for _, s := range subRepos {
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "debug":
+			res = append(res, SubRepoDebug)
+		case "src", "source":
+			res = append(res, SubRepoSource)
+		case "standard", "runtime":
+			res = append(res, SubRepoStandard)
+		}
+	}
+	if len(res) == 0 {
+		return []SubRepoType{SubRepoStandard}
+	}
+	return res
+}
+
+func checkSubRepoHasRPMs(baseWorkDir, project, target, arch string, sr SubRepoType) bool {
+	dir := SubRepoWorkDir(baseWorkDir, project, target, arch, sr)
+	matches, err := filepath.Glob(filepath.Join(dir, "*.rpm"))
+	return err == nil && len(matches) > 0
+}
+
+func (p *Publisher) processSingleSubRepo(ctx context.Context, req PublishRequest, sr SubRepoType, rpms []string) (*SubRepoResult, error) {
+	subRepoDir := SubRepoWorkDir(p.workDir, req.Project, req.Target, req.Architecture, sr)
+	s3Prefix := SubRepoS3Prefix(req.Project, req.Target, req.Architecture, sr)
+	_ = os.MkdirAll(subRepoDir, 0750)
+
+	stageRPMFiles(subRepoDir, rpms)
+
+	if len(req.DeletedRPMs) > 0 {
+		p.purgeDeletedRPMs(ctx, subRepoDir, s3Prefix, req.DeletedRPMs)
+	}
+
+	oldMetaDir := filepath.Join(subRepoDir, "repodata")
+	_ = p.s3Client.DownloadMetadata(ctx, s3Prefix+"repodata", oldMetaDir)
 	hasOldMeta := checkFileExists(filepath.Join(oldMetaDir, "repomd.xml"))
 
 	opts := CreateRepoOptions{
-		Dir:            repoDir,
+		Dir:            subRepoDir,
 		Update:         hasOldMeta,
 		RecyclePkgList: hasOldMeta,
 	}
@@ -198,16 +316,73 @@ func (p *Publisher) processRPMRepo(ctx context.Context, req PublishRequest, repo
 	}
 
 	if err := p.crExecutor.Run(ctx, opts); err != nil {
-		return nil, fmt.Errorf("metadata generation failed: %w", err)
+		return nil, fmt.Errorf("metadata generation failed for sub-repository %s: %w", sr, err)
 	}
 
-	res, err := p.uploadMetadataAtomic(ctx, repoDir, s3Prefix, req)
+	if sr == SubRepoStandard {
+		metaDir := filepath.Join(subRepoDir, "repodata")
+		if err := EnrichMetadata(ctx, p.mrExecutor, metaDir, req, p.workDir); err != nil {
+			return nil, fmt.Errorf("metadata enrichment failed: %w", err)
+		}
+	}
+
+	upRes, err := p.uploadMetadataAtomic(ctx, subRepoDir, s3Prefix, req)
 	if err != nil {
 		return nil, err
 	}
 
-	_ = p.updateTargetSolvCache(ctx, req, repoDir)
-	return res, nil
+	return &SubRepoResult{
+		SubRepo:         string(sr),
+		S3Prefix:        s3Prefix,
+		RepomdXMLKey:    upRes.RepomdXMLKey,
+		UploadedXMLKeys: upRes.UploadedXMLKeys,
+	}, nil
+}
+
+func stageRPMFiles(targetDir string, rpmPaths []string) {
+	for _, p := range rpmPaths {
+		fi, err := os.Stat(p)
+		if err != nil || fi.IsDir() {
+			continue
+		}
+		dest := filepath.Join(targetDir, filepath.Base(p))
+		if dest != p {
+			copyFile(p, dest)
+			if filepath.Dir(p) != targetDir {
+				_ = os.Remove(p)
+			}
+		}
+	}
+}
+
+func copyFile(src, dst string) {
+	in, err := os.Open(filepath.Clean(src))
+	if err != nil {
+		return
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(filepath.Clean(dst), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return
+	}
+	defer out.Close()
+
+	// #nosec G110 -- copying RPM file with bounded size in repository staging
+	_, _ = io.Copy(out, in)
+}
+
+func (p *Publisher) purgeDeletedRPMs(ctx context.Context, subRepoDir, s3Prefix string, deletedRPMs []string) {
+	for _, rpm := range deletedRPMs {
+		base := filepath.Base(rpm)
+		localPath := filepath.Join(subRepoDir, base)
+		if checkFileExists(localPath) {
+			_ = os.Remove(localPath)
+		}
+		if p.s3Client != nil {
+			_ = p.s3Client.DeleteObject(ctx, s3Prefix+base)
+		}
+	}
 }
 
 func (p *Publisher) updateTargetSolvCache(ctx context.Context, req PublishRequest, repoDir string) error {
@@ -215,13 +390,24 @@ func (p *Publisher) updateTargetSolvCache(ctx context.Context, req PublishReques
 		return nil
 	}
 
+	deletedMap := make(map[string]bool)
+	for _, del := range req.DeletedRPMs {
+		deletedMap[filepath.Base(del)] = true
+	}
+
 	rpmMap := make(map[string]bool)
 	for _, path := range req.NewRPMPaths {
-		rpmMap[filepath.Base(path)] = true
+		base := filepath.Base(path)
+		if !deletedMap[base] && ClassifyRPM(path) == SubRepoStandard {
+			rpmMap[base] = true
+		}
 	}
 	if matches, err := filepath.Glob(filepath.Join(repoDir, "*.rpm")); err == nil {
 		for _, m := range matches {
-			rpmMap[filepath.Base(m)] = true
+			base := filepath.Base(m)
+			if !deletedMap[base] && ClassifyRPM(m) == SubRepoStandard {
+				rpmMap[base] = true
+			}
 		}
 	}
 

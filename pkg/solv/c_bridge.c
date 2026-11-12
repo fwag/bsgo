@@ -36,6 +36,22 @@ Repo *bsgo_load_repo_from_mem(Pool *pool, const char *name, const void *buf, siz
     return repo;
 }
 
+Repo *bsgo_load_repo_from_rpmmd_mem(Pool *pool, const char *name, const void *buf, size_t len) {
+    if (!pool || !buf || len == 0) return NULL;
+
+    FILE *fp = fmemopen((void*)buf, len, "r");
+    if (!fp) return NULL;
+
+    Repo *repo = repo_create(pool, name);
+    if (repo_add_rpmmd(repo, fp, NULL, 0) != 0) {
+        fclose(fp);
+        repo_free(repo, 1);
+        return NULL;
+    }
+    fclose(fp);
+    return repo;
+}
+
 int bsgo_dump_repo_to_mem(Repo *repo, void **out_buf, size_t *out_len) {
     if (!repo || !out_buf || !out_len) return -1;
 
@@ -263,9 +279,15 @@ ExpansionOutcome bsgo_expand(Pool *pool,
             const char *name = pool_id2str(pool, s->name);
             const char *evr = pool_id2str(pool, s->evr);
             const char *arch = pool_id2str(pool, s->arch);
+            const char *sha = NULL;
+            if (s->repo && s->repo->nrepodata > 0) {
+                Id chktype = 0;
+                sha = solvable_lookup_checksum(s, SOLVABLE_CHECKSUM, &chktype);
+            }
             outcome.packages[i].name = name ? strdup(name) : strdup("");
             outcome.packages[i].evr = evr ? strdup(evr) : strdup("");
             outcome.packages[i].arch = arch ? strdup(arch) : strdup("");
+            outcome.packages[i].sha256 = sha ? strdup(sha) : strdup("");
         }
     } else {
         outcome.packages = NULL;
@@ -291,6 +313,7 @@ void bsgo_free_outcome(ExpansionOutcome *outcome) {
             free(outcome->packages[i].name);
             free(outcome->packages[i].evr);
             free(outcome->packages[i].arch);
+            free(outcome->packages[i].sha256);
         }
         free(outcome->packages);
         outcome->packages = NULL;

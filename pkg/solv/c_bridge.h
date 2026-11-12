@@ -9,6 +9,8 @@
 #include <solv/strpool.h>
 #include <solv/queue.h>
 #include <solv/bitmap.h>
+#include <solv/repo_rpmmd.h>
+#include <solv/knownid.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +24,7 @@ typedef struct {
     char *name;
     char *evr;
     char *arch;
+    char *sha256;
 } ResolvedPackage;
 
 typedef struct {
@@ -36,6 +39,7 @@ void bsgo_pool_free(Pool *pool);
 
 Repo *bsgo_repo_create(Pool *pool, const char *name);
 Repo *bsgo_load_repo_from_mem(Pool *pool, const char *name, const void *buf, size_t len);
+Repo *bsgo_load_repo_from_rpmmd_mem(Pool *pool, const char *name, const void *buf, size_t len);
 int bsgo_dump_repo_to_mem(Repo *repo, void **out_buf, size_t *out_len);
 
 int bsgo_add_package(Repo *repo, const char *name, const char *evr, const char *arch,

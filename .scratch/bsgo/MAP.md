@@ -51,15 +51,18 @@ Deliver an architectural specification, core schemas, and prototype contracts fo
 - [21: Signer: obs-signd Protocol Client & Hardware Security Module (HSM) Service](issues/21-signer-obs-signd-and-pkcs11-hsm-service.md) (resolved)
 - [22: Signer: bsgo-signd Bare-Metal Daemon, Database Keys & EFI Signing](issues/22-signd-daemon-master-keys-and-efi-signing.md) (resolved)
 - [23: Publisher: Standalone bsgo-publisher Daemon & Worker Decoupling](issues/23-publisher-standalone-daemon-and-worker-decoupling.md) (resolved)
-- [24: Publisher: Sub-Repository Channel Partitioning (Standard, Debuginfo, Sources)](issues/24-publisher-sub-repository-partitioning.md)
-- [25: Publisher: Metadata Enrichment via modifyrepo_c (AppStream & Errata/CVE)](issues/25-publisher-metadata-enrichment-modifyrepo.md)
-- [26: Publisher: Debounce Batching, Tombstones & S3 Metadata Garbage Collection](issues/26-publisher-debounce-batching-and-metadata-gc.md)
-- [27: Worker: Ephemeral Storage (tmpfs/RAM Disk) & KVM Performance Hardening](issues/27-worker-ephemeral-ramdisk-and-kvm-performance-hardening.md)
-- [28: Worker: Dynamic Multi-Job Host Supervision & Resource Bin-Packing](issues/28-worker-dynamic-resource-allocation-and-host-supervisor.md)
+- [24: Publisher: Sub-Repository Partitioning (Standard, Debuginfo, Sources)](issues/24-publisher-sub-repository-partitioning.md) (resolved)
+- [25: Publisher: Metadata Enrichment via modifyrepo_c (AppStream & Errata/CVE)](issues/25-publisher-metadata-enrichment-modifyrepo.md) (resolved)
+- [26: Publisher: Debounce Batching, Tombstones & S3 Metadata Garbage Collection](issues/26-publisher-debounce-batching-and-metadata-gc.md) (resolved)
+- [27: Worker: Ephemeral Storage (tmpfs/RAM Disk) & KVM Performance Hardening](issues/27-worker-ephemeral-ramdisk-and-kvm-performance-hardening.md) (resolved)
+- [28: Worker: Dynamic Multi-Job Host Supervision & Resource Bin-Packing](issues/28-worker-dynamic-resource-allocation-and-host-supervisor.md) (resolved)
 - [29: Manifest: Project & Target Config Schema, Hierarchy & Merging](issues/29-manifest-project-and-target-config-schema.md) (resolved)
 - [30: Scheduler: Config DAG Inheritance, FromScratch & BuildType Filtering](issues/30-scheduler-config-inheritance-and-buildtype-filtering.md) (resolved)
 - [31: Publisher: Multi-RepoType Dispatching & Helm Support](issues/31-publisher-repotype-dispatch-and-helm-support.md) (resolved)
 - [32: Worker: BuildEngine Sandbox Dispatch & Just-In-Time obs-build Config Rendering](issues/32-worker-buildengine-sandbox-dispatch-and-config-rendering.md) (resolved)
+- [33: External Repository Ingestion, Download-on-Demand (DoD) & S3 CAS Caching](issues/33-external-repo-ingestion-and-download-on-demand.md) (resolved)
+- [34: Scheduler: Real Chroot SHA-256 Digest Verification & libsolv RPM-MD Parsing](issues/34-real-chroot-sha256-and-solv-rpmmd-parsing.md) (resolved)
+- [35: API Gateway: Live Log Streaming Endpoint via SSE / WebSocket](issues/35-api-live-log-streaming-sse-websocket.md) (resolved)
 
 ## Not yet specified
 

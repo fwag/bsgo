@@ -53,9 +53,15 @@ func main() {
 
 	sandbox := &worker.ProcessSandbox{
 		WorkDir:     cfg.WorkDir,
+		StateDir:    cfg.StateDir,
 		DiskDir:     cfg.DiskDir,
+		CacheDir:    cfg.CacheDir,
 		SandboxMode: cfg.SandboxMode,
 		ObsBuildBin: cfg.ObsBuildBin,
+		KVMUser:     cfg.KVMUser,
+		KVMVMArgs:   cfg.KVMVMArgs,
+		KVMAio:      cfg.KVMAio,
+		KVMCache:    cfg.KVMCache,
 		S3Storage:   s3Storage,
 		PublishFunc: func(_ context.Context, subject string, data []byte) error {
 			return nc.Publish(subject, data)
@@ -107,6 +113,9 @@ func applyFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile)
 	if fileCfg.Worker.WorkDir != "" {
 		cfg.WorkDir = fileCfg.Worker.WorkDir
 	}
+	if fileCfg.Worker.StateDir != "" {
+		cfg.StateDir = fileCfg.Worker.StateDir
+	}
 	if fileCfg.Worker.CacheDir != "" {
 		cfg.CacheDir = fileCfg.Worker.CacheDir
 	}
@@ -137,6 +146,18 @@ func applyFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile)
 	}
 	if fileCfg.Sandbox.ObsBuildBin != "" {
 		cfg.ObsBuildBin = fileCfg.Sandbox.ObsBuildBin
+	}
+	if fileCfg.Sandbox.KVM.User != "" {
+		cfg.KVMUser = fileCfg.Sandbox.KVM.User
+	}
+	if fileCfg.Sandbox.KVM.VMArgs != "" {
+		cfg.KVMVMArgs = fileCfg.Sandbox.KVM.VMArgs
+	}
+	if fileCfg.Sandbox.KVM.AIO != "" {
+		cfg.KVMAio = fileCfg.Sandbox.KVM.AIO
+	}
+	if fileCfg.Sandbox.KVM.CacheMode != "" {
+		cfg.KVMCache = fileCfg.Sandbox.KVM.CacheMode
 	}
 }
 

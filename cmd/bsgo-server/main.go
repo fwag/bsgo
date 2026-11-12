@@ -126,7 +126,7 @@ func runControlPlane(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js je
 	}
 
 	startSchedulerAndDispatcher(ctx, nc, store, pubService)
-	startHTTPServer(ctx, cfg.HTTPPort, store)
+	startHTTPServer(ctx, cfg.HTTPPort, store, nc)
 
 	fmt.Printf("bsgo Control Plane is LIVE and listening for triggers and workers\n")
 	<-ctx.Done()
@@ -391,6 +391,35 @@ func (c *DiskS3Client) UploadFile(_ context.Context, localPath, s3Key string) er
 	return os.WriteFile(dest, data, 0600)
 }
 
+func (c *DiskS3Client) ListObjects(_ context.Context, prefix string) ([]publisher.S3ObjectInfo, error) {
+	cleanPrefix := filepath.Clean(prefix)
+	srcDir := filepath.Clean(filepath.Join(c.rootDir, cleanPrefix))
+	if _, err := os.Stat(srcDir); os.IsNotExist(err) {
+		return nil, nil
+	}
+	var res []publisher.S3ObjectInfo
+	_ = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(c.rootDir, path)
+		res = append(res, publisher.S3ObjectInfo{
+			Key:          filepath.ToSlash(rel),
+			LastModified: info.ModTime(),
+			Size:         info.Size(),
+		})
+		return nil
+	})
+	return res, nil
+}
+
+func (c *DiskS3Client) DeleteObject(_ context.Context, s3Key string) error {
+	cleanKey := filepath.Clean(s3Key)
+	dest := filepath.Clean(filepath.Join(c.rootDir, cleanKey))
+	_ = os.Remove(dest)
+	return nil
+}
+
 func updateGatekeeperStatus(gk *scheduler.MemoryGatekeeper, prjName, pkgName, phase string) {
 	if prjName == "" || pkgName == "" {
 		return
@@ -580,7 +609,7 @@ func appendDefaultRepo(repos []v1.RepositoryDependency, project, targetName, arc
 	})
 }
 
-func startHTTPServer(ctx context.Context, httpPort int, store storage.Store) {
+func startHTTPServer(ctx context.Context, httpPort int, store storage.Store, nc *nats.Conn) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -591,6 +620,9 @@ func startHTTPServer(ctx context.Context, httpPort int, store storage.Store) {
 	authorizer := auth.NewAuthorizer()
 	repoServer := gateway.NewRepoServer(repoStorage, authorizer)
 	mux.Handle("/repos/", repoServer)
+
+	logServer := gateway.NewLogServer(nc, repoStorage)
+	mux.Handle("/api/v1/jobs/", logServer)
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", httpPort),

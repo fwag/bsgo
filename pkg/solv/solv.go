@@ -1,13 +1,16 @@
 package solv
 
 /*
-#cgo LDFLAGS: -lsolv
+#cgo LDFLAGS: -lsolv -lsolvext
 #include "c_bridge.h"
 */
 import "C"
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"math"
 	"runtime"
 	"sync"
@@ -39,15 +42,17 @@ type PackageSpec struct {
 }
 
 type ResolvedPackage struct {
-	Name string
-	EVR  string
-	Arch string
+	Name   string
+	EVR    string
+	Arch   string
+	SHA256 string
 }
 
 type ExpansionRequest struct {
 	BuildRequires []string
 	Prefer        []string
 	Architecture  string
+	RPMMDRepos    map[string][]byte
 }
 
 type ExpansionResult struct {
@@ -110,6 +115,39 @@ func (p *Pool) LoadRepoFromMemory(name string, data []byte) (*Repo, error) {
 	r := C.bsgo_load_repo_from_mem(p.ptr, cName, unsafe.Pointer(&data[0]), C.size_t(len(data)))
 	if r == nil {
 		return nil, fmt.Errorf("failed to parse solv blob into repository")
+	}
+	return &Repo{ptr: r, pool: p}, nil
+}
+
+// LoadRepoFromRPMMD loads an RPM-MD primary XML or gzip-compressed primary.xml.gz into the libsolv pool.
+func (p *Pool) LoadRepoFromRPMMD(name string, data []byte) (*Repo, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("cannot load empty rpmmd data")
+	}
+
+	uncompressed := data
+	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+		zr, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("failed decompressing rpmmd gzip: %w", err)
+		}
+		defer zr.Close()
+		decomp, err := io.ReadAll(zr)
+		if err != nil {
+			return nil, fmt.Errorf("failed reading decompressed rpmmd: %w", err)
+		}
+		uncompressed = decomp
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	cName := C.CString(name)
+	defer C.free(unsafe.Pointer(cName))
+
+	r := C.bsgo_load_repo_from_rpmmd_mem(p.ptr, cName, unsafe.Pointer(&uncompressed[0]), C.size_t(len(uncompressed)))
+	if r == nil {
+		return nil, fmt.Errorf("failed to parse rpmmd data into repository: %s", name)
 	}
 	return &Repo{ptr: r, pool: p}, nil
 }
@@ -186,6 +224,24 @@ func (p *Pool) Resolve(req ExpansionRequest) (*ExpansionResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	for name, data := range req.RPMMDRepos {
+		uncompressed := data
+		if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+			zr, err := gzip.NewReader(bytes.NewReader(data))
+			if err == nil {
+				decomp, readErr := io.ReadAll(zr)
+				_ = zr.Close()
+				if readErr == nil {
+					uncompressed = decomp
+				}
+			}
+		}
+
+		cName := C.CString(name)
+		_ = C.bsgo_load_repo_from_rpmmd_mem(p.ptr, cName, unsafe.Pointer(&uncompressed[0]), C.size_t(len(uncompressed)))
+		C.free(unsafe.Pointer(cName))
+	}
+
 	cReqs, freeReqs := makeCStringArray(req.BuildRequires)
 	defer freeReqs()
 	cPrefers, freePrefers := makeCStringArray(req.Prefer)
@@ -235,9 +291,10 @@ func parseResolvedPackages(outcome *C.ExpansionOutcome) *ExpansionResult {
 	cPkgs := unsafe.Slice(outcome.packages, count)
 	for i := 0; i < count; i++ {
 		res.Packages[i] = ResolvedPackage{
-			Name: C.GoString(cPkgs[i].name),
-			EVR:  C.GoString(cPkgs[i].evr),
-			Arch: C.GoString(cPkgs[i].arch),
+			Name:   C.GoString(cPkgs[i].name),
+			EVR:    C.GoString(cPkgs[i].evr),
+			Arch:   C.GoString(cPkgs[i].arch),
+			SHA256: C.GoString(cPkgs[i].sha256),
 		}
 	}
 	return res

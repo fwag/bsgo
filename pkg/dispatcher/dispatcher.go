@@ -58,6 +58,8 @@ func (d *Dispatcher) RecordJobResult(jobID, workerID, project string, exitCode i
 		}
 	}
 
+	d.registry.ReleaseJobResources(workerID, jobID, nil)
+
 	now := time.Now()
 	if exitCode == 0 {
 		d.registry.RecordJobSuccess(workerID)
@@ -105,12 +107,13 @@ func (d *Dispatcher) DispatchNext(_ context.Context) (string, *v1.BuildJob, erro
 			if poppedJob == nil {
 				continue
 			}
-			d.registry.SetWorkerStatus(worker.WorkerID, "BUSY", poppedJob.JobID)
+			d.registry.AllocateJobResources(worker.WorkerID, poppedJob)
 
 			buildKey := fmt.Sprintf("%s:%s:%s:%s", poppedJob.Project, poppedJob.Package, poppedJob.Target, poppedJob.Architecture)
 			d.activeBuilds[buildKey] = poppedJob.JobID
 
 			if err := d.sendJobToWorker(worker.WorkerID, poppedJob); err != nil {
+				d.registry.ReleaseJobResources(worker.WorkerID, poppedJob.JobID, &poppedJob.Resources)
 				return "", nil, err
 			}
 

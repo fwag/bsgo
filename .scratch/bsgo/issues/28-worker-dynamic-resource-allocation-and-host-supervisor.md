@@ -16,11 +16,11 @@ Transform `bsgo-worker` from a single-job static daemon into a multi-job host su
 
 **Blocked by:** 27: Worker: Ephemeral Storage (tmpfs/RAM Disk) & KVM Performance Hardening
 
-**Status:** open
+**Status:** resolved
 
-- [ ] Add dynamic resource budgeting in `pkg/worker/worker.go` tracking real-time available memory and vCPUs.
-- [ ] Update `v1.WorkerHardware` to include `AvailableMemoryMB` and `AvailableVCPUs` in heartbeats.
-- [ ] Update `WorkerRegistry` and `matchesConstraints` in `pkg/dispatcher` to match jobs against allocatable capacity.
-- [ ] Support concurrent execution of multiple isolated KVM micro-VMs in `pkg/worker/sandbox.go`.
-- [ ] Implement atomic credit recovery returning RAM/vCPU allocations upon job termination or failure.
-- [ ] Unit and integration tests verifying concurrent bin-packed execution of heterogeneous jobs (e.g. concurrent 2GB and 16GB jobs on single host supervisor).
+- [x] Add dynamic resource budgeting in `pkg/worker/worker.go` tracking real-time available memory and vCPUs.
+- [x] Update `v1.WorkerHardware` to include `AvailableMemoryMB` and `AvailableVCPUs` in heartbeats.
+- [x] Update `WorkerRegistry` and `matchesConstraints` in `pkg/dispatcher` to match jobs against allocatable capacity.
+- [x] Support concurrent execution of multiple isolated KVM micro-VMs in `pkg/worker/sandbox.go`.
+- [x] Implement atomic credit recovery returning RAM/vCPU allocations upon job termination or failure.
+- [x] Unit and integration tests verifying concurrent bin-packed execution of heterogeneous jobs (e.g. concurrent 2GB and 16GB jobs on single host supervisor).

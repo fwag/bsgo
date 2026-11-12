@@ -2,12 +2,17 @@ package scheduler_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/openSUSE/bsgo/pkg/dod"
 	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
@@ -755,5 +760,134 @@ func TestSchedulerBuildTypeFiltering(t *testing.T) {
 	}
 	if dockerJobs[0].BuildType != "docker" || dockerJobs[0].BuildEngine != "podman" {
 		t.Errorf("web-app: expected build_type 'docker' and engine 'podman', got %q, %q", dockerJobs[0].BuildType, dockerJobs[0].BuildEngine)
+	}
+}
+
+type mockDoDHTTPGetter struct {
+	responses map[string][]byte
+}
+
+func (m *mockDoDHTTPGetter) Get(_ context.Context, url string) ([]byte, error) {
+	if data, ok := m.responses[url]; ok {
+		return data, nil
+	}
+	return nil, fmt.Errorf("mock 404: %s", url)
+}
+
+type mockDoDS3Store struct {
+	mu      sync.Mutex
+	objects map[string][]byte
+}
+
+func newMockDoDS3Store() *mockDoDS3Store {
+	return &mockDoDS3Store{objects: make(map[string][]byte)}
+}
+
+func (m *mockDoDS3Store) GetObject(_ context.Context, key string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if data, ok := m.objects[key]; ok {
+		return data, nil
+	}
+	return nil, fmt.Errorf("object not found: %s", key)
+}
+
+func (m *mockDoDS3Store) PutObject(_ context.Context, key string, data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.objects[key] = data
+	return nil
+}
+
+func TestSchedulerExternalRepoDoDPipeline(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+
+	extURL := "http://example.com/repo/oss"
+	prj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "external-dep-prj"},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {
+				Architectures: []string{"x86_64"},
+				Dependencies: []manifest.DependencySource{
+					{URL: extURL, Type: "rpm-md"},
+				},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, prj)
+
+	pkg := &manifest.PackageManifest{
+		SchemaVersion: "v1",
+		Package:       manifest.PackageInfo{Name: "app-with-ext-dep"},
+		Source:        manifest.PackageSource{Git: "https://git/app.git", Recipe: "app.spec"},
+		Build:         manifest.PackageBuild{Enabled: true, Requires: []string{"libexternal-tool"}},
+	}
+	_ = store.UpsertPackage(ctx, "external-dep-prj", pkg)
+
+	rpmData := []byte("external-rpm-package-content")
+	sum := sha256.Sum256(rpmData)
+	authenticSHA := hex.EncodeToString(sum[:])
+
+	repomd := `<repomd><data type="primary"><location href="repodata/primary.xml"/></data></repomd>`
+	primary := fmt.Sprintf(`<metadata xmlns="http://linux.duke.edu/metadata/common">
+<package type="rpm">
+  <name>libexternal-tool</name>
+  <arch>x86_64</arch>
+  <version epoch="0" ver="2.0.0" rel="1"/>
+  <checksum type="sha256" pkgid="YES">%s</checksum>
+</package>
+</metadata>`, authenticSHA)
+
+	mockGetter := &mockDoDHTTPGetter{
+		responses: map[string][]byte{
+			extURL + "/repodata/repomd.xml":                 []byte(repomd),
+			extURL + "/repodata/primary.xml":                []byte(primary),
+			extURL + "/libexternal-tool-2.0.0-1.x86_64.rpm": rpmData,
+		},
+	}
+
+	ingestor := dod.NewExternalRepoIngestor(mockGetter)
+	mockS3 := newMockDoDS3Store()
+	fetcher := dod.NewDoDFetcher(mockGetter, mockS3)
+
+	solver := &mockSolver{
+		pkgs: []solv.ResolvedPackage{
+			{Name: "libexternal-tool", EVR: "2.0.0-1", Arch: "x86_64", SHA256: authenticSHA},
+		},
+	}
+	pub := scheduler.NewNatsPublisher(func(_ context.Context, _ string, _ []byte) error { return nil })
+	sched := scheduler.NewScheduler(store, solver, pub, scheduler.Config{S3Bucket: "artifacts"})
+	sched.SetDoD(ingestor, fetcher)
+
+	jobs, err := sched.ProcessTrigger(ctx, v1.NewTrigger("external-dep-prj", "app-with-ext-dep", "https://git/app.git", "c1", "main", "alice"))
+	if err != nil {
+		t.Fatalf("ProcessTrigger failed: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job generated, got %d", len(jobs))
+	}
+
+	job := jobs[0]
+	if len(job.ChrootRPMs) != 1 {
+		t.Fatalf("expected 1 ChrootRPM, got %d", len(job.ChrootRPMs))
+	}
+
+	chroot := job.ChrootRPMs[0]
+	if chroot.Filename != "libexternal-tool-2.0.0-1.x86_64.rpm" {
+		t.Errorf("unexpected filename: %s", chroot.Filename)
+	}
+	if chroot.SHA256 != authenticSHA {
+		t.Errorf("unexpected SHA256: %s", chroot.SHA256)
+	}
+	expectedS3Key := fmt.Sprintf("repos/external/%s/libexternal-tool-2.0.0-1.x86_64.rpm", authenticSHA)
+	if chroot.S3Key != expectedS3Key {
+		t.Errorf("expected S3Key %s, got %s", expectedS3Key, chroot.S3Key)
+	}
+
+	// Verify that package was cached in S3 CAS
+	if _, err := mockS3.GetObject(ctx, expectedS3Key); err != nil {
+		t.Errorf("expected package to be cached in S3 CAS at %s: %v", expectedS3Key, err)
 	}
 }

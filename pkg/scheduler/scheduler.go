@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/openSUSE/bsgo/pkg/dod"
 	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
@@ -26,10 +27,17 @@ type Solver interface {
 }
 
 type Scheduler struct {
-	store     storage.Store
-	solver    Solver
-	publisher JobPublisher
-	cfg       Config
+	store       storage.Store
+	solver      Solver
+	publisher   JobPublisher
+	cfg         Config
+	dodIngestor *dod.ExternalRepoIngestor
+	dodFetcher  *dod.DoDFetcher
+}
+
+func (s *Scheduler) SetDoD(ingestor *dod.ExternalRepoIngestor, fetcher *dod.DoDFetcher) {
+	s.dodIngestor = ingestor
+	s.dodFetcher = fetcher
 }
 
 type JobPublisher interface {
@@ -169,9 +177,58 @@ func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger,
 	return jobs, nil
 }
 
+func (s *Scheduler) ingestExternalRepos(ctx context.Context, deps []manifest.DependencySource) (map[string][]byte, []string) {
+	var externalURLs []string
+	rpmmdRepos := make(map[string][]byte)
+	if s.dodIngestor == nil {
+		return rpmmdRepos, externalURLs
+	}
+	for _, dep := range deps {
+		if dep.URL == "" {
+			continue
+		}
+		externalURLs = append(externalURLs, dep.URL)
+		if primaryData, err := s.dodIngestor.FetchPrimary(ctx, dep.URL); err == nil {
+			rpmmdRepos[dep.URL] = primaryData
+		}
+	}
+	return rpmmdRepos, externalURLs
+}
+
+func (s *Scheduler) buildChrootRPMs(ctx context.Context, project, targetName string, externalURLs []string, pkgs []solv.ResolvedPackage) []v1.ChrootRPM {
+	var chrootRPMs []v1.ChrootRPM
+	for _, p := range pkgs {
+		digest := p.SHA256
+		if digest == "" {
+			digest = "mock-sha256-digest"
+		}
+		filename := fmt.Sprintf("%s-%s.%s.rpm", p.Name, p.EVR, p.Arch)
+		s3Key := fmt.Sprintf("repos/%s/%s/%s/%s", project, targetName, p.Arch, filename)
+
+		if s.dodFetcher != nil {
+			for _, u := range externalURLs {
+				if cachedKey, err := s.dodFetcher.EnsurePackageCached(ctx, u, filename, p.SHA256); err == nil {
+					s3Key = cachedKey
+					break
+				}
+			}
+		}
+
+		chrootRPMs = append(chrootRPMs, v1.ChrootRPM{
+			Filename: filename,
+			S3Key:    s3Key,
+			SHA256:   digest,
+		})
+	}
+	return chrootRPMs
+}
+
 func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigger, targetName, arch string, pkg *manifest.PackageManifest, targetCfg manifest.BuildTarget, effectiveCfg *manifest.ProjectConfig, jobID string) (*v1.BuildJob, error) {
+	rpmmdRepos, externalURLs := s.ingestExternalRepos(ctx, targetCfg.Dependencies)
+
 	req := solv.ExpansionRequest{
 		BuildRequires: []string{pkg.Package.Name},
+		RPMMDRepos:    rpmmdRepos,
 	}
 
 	res, err := s.solver.Resolve(ctx, req)
@@ -179,15 +236,7 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		return nil, fmt.Errorf("solver failed for %s (%s): %w", pkg.Package.Name, arch, err)
 	}
 
-	var chrootRPMs []v1.ChrootRPM
-	for _, p := range res.Packages {
-		chrootRPMs = append(chrootRPMs, v1.ChrootRPM{
-			Filename: fmt.Sprintf("%s-%s.%s.rpm", p.Name, p.EVR, p.Arch),
-			S3Key:    fmt.Sprintf("repos/%s/%s/%s/%s-%s.%s.rpm", trigger.Project, targetName, p.Arch, p.Name, p.EVR, p.Arch),
-			SHA256:   "mock-sha256-digest",
-		})
-	}
-
+	chrootRPMs := s.buildChrootRPMs(ctx, trigger.Project, targetName, externalURLs, res.Packages)
 	prio := calculatePriority(trigger.NormalizedPriority(), len(chrootRPMs))
 	repos := resolveRepositoryDependencies(trigger, targetName, arch, targetCfg)
 	recipeType := DetectRecipeBuildType(pkg.Source.Recipe)

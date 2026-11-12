@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -100,29 +101,89 @@ type WorkerHeartbeat struct {
 	Architecture    string         `json:"architecture"`
 	Status          string         `json:"status"` // IDLE, BUSY, DRAINING
 	ActiveJobID     string         `json:"active_job_id,omitempty"`
+	ActiveJobIDs    []string       `json:"active_job_ids,omitempty"`
 	Hardware        WorkerHardware `json:"hardware"`
 	CachedRPMHashes []string       `json:"cached_rpm_hashes"`
 	TimestampUnix   int64          `json:"timestamp_unix"`
 }
 
 type WorkerHardware struct {
-	TotalVCPUs      int32    `json:"total_vcpus"`
-	TotalMemoryMB   int64    `json:"total_memory_mb"`
-	AvailableDiskGB int64    `json:"available_disk_gb"`
-	SandboxType     string   `json:"sandbox_type"`
-	CPUFeatures     []string `json:"cpu_features"`
+	TotalVCPUs        int32    `json:"total_vcpus"`
+	TotalMemoryMB     int64    `json:"total_memory_mb"`
+	AvailableVCPUs    int32    `json:"available_vcpus,omitempty"`
+	AvailableMemoryMB int64    `json:"available_memory_mb,omitempty"`
+	AvailableDiskGB   int64    `json:"available_disk_gb"`
+	SandboxType       string   `json:"sandbox_type"`
+	CPUFeatures       []string `json:"cpu_features"`
 }
 
 type PublishRequest struct {
+	RequestID     string     `json:"request_id"`
+	JobID         string     `json:"job_id,omitempty"`
+	Project       string     `json:"project"`
+	Target        string     `json:"target"`
+	Architecture  string     `json:"architecture"`
+	Package       string     `json:"package,omitempty"`
+	RepoTypes     []string   `json:"repo_types,omitempty"`
+	NewRPMPaths   []string   `json:"new_rpm_paths,omitempty"`
+	ArtifactKeys  []string   `json:"artifact_keys,omitempty"`
+	DeletedRPMs   []string   `json:"deleted_rpms,omitempty"`
+	SubRepos      []string   `json:"sub_repos,omitempty"`
+	Advisories    []Advisory `json:"advisories,omitempty"`
+	AppStreamData []byte     `json:"appstream_data,omitempty"`
+	AppStreamPath string     `json:"appstream_path,omitempty"`
+}
+
+// PackageDeletionRequest requests removal of a package and its associated RPM binaries from published repodata.
+type PackageDeletionRequest struct {
 	RequestID    string   `json:"request_id"`
-	JobID        string   `json:"job_id,omitempty"`
 	Project      string   `json:"project"`
 	Target       string   `json:"target"`
 	Architecture string   `json:"architecture"`
-	Package      string   `json:"package,omitempty"`
-	RepoTypes    []string `json:"repo_types,omitempty"`
-	NewRPMPaths  []string `json:"new_rpm_paths,omitempty"`
-	ArtifactKeys []string `json:"artifact_keys,omitempty"`
+	Package      string   `json:"package"`
+	DeletedRPMs  []string `json:"deleted_rpms,omitempty"`
+}
+
+// Advisory defines an errata or security advisory for updateinfo.xml (e.g. for zypper patch / zypper cve).
+type Advisory struct {
+	ID          string            `json:"id"`
+	Title       string            `json:"title"`
+	Severity    string            `json:"severity,omitempty"` // "low", "moderate", "important", "critical"
+	Type        string            `json:"type"`               // "security", "bugfix", "enhancement"
+	Description string            `json:"description,omitempty"`
+	IssuedDate  string            `json:"issued_date,omitempty"`
+	Release     string            `json:"release,omitempty"`
+	References  []AdvisoryRef     `json:"references,omitempty"`
+	Packages    []AdvisoryPackage `json:"packages,omitempty"`
+}
+
+// AdvisoryRef represents a reference URL (e.g. CVE or Bugzilla) for an advisory.
+type AdvisoryRef struct {
+	Type  string `json:"type"` // "cve", "bugzilla", "issue"
+	ID    string `json:"id"`
+	Href  string `json:"href"`
+	Title string `json:"title,omitempty"`
+}
+
+// AdvisoryPackage represents a package version contained in an errata advisory.
+type AdvisoryPackage struct {
+	Name     string `json:"name"`
+	Epoch    string `json:"epoch,omitempty"`
+	Version  string `json:"version"`
+	Release  string `json:"release"`
+	Arch     string `json:"arch"`
+	Filename string `json:"filename"`
+}
+
+// HasSubRepo reports whether the given sub-repository (e.g. "standard", "debug", "src") is explicitly requested.
+func (r *PublishRequest) HasSubRepo(sr string) bool {
+	sr = strings.ToLower(strings.TrimSpace(sr))
+	for _, s := range r.SubRepos {
+		if strings.ToLower(strings.TrimSpace(s)) == sr {
+			return true
+		}
+	}
+	return false
 }
 
 type PublicationEvent struct {

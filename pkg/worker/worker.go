@@ -4,12 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 )
+
+type activeJobContext struct {
+	job               *v1.BuildJob
+	cancel            context.CancelFunc
+	allocatedMemoryMB int64
+	allocatedVCPUs    int32
+}
 
 type WorkerDaemon struct {
 	mu           sync.Mutex
@@ -18,7 +27,7 @@ type WorkerDaemon struct {
 	sandbox      Sandbox
 	status       string
 	activeJobID  string
-	activeCancel context.CancelFunc
+	activeJobs   map[string]*activeJobContext
 	stopChan     chan struct{}
 	stopOnce     sync.Once
 	cachedHashes []string
@@ -26,11 +35,25 @@ type WorkerDaemon struct {
 }
 
 func NewWorkerDaemon(cfg WorkerConfig, nc *nats.Conn, sandbox Sandbox) *WorkerDaemon {
+	if cfg.Hardware.TotalMemoryMB <= 0 {
+		cfg.Hardware.TotalMemoryMB = 16384
+	}
+	if cfg.Hardware.TotalVCPUs <= 0 {
+		cfg.Hardware.TotalVCPUs = 8
+	}
+	if cfg.Hardware.AvailableMemoryMB <= 0 {
+		cfg.Hardware.AvailableMemoryMB = cfg.Hardware.TotalMemoryMB
+	}
+	if cfg.Hardware.AvailableVCPUs <= 0 {
+		cfg.Hardware.AvailableVCPUs = cfg.Hardware.TotalVCPUs
+	}
+
 	return &WorkerDaemon{
 		cfg:          cfg,
 		nc:           nc,
 		sandbox:      sandbox,
 		status:       "IDLE",
+		activeJobs:   make(map[string]*activeJobContext),
 		stopChan:     make(chan struct{}),
 		cachedHashes: make([]string, 0),
 	}
@@ -78,8 +101,10 @@ func (w *WorkerDaemon) Stop() {
 	w.stopOnce.Do(func() {
 		close(w.stopChan)
 		w.mu.Lock()
-		if w.activeCancel != nil {
-			w.activeCancel()
+		for _, j := range w.activeJobs {
+			if j.cancel != nil {
+				j.cancel()
+			}
 		}
 		w.mu.Unlock()
 	})
@@ -91,7 +116,19 @@ func (w *WorkerDaemon) Status() string {
 	return w.status
 }
 
+func (w *WorkerDaemon) ActiveJobs() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var res []string
+	for id := range w.activeJobs {
+		res = append(res, id)
+	}
+	return res
+}
+
 func (w *WorkerDaemon) runHeartbeats(ctx context.Context) {
+	w.emitHeartbeat()
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -109,11 +146,21 @@ func (w *WorkerDaemon) runHeartbeats(ctx context.Context) {
 
 func (w *WorkerDaemon) emitHeartbeat() {
 	w.mu.Lock()
+	var activeIDs []string
+	for id := range w.activeJobs {
+		activeIDs = append(activeIDs, id)
+	}
+	var activeID string
+	if len(activeIDs) > 0 {
+		activeID = activeIDs[0]
+	}
+
 	hb := v1.WorkerHeartbeat{
 		WorkerID:        w.cfg.WorkerID,
 		Architecture:    w.cfg.Architecture,
 		Status:          w.status,
-		ActiveJobID:     w.activeJobID,
+		ActiveJobID:     activeID,
+		ActiveJobIDs:    activeIDs,
 		Hardware:        w.cfg.Hardware,
 		CachedRPMHashes: w.cachedHashes,
 		TimestampUnix:   time.Now().Unix(),
@@ -123,41 +170,21 @@ func (w *WorkerDaemon) emitHeartbeat() {
 	data, err := json.Marshal(hb)
 	if err == nil {
 		_ = w.nc.Publish("bsgo.workers.heartbeat", data)
+		if w.cfg.StateDir != "" {
+			_ = os.MkdirAll(w.cfg.StateDir, 0750)
+			_ = os.WriteFile(filepath.Join(w.cfg.StateDir, "status.json"), data, 0600)
+		}
 	}
 }
 
 func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
-	w.mu.Lock()
-	w.status = "BUSY"
-	w.activeJobID = job.JobID
-	w.mu.Unlock()
-	w.emitHeartbeat()
-
-	fmt.Printf("[%s] [JOB] %s: started build for %s/%s (arch: %s)\n",
-		time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package, job.Architecture)
-
 	jobCtx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
-	w.mu.Lock()
-	w.activeCancel = cancel
-	w.mu.Unlock()
-	defer func() {
-		w.mu.Lock()
-		w.activeCancel = nil
-		w.mu.Unlock()
-	}()
+	reqMem, reqVCPUs := w.allocateJob(job, cancel)
+	defer w.releaseJob(job.JobID, reqMem, reqVCPUs)
 
-	ctrlSub, _ := w.nc.Subscribe(fmt.Sprintf("bsgo.jobs.%s.control", job.JobID), func(msg *nats.Msg) {
-		var ctrl v1.JobControl
-		if err := json.Unmarshal(msg.Data, &ctrl); err == nil && ctrl.Action == "ABORT" {
-			if ctrl.JobID == job.JobID {
-				cancel()
-			}
-		}
-	})
-	if ctrlSub != nil {
-		_ = w.nc.Flush()
+	if ctrlSub := w.subscribeJobAbort(job.JobID, cancel); ctrlSub != nil {
 		defer func() { _ = ctrlSub.Unsubscribe() }()
 	}
 
@@ -168,23 +195,111 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 	w.publishStatusUpdate(job, phase, exitCode, res)
 
 	w.mu.Lock()
-	w.status = "IDLE"
-	w.activeJobID = ""
 	if phase == "SUCCEEDED" && res != nil {
 		for _, a := range res.Artifacts {
 			w.cachedHashes = append(w.cachedHashes, a.SHA256)
 		}
 	}
 	w.mu.Unlock()
+
+	logJobCompletion(job, phase, exitCode, res)
+}
+
+func (w *WorkerDaemon) allocateJob(job *v1.BuildJob, cancel context.CancelFunc) (int64, int32) {
+	reqMem := int64(job.Resources.MemoryMB)
+	if reqMem <= 0 {
+		reqMem = 2048
+	}
+	reqVCPUs := int32(job.Resources.VCPUs)
+	if reqVCPUs <= 0 {
+		reqVCPUs = 1
+	}
+
+	w.mu.Lock()
+	w.cfg.Hardware.AvailableMemoryMB -= reqMem
+	if w.cfg.Hardware.AvailableMemoryMB < 0 {
+		w.cfg.Hardware.AvailableMemoryMB = 0
+	}
+	w.cfg.Hardware.AvailableVCPUs -= reqVCPUs
+	if w.cfg.Hardware.AvailableVCPUs < 0 {
+		w.cfg.Hardware.AvailableVCPUs = 0
+	}
+	w.activeJobID = job.JobID
+	w.activeJobs[job.JobID] = &activeJobContext{
+		job:               job,
+		cancel:            cancel,
+		allocatedMemoryMB: reqMem,
+		allocatedVCPUs:    reqVCPUs,
+	}
+	if w.cfg.Hardware.AvailableMemoryMB < 1024 || w.cfg.Hardware.AvailableVCPUs < 1 {
+		w.status = "BUSY"
+	} else {
+		w.status = "IDLE"
+	}
+	w.mu.Unlock()
 	w.emitHeartbeat()
 
+	fmt.Printf("[%s] [JOB] %s: started build for %s/%s (arch: %s)\n",
+		time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package, job.Architecture)
+	return reqMem, reqVCPUs
+}
+
+func (w *WorkerDaemon) releaseJob(jobID string, reqMem int64, reqVCPUs int32) {
+	w.mu.Lock()
+	w.cfg.Hardware.AvailableMemoryMB += reqMem
+	if w.cfg.Hardware.AvailableMemoryMB > w.cfg.Hardware.TotalMemoryMB {
+		w.cfg.Hardware.AvailableMemoryMB = w.cfg.Hardware.TotalMemoryMB
+	}
+	w.cfg.Hardware.AvailableVCPUs += reqVCPUs
+	if w.cfg.Hardware.AvailableVCPUs > w.cfg.Hardware.TotalVCPUs {
+		w.cfg.Hardware.AvailableVCPUs = w.cfg.Hardware.TotalVCPUs
+	}
+	delete(w.activeJobs, jobID)
+	if len(w.activeJobs) == 0 {
+		w.activeJobID = ""
+		w.status = "IDLE"
+	} else {
+		for id := range w.activeJobs {
+			w.activeJobID = id
+			break
+		}
+		if w.cfg.Hardware.AvailableMemoryMB >= 1024 && w.cfg.Hardware.AvailableVCPUs >= 1 {
+			w.status = "IDLE"
+		} else {
+			w.status = "BUSY"
+		}
+	}
+	w.mu.Unlock()
+	w.emitHeartbeat()
+}
+
+func (w *WorkerDaemon) subscribeJobAbort(jobID string, cancel context.CancelFunc) *nats.Subscription {
+	sub, _ := w.nc.Subscribe(fmt.Sprintf("bsgo.jobs.%s.control", jobID), func(msg *nats.Msg) {
+		var ctrl v1.JobControl
+		if err := json.Unmarshal(msg.Data, &ctrl); err == nil && ctrl.Action == "ABORT" {
+			if ctrl.JobID == jobID {
+				cancel()
+			}
+		}
+	})
+	if sub != nil {
+		_ = w.nc.Flush()
+	}
+	return sub
+}
+
+func logJobCompletion(job *v1.BuildJob, phase string, exitCode int, res *ExecutionResult) {
 	if phase == "SUCCEEDED" {
 		artCount := 0
 		if res != nil {
 			artCount = len(res.Artifacts)
 		}
+		totalSec := 0.0
+		if res != nil {
+			totalSec = res.TotalSeconds
+		}
 		fmt.Printf("[%s] [JOB] %s: build SUCCEEDED in %.2fs (%d artifacts)\n",
-			time.Now().Format("15:04:05"), job.JobID, res.TotalSeconds, artCount)
+			time.Now().Format("15:04:05"), job.JobID, totalSec, artCount)
 	} else {
 		fmt.Printf("[%s] [JOB] %s: build %s (exit code: %d)\n",
 			time.Now().Format("15:04:05"), job.JobID, phase, exitCode)

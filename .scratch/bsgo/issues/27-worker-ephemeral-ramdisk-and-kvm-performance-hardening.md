@@ -14,11 +14,11 @@ Align `bsgo-worker` with production Open Build Service Level 4 worker specificat
 
 **Blocked by:** 12: Worker: bsgo-worker Execution Sandbox & S3 Upload
 
-**Status:** open
+**Status:** resolved
 
-- [ ] Support `tmpfs` / ramdisk path configuration in `config/worker-kvm.yaml` (`work_dir: /dev/shm/...`).
-- [ ] Separate volatile control plane state (`statedir` in `/run`) from build overlays in `bsgo-worker`.
-- [ ] Pass `cache=unsafe,aio=io_uring` to QEMU / `obs-build` invocation in `pkg/worker/sandbox.go`.
-- [ ] Enforce `-net none` and unprivileged execution (`-run-with user=qemu` / `-sandbox on`) in KVM mode.
-- [ ] Implement deterministic cleanup routine wiping VM disk overlays and swap images upon job completion or termination.
-- [ ] Integration tests verifying clean teardown, zero residual state, and I/O performance on tmpfs vs NVMe.
+- [x] Support `tmpfs` / ramdisk path configuration in `config/worker-kvm.yaml` (`work_dir: /dev/shm/...`).
+- [x] Separate volatile control plane state (`statedir` in `/run`) from build overlays in `bsgo-worker`.
+- [x] Pass `cache=unsafe,aio=io_uring` to QEMU / `obs-build` invocation in `pkg/worker/sandbox.go`.
+- [x] Enforce `-net none` and unprivileged execution (`-run-with user=qemu` / `-sandbox on`) in KVM mode.
+- [x] Implement deterministic cleanup routine wiping VM disk overlays and swap images upon job completion or termination.
+- [x] Integration tests verifying clean teardown, zero residual state, and I/O performance on tmpfs vs NVMe.

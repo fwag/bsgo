@@ -239,3 +239,11 @@ func (m *mockS3Client) UploadFile(_ context.Context, _, s3Key string) error {
 	m.uploaded = append(m.uploaded, s3Key)
 	return nil
 }
+
+func (m *mockS3Client) ListObjects(_ context.Context, _ string) ([]publisher.S3ObjectInfo, error) {
+	return nil, nil
+}
+
+func (m *mockS3Client) DeleteObject(_ context.Context, _ string) error {
+	return nil
+}

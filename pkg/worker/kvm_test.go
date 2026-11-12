@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -89,6 +91,8 @@ func TestKVMDiskAndSourceIsolation(t *testing.T) {
 
 	hasDiskArg := false
 	hasSwapArg := false
+	hasUserArg := false
+	hasVMArgsArg := false
 	for i, a := range args {
 		if a == "--vm-disk" && i+1 < len(args) && args[i+1] == vmDisk {
 			hasDiskArg = true
@@ -96,12 +100,24 @@ func TestKVMDiskAndSourceIsolation(t *testing.T) {
 		if a == "--vm-swap" && i+1 < len(args) && args[i+1] == vmSwap {
 			hasSwapArg = true
 		}
+		if a == "--vm-user" && i+1 < len(args) && args[i+1] == "qemu" {
+			hasUserArg = true
+		}
+		if a == "--vm-args" && i+1 < len(args) && args[i+1] == "-sandbox on -net none" {
+			hasVMArgsArg = true
+		}
 	}
 	if !hasDiskArg {
 		t.Errorf("expected --vm-disk %s in args: %v", vmDisk, args)
 	}
 	if !hasSwapArg {
 		t.Errorf("expected --vm-swap %s in args: %v", vmSwap, args)
+	}
+	if !hasUserArg {
+		t.Errorf("expected --vm-user qemu in args: %v", args)
+	}
+	if !hasVMArgsArg {
+		t.Errorf("expected --vm-args '-sandbox on -net none' in args: %v", args)
 	}
 
 	// 4. Verify cleanup removes disks and size files
@@ -240,4 +256,128 @@ func (b *blockingSandbox) Execute(ctx context.Context, _ *v1.BuildJob, _ io.Writ
 
 func (b *blockingSandbox) Cleanup(_ context.Context) error {
 	return nil
+}
+
+func TestKVMStateDirSeparation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_, natsURL := runEmbeddedNATSForKVM(t)
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		t.Fatalf("failed to connect to NATS: %v", err)
+	}
+	defer nc.Close()
+
+	stateDir := t.TempDir()
+	workDir := t.TempDir()
+
+	cfg := WorkerConfig{
+		WorkerID:     "worker-state-test",
+		Architecture: "x86_64",
+		StateDir:     stateDir,
+		WorkDir:      workDir,
+	}
+
+	sandbox := &blockingSandbox{}
+	daemon := NewWorkerDaemon(cfg, nc, sandbox)
+	go func() { _ = daemon.Start(ctx) }()
+
+	// Wait briefly for heartbeat to emit status.json
+	time.Sleep(100 * time.Millisecond)
+
+	statusFile := filepath.Join(stateDir, "status.json")
+	if !checkFileExists(statusFile) {
+		t.Errorf("expected status.json in stateDir %s", stateDir)
+	}
+
+	// Verify status.json is NOT in workDir
+	if checkFileExists(filepath.Join(workDir, "status.json")) {
+		t.Errorf("status.json must not be written to workDir")
+	}
+
+	daemon.Stop()
+}
+
+func TestKVMTmpfsWorkDirConfig(t *testing.T) {
+	cfgFile, err := LoadConfigFile("../../config/worker-kvm.yaml")
+	if err != nil {
+		t.Fatalf("failed loading worker-kvm.yaml: %v", err)
+	}
+
+	if cfgFile.Worker.WorkDir != "/dev/shm/bsgo-worker" {
+		t.Errorf("expected tmpfs work_dir /dev/shm/bsgo-worker, got %s", cfgFile.Worker.WorkDir)
+	}
+	if cfgFile.Worker.StateDir != "/run/bsgo/worker" {
+		t.Errorf("expected state_dir /run/bsgo/worker, got %s", cfgFile.Worker.StateDir)
+	}
+	if cfgFile.Sandbox.KVM.User != "qemu" {
+		t.Errorf("expected KVM user 'qemu', got %s", cfgFile.Sandbox.KVM.User)
+	}
+	if cfgFile.Sandbox.KVM.VMArgs != "-sandbox on -net none" {
+		t.Errorf("expected KVM vm_args '-sandbox on -net none', got %s", cfgFile.Sandbox.KVM.VMArgs)
+	}
+	if cfgFile.Sandbox.KVM.AIO != "io_uring" {
+		t.Errorf("expected KVM aio 'io_uring', got %s", cfgFile.Sandbox.KVM.AIO)
+	}
+	if cfgFile.Sandbox.KVM.CacheMode != "unsafe" {
+		t.Errorf("expected KVM cache_mode 'unsafe', got %s", cfgFile.Sandbox.KVM.CacheMode)
+	}
+}
+
+func TestDeterministicDiskWiping(t *testing.T) {
+	tmpDir := t.TempDir()
+	diskFile := filepath.Join(tmpDir, "test-build-root.img")
+
+	// Write sensitive non-zero bytes to the test file
+	content := []byte("VERY_SECRET_KEY_AND_BUILD_ARTIFACT_DATA_THAT_MUST_BE_WIPED")
+	if err := os.WriteFile(diskFile, content, 0600); err != nil {
+		t.Fatalf("failed creating test disk file: %v", err)
+	}
+
+	if !checkFileExists(diskFile) {
+		t.Fatalf("diskFile was not created")
+	}
+
+	wipeAndRemoveFile(diskFile)
+
+	if checkFileExists(diskFile) {
+		t.Errorf("diskFile was not wiped and unlinked")
+	}
+}
+
+func TestVerifyChrootRPMsValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	rpmFile := filepath.Join(tmpDir, "curl-8.1.0-1.x86_64.rpm")
+	content := []byte("rpm-package-payload-test-content")
+	if err := os.WriteFile(rpmFile, content, 0644); err != nil {
+		t.Fatalf("failed creating rpm file: %v", err)
+	}
+
+	sum := sha256.Sum256(content)
+	correctHash := hex.EncodeToString(sum[:])
+
+	// 1. Matching authentic hash -> success
+	goodList := []v1.ChrootRPM{
+		{Filename: "curl-8.1.0-1.x86_64.rpm", SHA256: correctHash},
+	}
+	if err := VerifyChrootRPMs(tmpDir, goodList); err != nil {
+		t.Errorf("expected verification success for authentic hash, got: %v", err)
+	}
+
+	// 2. Mock hash -> bypassed without error
+	mockList := []v1.ChrootRPM{
+		{Filename: "curl-8.1.0-1.x86_64.rpm", SHA256: "mock-sha256-digest"},
+	}
+	if err := VerifyChrootRPMs(tmpDir, mockList); err != nil {
+		t.Errorf("expected mock hash to be skipped, got: %v", err)
+	}
+
+	// 3. Tampered / mismatched hash -> error
+	badList := []v1.ChrootRPM{
+		{Filename: "curl-8.1.0-1.x86_64.rpm", SHA256: "0000000000000000000000000000000000000000000000000000000000000000"},
+	}
+	if err := VerifyChrootRPMs(tmpDir, badList); err == nil {
+		t.Errorf("expected verification to fail for mismatched checksum")
+	}
 }

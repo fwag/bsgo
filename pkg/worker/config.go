@@ -122,11 +122,16 @@ type WorkerConfig struct {
 	S3AccessKey  string
 	S3SecretKey  string
 	WorkDir      string
+	StateDir     string
 	CacheDir     string
 	DiskDir      string
 	ObsBuildBin  string
 	Hardware     v1.WorkerHardware
 	SandboxMode  string
+	KVMUser      string
+	KVMVMArgs    string
+	KVMAio       string
+	KVMCache     string
 }
 
 type WorkerConfigFile struct {
@@ -134,6 +139,7 @@ type WorkerConfigFile struct {
 		ID       string `yaml:"id"`
 		Arch     string `yaml:"arch"`
 		WorkDir  string `yaml:"work_dir"`
+		StateDir string `yaml:"state_dir"`
 		CacheDir string `yaml:"cache_dir"`
 		DiskDir  string `yaml:"disk_dir"`
 	} `yaml:"worker"`
@@ -151,12 +157,16 @@ type WorkerConfigFile struct {
 		Mode        string `yaml:"mode"`
 		ObsBuildBin string `yaml:"obs_build_bin"`
 		KVM         struct {
-			VMType   string `yaml:"vm_type"`
-			Device   string `yaml:"device"`
-			Kernel   string `yaml:"kernel"`
-			Initrd   string `yaml:"initrd"`
-			MemoryMB int    `yaml:"memory_mb"`
-			VCPUs    int    `yaml:"vcpus"`
+			VMType    string `yaml:"vm_type"`
+			Device    string `yaml:"device"`
+			Kernel    string `yaml:"kernel"`
+			Initrd    string `yaml:"initrd"`
+			MemoryMB  int    `yaml:"memory_mb"`
+			VCPUs     int    `yaml:"vcpus"`
+			User      string `yaml:"user"`
+			VMArgs    string `yaml:"vm_args"`
+			AIO       string `yaml:"aio"`
+			CacheMode string `yaml:"cache_mode"`
 		} `yaml:"kvm"`
 		Podman struct {
 			VMType string `yaml:"vm_type"`

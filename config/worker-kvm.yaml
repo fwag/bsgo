@@ -1,12 +1,14 @@
 # bsgo Worker Daemon - KVM Virtual Machine Configuration
+# Modeled after Level 4 worker specifications (SUSE production fleet h01-ch3b)
 # Uses QEMU/KVM hardware virtualization for sterile VM builds
 
 worker:
   id: "worker-kvm-01"
   arch: "x86_64"
-  work_dir: "/home/ta/bsgo-worker-kvm"
-  cache_dir: "/home/ta/bsgo-worker-kvm/cache"
-  disk_dir: "/home/ta/bsgo-worker-kvm/disks"
+  work_dir: "/dev/shm/bsgo-worker"
+  state_dir: "/run/bsgo/worker"
+  cache_dir: "/var/cache/bsgo/worker/cache"
+  disk_dir: "/var/cache/bsgo/worker/disks"
 
 nats:
   url: "nats://localhost:4222"
@@ -23,9 +25,13 @@ sandbox:
   mode: "kvm"
   obs_build_bin: "/usr/bin/build"
 
-  # QEMU / KVM Driver
+  # QEMU / KVM Driver Tuning
   kvm:
     vm_type: "kvm"
     device: "/dev/kvm"
     memory_mb: 4096
     vcpus: 4
+    user: "qemu"
+    vm_args: "-sandbox on -net none"
+    aio: "io_uring"
+    cache_mode: "unsafe"

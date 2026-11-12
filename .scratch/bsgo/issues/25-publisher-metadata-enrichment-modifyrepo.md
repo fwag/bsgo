@@ -9,10 +9,10 @@ Extend the publisher pipeline with `modifyrepo_c` execution to inject rich appli
 
 **Blocked by:** 23: Publisher: Standalone bsgo-publisher Daemon & Worker Decoupling
 
-**Status:** open
+**Status:** resolved
 
-- [ ] Implement `ModifyRepoExecutor` in `pkg/publisher/modifyrepo.go`.
-- [ ] Generate and inject `updateinfo.xml` containing errata and CVE metadata for `zypper patch` / `zypper cve`.
-- [ ] Extract and inject AppStream catalog metadata (`appstream.xml.gz`) for desktop software centers.
-- [ ] Verify `repomd.xml` signature reflects post-enrichment checksums.
-- [ ] Unit and integration tests verifying `modifyrepo_c` injection and client validation.
+- [x] Implement `ModifyRepoExecutor` in `pkg/publisher/modifyrepo.go`.
+- [x] Generate and inject `updateinfo.xml` containing errata and CVE metadata for `zypper patch` / `zypper cve`.
+- [x] Extract and inject AppStream catalog metadata (`appstream.xml.gz`) for desktop software centers.
+- [x] Verify `repomd.xml` signature reflects post-enrichment checksums.
+- [x] Unit and integration tests verifying `modifyrepo_c` injection and client validation.
