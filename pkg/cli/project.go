@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,7 +45,7 @@ func newProjectAddCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
 				return fmt.Errorf("invalid project manifest: %w", err)
 			}
 
-			if err := store.CreateProject(ctx, prj); err != nil && !errors.Is(err, storage.ErrConflict) {
+			if err := store.UpsertProject(ctx, prj); err != nil {
 				return fmt.Errorf("failed to store project: %w", err)
 			}
 

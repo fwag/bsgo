@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "c_bridge.h"
 #include <solv/poolarch.h>
+#include <solv/repo.h>
 
 Pool *bsgo_pool_create(const char *arch) {
     Pool *pool = pool_create();
@@ -49,6 +50,18 @@ Repo *bsgo_load_repo_from_rpmmd_mem(Pool *pool, const char *name, const void *bu
         return NULL;
     }
     fclose(fp);
+
+    // Prune foreign architecture solvables so they are not indexed into provides table
+    if (pool->id2arch) {
+        for (Id p = repo->start; p < repo->end; p++) {
+            Solvable *s = pool->solvables + p;
+            if (s->repo == repo && pool_badarch_solvable(pool, s)) {
+                s->provides = 0;
+                s->requires = 0;
+            }
+        }
+    }
+
     return repo;
 }
 
@@ -103,7 +116,55 @@ static Id select_provider(Pool *pool, Queue *plist, int num_prefers, const char 
     if (plist->count == 0) return 0;
     if (plist->count == 1) return plist->elements[0];
 
-    // 1. Exact name match: if requirement name matches a candidate package name
+    // 0. Filter by architecture score (prefer native architecture over subarch/foreign)
+    if (pool->id2arch) {
+        unsigned int best_score = 0;
+        for (int i = 0; i < plist->count; i++) {
+            Solvable *s = pool->solvables + plist->elements[i];
+            unsigned int score = pool_arch2score(pool, s->arch);
+            if (score > 0 && (best_score == 0 || score < best_score)) {
+                best_score = score;
+            }
+        }
+        if (best_score > 0) {
+            Queue best_q;
+            queue_init(&best_q);
+            for (int i = 0; i < plist->count; i++) {
+                Solvable *s = pool->solvables + plist->elements[i];
+                if (pool_arch2score(pool, s->arch) == best_score) {
+                    queue_push(&best_q, plist->elements[i]);
+                }
+            }
+            if (best_q.count == 1) {
+                Id chosen = best_q.elements[0];
+                queue_free(&best_q);
+                return chosen;
+            }
+            if (best_q.count > 0 && best_q.count < plist->count) {
+                queue_empty(plist);
+                for (int i = 0; i < best_q.count; i++) {
+                    queue_push(plist, best_q.elements[i]);
+                }
+            }
+            queue_free(&best_q);
+        }
+    }
+
+    // 1. If all remaining candidates share the exact same package name, choose the first (e.g. multi-version)
+    const char *first_name = pool_id2str(pool, (pool->solvables + plist->elements[0])->name);
+    int all_same_name = 1;
+    for (int i = 1; i < plist->count; i++) {
+        const char *sname = pool_id2str(pool, (pool->solvables + plist->elements[i])->name);
+        if (!sname || strcmp(sname, first_name) != 0) {
+            all_same_name = 0;
+            break;
+        }
+    }
+    if (all_same_name) {
+        return plist->elements[0];
+    }
+
+    // 2. Exact name match: if requirement name matches a candidate package name
     if (req_name && *req_name) {
         for (int i = 0; i < plist->count; i++) {
             Solvable *s = pool->solvables + plist->elements[i];
@@ -114,7 +175,7 @@ static Id select_provider(Pool *pool, Queue *plist, int num_prefers, const char 
         }
     }
 
-    // 2. Priority-ordered matching against prefer list
+    // 3. Priority-ordered matching against prefer list
     for (int j = 0; j < num_prefers; j++) {
         if (!prefers[j] || prefers[j][0] == '-') {
             continue; // Skip empty or negative prefers (e.g. -package)
@@ -128,7 +189,7 @@ static Id select_provider(Pool *pool, Queue *plist, int num_prefers, const char 
         }
     }
 
-    // 3. Common standard library provider heuristics
+    // 4. Common standard library provider heuristics
     for (int i = 0; i < plist->count; i++) {
         Solvable *s = pool->solvables + plist->elements[i];
         const char *sname = pool_id2str(pool, s->name);
@@ -198,7 +259,8 @@ static void toposort_solvables(Pool *pool, Queue *installed, Queue *sorted) {
 
 ExpansionOutcome bsgo_expand(Pool *pool,
                              int num_reqs, const char **reqs,
-                             int num_prefers, const char **prefers) {
+                             int num_prefers, const char **prefers,
+                             int num_ignores, const char **ignores) {
     ExpansionOutcome outcome;
     memset(&outcome, 0, sizeof(outcome));
 
@@ -229,10 +291,34 @@ ExpansionOutcome bsgo_expand(Pool *pool,
             MAPSET(&visited_reqs, req_id);
         }
 
+        const char *req_name = pool_id2str(pool, req_id);
+        if (req_name && num_ignores > 0) {
+            int is_ignored = 0;
+            for (int i = 0; i < num_ignores; i++) {
+                if (!ignores[i]) continue;
+                if (strcmp(ignores[i], req_name) == 0) {
+                    is_ignored = 1;
+                    break;
+                }
+                const char *colon = strchr(ignores[i], ':');
+                if (colon && strcmp(colon + 1, req_name) == 0) {
+                    is_ignored = 1;
+                    break;
+                }
+            }
+            if (is_ignored) {
+                continue;
+            }
+        }
+
         Queue plist;
         queue_init(&plist);
         Id p, d;
         FOR_PROVIDES(p, d, req_id) {
+            Solvable *s = pool->solvables + p;
+            if (!pool_installable(pool, s)) {
+                continue;
+            }
             queue_push(&plist, p);
         }
 

@@ -13,6 +13,7 @@ import (
 	"io"
 	"math"
 	"runtime"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -51,6 +52,8 @@ type ResolvedPackage struct {
 type ExpansionRequest struct {
 	BuildRequires []string
 	Prefer        []string
+	Ignore        []string
+	FileProvides  map[string][]string
 	Architecture  string
 	RPMMDRepos    map[string][]byte
 }
@@ -224,7 +227,60 @@ func (p *Pool) Resolve(req ExpansionRequest) (*ExpansionResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for name, data := range req.RPMMDRepos {
+	loadRPMRepos(p.ptr, req.RPMMDRepos)
+	effectiveReqs := applyFileProvides(req.BuildRequires, req.FileProvides)
+
+	cReqs, freeReqs := makeCStringArray(effectiveReqs)
+	defer freeReqs()
+	cPrefers, freePrefers := makeCStringArray(req.Prefer)
+	defer freePrefers()
+	cIgnores, freeIgnores := makeCStringArray(req.Ignore)
+	defer freeIgnores()
+
+	if len(effectiveReqs) > math.MaxInt32 || len(req.Prefer) > math.MaxInt32 || len(req.Ignore) > math.MaxInt32 {
+		return nil, fmt.Errorf("slice length exceeds max int32")
+	}
+
+	// #nosec G115 -- slice lengths are bounded by math.MaxInt32
+	outcome := C.bsgo_expand(
+		p.ptr,
+		C.int(int32(len(effectiveReqs))), cReqs,
+		C.int(int32(len(req.Prefer))), cPrefers,
+		C.int(int32(len(req.Ignore))), cIgnores,
+	)
+	defer C.bsgo_free_outcome(&outcome)
+
+	switch outcome.status {
+	case C.BSGO_SOLV_OK:
+		return parseResolvedPackages(&outcome), nil
+	case C.BSGO_SOLV_ERR_NOPROVIDER:
+		return nil, &NoProviderError{Requirement: C.GoString(outcome.err_detail)}
+	case C.BSGO_SOLV_ERR_CHOICE:
+		return nil, &AmbiguityError{Requirement: C.GoString(outcome.err_detail)}
+	default:
+		return nil, fmt.Errorf("libsolv expansion failed with status %d", outcome.status)
+	}
+}
+
+func applyFileProvides(reqs []string, fileProvides map[string][]string) []string {
+	if len(fileProvides) == 0 {
+		return reqs
+	}
+	res := make([]string, 0, len(reqs))
+	for _, r := range reqs {
+		if strings.HasPrefix(r, "/") {
+			if providers, ok := fileProvides[r]; ok && len(providers) > 0 {
+				res = append(res, providers...)
+				continue
+			}
+		}
+		res = append(res, r)
+	}
+	return res
+}
+
+func loadRPMRepos(ptr *C.Pool, repos map[string][]byte) {
+	for name, data := range repos {
 		uncompressed := data
 		if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
 			zr, err := gzip.NewReader(bytes.NewReader(data))
@@ -238,47 +294,8 @@ func (p *Pool) Resolve(req ExpansionRequest) (*ExpansionResult, error) {
 		}
 
 		cName := C.CString(name)
-		_ = C.bsgo_load_repo_from_rpmmd_mem(p.ptr, cName, unsafe.Pointer(&uncompressed[0]), C.size_t(len(uncompressed)))
+		_ = C.bsgo_load_repo_from_rpmmd_mem(ptr, cName, unsafe.Pointer(&uncompressed[0]), C.size_t(len(uncompressed)))
 		C.free(unsafe.Pointer(cName))
-	}
-
-	cReqs, freeReqs := makeCStringArray(req.BuildRequires)
-	defer freeReqs()
-	cPrefers, freePrefers := makeCStringArray(req.Prefer)
-	defer freePrefers()
-
-	nReqs := len(req.BuildRequires)
-	if nReqs > math.MaxInt32 {
-		return nil, fmt.Errorf("build requires count exceeds max int32")
-	}
-	nPrefers := len(req.Prefer)
-	if nPrefers > math.MaxInt32 {
-		return nil, fmt.Errorf("prefer count exceeds max int32")
-	}
-
-	// #nosec G115 -- slice lengths are bounded by math.MaxInt32
-	cNumReqs := C.int(int32(nReqs))
-	// #nosec G115 -- slice lengths are bounded by math.MaxInt32
-	cNumPrefers := C.int(int32(nPrefers))
-
-	outcome := C.bsgo_expand(
-		p.ptr,
-		cNumReqs, cReqs,
-		cNumPrefers, cPrefers,
-	)
-	defer C.bsgo_free_outcome(&outcome)
-
-	switch outcome.status {
-	case C.BSGO_SOLV_OK:
-		return parseResolvedPackages(&outcome), nil
-	case C.BSGO_SOLV_ERR_NOPROVIDER:
-		detail := C.GoString(outcome.err_detail)
-		return nil, &NoProviderError{Requirement: detail}
-	case C.BSGO_SOLV_ERR_CHOICE:
-		detail := C.GoString(outcome.err_detail)
-		return nil, &AmbiguityError{Requirement: detail}
-	default:
-		return nil, fmt.Errorf("libsolv expansion failed with status %d", outcome.status)
 	}
 }
 

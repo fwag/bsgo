@@ -48,7 +48,8 @@ int bsgo_add_package(Repo *repo, const char *name, const char *evr, const char *
 
 ExpansionOutcome bsgo_expand(Pool *pool,
                              int num_reqs, const char **reqs,
-                             int num_prefers, const char **prefers);
+                             int num_prefers, const char **prefers,
+                             int num_ignores, const char **ignores);
 
 void bsgo_free_outcome(ExpansionOutcome *outcome);
 

@@ -240,6 +240,10 @@ func (m *mockS3Client) UploadFile(_ context.Context, _, s3Key string) error {
 	return nil
 }
 
+func (m *mockS3Client) DownloadFile(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (m *mockS3Client) ListObjects(_ context.Context, _ string) ([]publisher.S3ObjectInfo, error) {
 	return nil, nil
 }

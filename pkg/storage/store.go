@@ -35,6 +35,7 @@ type TargetSolv struct {
 
 type Store interface {
 	CreateProject(ctx context.Context, prj *manifest.ProjectManifest) error
+	UpsertProject(ctx context.Context, prj *manifest.ProjectManifest) error
 	GetProject(ctx context.Context, name string) (*manifest.ProjectManifest, error)
 	ListProjects(ctx context.Context) ([]*manifest.ProjectManifest, error)
 
@@ -77,6 +78,14 @@ func (s *MemoryStore) CreateProject(_ context.Context, prj *manifest.ProjectMani
 		return ErrConflict
 	}
 	s.projects[name] = prj
+	return nil
+}
+
+func (s *MemoryStore) UpsertProject(_ context.Context, prj *manifest.ProjectManifest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.projects[prj.Project.Name] = prj
 	return nil
 }
 

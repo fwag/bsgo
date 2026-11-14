@@ -239,9 +239,18 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 	// Ensure common standard providers for core capabilities to prevent choice errors
 	preferList = append(preferList, "filesystem", "glibc", "bash", "coreutils", "util-linux", "tar", "gzip", "system-user-root", "shadow")
 
+	var ignores []string
+	var fileProvides map[string][]string
+	if effectiveCfg != nil {
+		ignores = effectiveCfg.Ignore
+		fileProvides = effectiveCfg.FileProvides
+	}
+
 	req := solv.ExpansionRequest{
 		BuildRequires: buildReqs,
 		Prefer:        preferList,
+		Ignore:        ignores,
+		FileProvides:  fileProvides,
 		Architecture:  arch,
 		RPMMDRepos:    rpmmdRepos,
 	}

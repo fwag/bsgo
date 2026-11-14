@@ -442,6 +442,19 @@ func (c *DiskS3Client) UploadFile(_ context.Context, localPath, s3Key string) er
 	return os.WriteFile(dest, data, 0600)
 }
 
+func (c *DiskS3Client) DownloadFile(_ context.Context, s3Key, localPath string) error {
+	cleanKey := filepath.Clean(s3Key)
+	src := filepath.Clean(filepath.Join(c.rootDir, cleanKey))
+	// #nosec G304 -- reading from local S3 cache
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	_ = os.MkdirAll(filepath.Dir(localPath), 0750)
+	// #nosec G703 -- writing to validated local destination
+	return os.WriteFile(localPath, data, 0600)
+}
+
 func (c *DiskS3Client) ListObjects(_ context.Context, prefix string) ([]publisher.S3ObjectInfo, error) {
 	cleanPrefix := filepath.Clean(prefix)
 	srcDir := filepath.Clean(filepath.Join(c.rootDir, cleanPrefix))
@@ -525,12 +538,15 @@ func subscribeTriggers(ctx context.Context, nc *nats.Conn, sched *scheduler.Sche
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] [SCHEDULER] Trigger processing failed for %s/%s: %v\n",
 				time.Now().Format("15:04:05"), trig.Project, trig.Package, err)
-			fallbackJob, fErr := createFallbackJob(ctx, store, &trig)
-			if fErr != nil {
-				fmt.Fprintf(os.Stderr, "[SCHEDULER] Invalid trigger rejected: %v\n", fErr)
-				return
-			}
-			jobs = []*v1.BuildJob{fallbackJob}
+			statusMsg, _ := json.Marshal(map[string]any{
+				"job_id":  trig.TriggerID,
+				"project": trig.Project,
+				"package": trig.Package,
+				"phase":   "UNRESOLVABLE",
+				"reason":  err.Error(),
+			})
+			_ = nc.Publish("bsgo.status", statusMsg)
+			return
 		}
 
 		enqueueDispatchedJobs(nc, disp, jobs)

@@ -629,6 +629,7 @@ func (s *ProcessSandbox) collectKVMArtifacts(ctx context.Context, buildRoot, job
 
 func (s *ProcessSandbox) uploadAndPublishArtifacts(ctx context.Context, job *v1.BuildJob, pkgDir, target, arch string, artifacts []v1.ChrootRPM, w io.Writer) error {
 	var artifactPaths []string
+	var artifactKeys []string
 	if s.S3Storage != nil {
 		for _, a := range artifacts {
 			src := filepath.Join(pkgDir, a.Filename)
@@ -639,6 +640,7 @@ func (s *ProcessSandbox) uploadAndPublishArtifacts(ctx context.Context, job *v1.
 				return fmt.Errorf("failed uploading artifact to S3: %w", err)
 			}
 			artifactPaths = append(artifactPaths, src)
+			artifactKeys = append(artifactKeys, s3Key)
 			fmt.Fprintf(w, "[%s] bsgo-worker: uploaded RPM artifact to s3://%s/%s\n",
 				time.Now().Format("15:04:05"), s.S3Storage.Bucket(), s3Key)
 		}
@@ -653,6 +655,7 @@ func (s *ProcessSandbox) uploadAndPublishArtifacts(ctx context.Context, job *v1.
 			Architecture: arch,
 			Package:      job.Package,
 			NewRPMPaths:  artifactPaths,
+			ArtifactKeys: artifactKeys,
 		}
 		subject := fmt.Sprintf("bsgo.publish.rpm.%s.%s.%s", job.Project, target, arch)
 		data, err := json.Marshal(pubReq)

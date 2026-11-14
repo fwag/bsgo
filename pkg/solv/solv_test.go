@@ -252,6 +252,66 @@ func TestEmptyResolutionSafety(t *testing.T) {
 	}
 }
 
+func TestMultiArchAndIgnoreResolution(t *testing.T) {
+	pool, err := solv.NewPool("x86_64")
+	if err != nil {
+		t.Fatalf("failed to create pool: %v", err)
+	}
+	defer pool.Close()
+
+	repo := pool.CreateRepo("test-repo")
+	// Package available in both x86_64 and i586 architectures
+	_ = repo.AddPackage(solv.PackageSpec{
+		Name:     "python311-base",
+		EVR:      "3.11.5-1",
+		Arch:     "x86_64",
+		Provides: []string{"python311-base", "/usr/bin/python3.11"},
+	})
+	_ = repo.AddPackage(solv.PackageSpec{
+		Name:     "python311-base",
+		EVR:      "3.11.5-1",
+		Arch:     "i586",
+		Provides: []string{"python311-base", "/usr/bin/python3.11"},
+	})
+
+	// 1. Multi-arch preference: x86_64 should be selected over i586 without ambiguity
+	res, err := pool.Resolve(solv.ExpansionRequest{
+		BuildRequires: []string{"/usr/bin/python3.11"},
+	})
+	if err != nil {
+		t.Fatalf("expected clean multi-arch resolution, got: %v", err)
+	}
+	if len(res.Packages) != 1 || res.Packages[0].Arch != "x86_64" {
+		t.Fatalf("expected python311-base.x86_64, got %+v", res.Packages)
+	}
+
+	// 2. Ignore list: requirement in Ignore should be skipped cleanly
+	resIgn, err := pool.Resolve(solv.ExpansionRequest{
+		BuildRequires: []string{"missing-required-pkg"},
+		Ignore:        []string{"missing-required-pkg"},
+	})
+	if err != nil {
+		t.Fatalf("expected ignored package to succeed, got: %v", err)
+	}
+	if len(resIgn.Packages) != 0 {
+		t.Fatalf("expected 0 packages for ignored req, got: %d", len(resIgn.Packages))
+	}
+
+	// 3. FileProvides substitution: file requirement mapped to package name
+	resFP, err := pool.Resolve(solv.ExpansionRequest{
+		BuildRequires: []string{"/usr/bin/python-custom"},
+		FileProvides: map[string][]string{
+			"/usr/bin/python-custom": {"python311-base"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected FileProvides resolution, got: %v", err)
+	}
+	if len(resFP.Packages) != 1 || resFP.Packages[0].Name != "python311-base" {
+		t.Fatalf("expected python311-base resolved via FileProvides, got %+v", resFP.Packages)
+	}
+}
+
 func TestMultiArchPool(t *testing.T) {
 	ctx := context.Background()
 	mapPool := solv.NewMultiArchPool(2)

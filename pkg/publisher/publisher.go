@@ -50,6 +50,7 @@ type S3ObjectInfo = s3.S3ObjectInfo
 type S3Client interface {
 	DownloadMetadata(ctx context.Context, prefix, localDir string) error
 	UploadFile(ctx context.Context, localPath, s3Key string) error
+	DownloadFile(ctx context.Context, s3Key, localPath string) error
 	ListObjects(ctx context.Context, prefix string) ([]S3ObjectInfo, error)
 	DeleteObject(ctx context.Context, s3Key string) error
 }
@@ -239,6 +240,10 @@ func (p *Publisher) partitionRPMs(req PublishRequest, repoDir string) map[SubRep
 		sr := ClassifyRPM(path)
 		classified[sr] = append(classified[sr], path)
 	}
+	for _, key := range req.ArtifactKeys {
+		sr := ClassifyRPM(key)
+		classified[sr] = append(classified[sr], key)
+	}
 
 	// Check files already in repoDir that belong to debug or src sub-repositories
 	if matches, err := filepath.Glob(filepath.Join(repoDir, "*.rpm")); err == nil {
@@ -298,6 +303,16 @@ func (p *Publisher) processSingleSubRepo(ctx context.Context, req PublishRequest
 
 	stageRPMFiles(subRepoDir, rpms)
 
+	if p.s3Client != nil {
+		for _, item := range rpms {
+			filename := filepath.Base(item)
+			dest := filepath.Join(subRepoDir, filename)
+			if !checkFileExists(dest) {
+				_ = p.s3Client.DownloadFile(ctx, item, dest)
+			}
+		}
+	}
+
 	if len(req.DeletedRPMs) > 0 {
 		p.purgeDeletedRPMs(ctx, subRepoDir, s3Prefix, req.DeletedRPMs)
 	}
@@ -309,7 +324,7 @@ func (p *Publisher) processSingleSubRepo(ctx context.Context, req PublishRequest
 	opts := CreateRepoOptions{
 		Dir:            subRepoDir,
 		Update:         hasOldMeta,
-		RecyclePkgList: hasOldMeta,
+		RecyclePkgList: false,
 	}
 	if hasOldMeta {
 		opts.OldMetadataDir = oldMetaDir
@@ -323,6 +338,13 @@ func (p *Publisher) processSingleSubRepo(ctx context.Context, req PublishRequest
 		metaDir := filepath.Join(subRepoDir, "repodata")
 		if err := EnrichMetadata(ctx, p.mrExecutor, metaDir, req, p.workDir); err != nil {
 			return nil, fmt.Errorf("metadata enrichment failed: %w", err)
+		}
+	}
+
+	if matches, err := filepath.Glob(filepath.Join(subRepoDir, "*.rpm")); err == nil {
+		for _, m := range matches {
+			rpmBase := filepath.Base(m)
+			_ = p.s3Client.UploadFile(ctx, m, s3Prefix+rpmBase)
 		}
 	}
 

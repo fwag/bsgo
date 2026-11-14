@@ -65,6 +65,27 @@ func (s *PostgresStore) CreateProject(ctx context.Context, prj *manifest.Project
 	return nil
 }
 
+func (s *PostgresStore) UpsertProject(ctx context.Context, prj *manifest.ProjectManifest) error {
+	data, err := yaml.Marshal(prj)
+	if err != nil {
+		return fmt.Errorf("failed to marshal project: %w", err)
+	}
+
+	query := `
+		INSERT INTO projects (name, title, description, manifest_yaml)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (name) DO UPDATE SET
+			title = EXCLUDED.title,
+			description = EXCLUDED.description,
+			manifest_yaml = EXCLUDED.manifest_yaml
+	`
+	_, err = s.pool.Exec(ctx, query, prj.Project.Name, prj.Project.Title, prj.Project.Description, string(data))
+	if err != nil {
+		return fmt.Errorf("failed to upsert project: %w", err)
+	}
+	return nil
+}
+
 func (s *PostgresStore) GetProject(ctx context.Context, name string) (*manifest.ProjectManifest, error) {
 	var yamlStr string
 	query := `SELECT manifest_yaml FROM projects WHERE name = $1`

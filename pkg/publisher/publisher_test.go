@@ -3,6 +3,7 @@ package publisher_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +47,15 @@ func (s *MockS3Client) UploadFile(_ context.Context, localPath, s3Key string) er
 	s.UploadedKeys = append(s.UploadedKeys, s3Key)
 	s.FilesOnS3[s3Key] = data
 	return nil
+}
+
+func (s *MockS3Client) DownloadFile(_ context.Context, s3Key, localPath string) error {
+	data, ok := s.FilesOnS3[s3Key]
+	if !ok {
+		return fmt.Errorf("s3 key not found: %s", s3Key)
+	}
+	_ = os.MkdirAll(filepath.Dir(localPath), 0750)
+	return os.WriteFile(localPath, data, 0600)
 }
 
 func (s *MockS3Client) ListObjects(_ context.Context, prefix string) ([]publisher.S3ObjectInfo, error) {
