@@ -17,16 +17,21 @@ import (
 type DependencyGatekeeper interface {
 	IsBuilding(project, pkg string) bool
 	SetBuilding(project, pkg string, building bool)
+	IsUnresolvable(project, pkg string) bool
+	SetUnresolvable(project, pkg string, unresolvable bool)
+	GetUnresolvablePackages(project string) []string
 }
 
 type MemoryGatekeeper struct {
 	mu           sync.RWMutex
 	activeBuilds map[string]bool
+	unresolvable map[string]bool
 }
 
 func NewMemoryGatekeeper() *MemoryGatekeeper {
 	return &MemoryGatekeeper{
 		activeBuilds: make(map[string]bool),
+		unresolvable: make(map[string]bool),
 	}
 }
 
@@ -45,6 +50,36 @@ func (g *MemoryGatekeeper) SetBuilding(project, pkg string, building bool) {
 	} else {
 		delete(g.activeBuilds, key)
 	}
+}
+
+func (g *MemoryGatekeeper) IsUnresolvable(project, pkg string) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.unresolvable[fmt.Sprintf("%s:%s", project, pkg)]
+}
+
+func (g *MemoryGatekeeper) SetUnresolvable(project, pkg string, unresolvable bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	key := fmt.Sprintf("%s:%s", project, pkg)
+	if unresolvable {
+		g.unresolvable[key] = true
+	} else {
+		delete(g.unresolvable, key)
+	}
+}
+
+func (g *MemoryGatekeeper) GetUnresolvablePackages(project string) []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	prefix := project + ":"
+	var pkgs []string
+	for k := range g.unresolvable {
+		if strings.HasPrefix(k, prefix) {
+			pkgs = append(pkgs, strings.TrimPrefix(k, prefix))
+		}
+	}
+	return pkgs
 }
 
 type CascadeEngine struct {
@@ -106,8 +141,49 @@ func (c *CascadeEngine) evaluateProjectForPublication(ctx context.Context, prj *
 			return nil, err
 		}
 		triggers = append(triggers, targetTriggers...)
+
+		unresTriggers := c.retriggerUnresolvablePackages(ctx, prj.Project.Name, targetName, event)
+		triggers = append(triggers, unresTriggers...)
 	}
 	return triggers, nil
+}
+
+func (c *CascadeEngine) retriggerUnresolvablePackages(ctx context.Context, prjName, targetName string, event *v1.PublicationEvent) []*v1.BuildTrigger {
+	unresPkgs := c.gatekeeper.GetUnresolvablePackages(prjName)
+	if len(unresPkgs) == 0 {
+		return nil
+	}
+
+	var triggers []*v1.BuildTrigger
+	for _, unresPkg := range unresPkgs {
+		if unresPkg == event.Package || c.gatekeeper.IsBuilding(prjName, unresPkg) {
+			continue
+		}
+
+		pkgManifest, err := c.store.GetPackage(ctx, prjName, unresPkg)
+		if err != nil || pkgManifest == nil || !pkgManifest.Build.Enabled {
+			continue
+		}
+
+		commit := pkgManifest.Source.Commit
+		if commit == "" {
+			commit = "HEAD"
+		}
+
+		trig := v1.NewTrigger(prjName, unresPkg, pkgManifest.Source.Git, commit, pkgManifest.Source.Branch, "cascade-engine")
+		trig.Priority = natsqueue.PriorityMed
+		trig.Reason = "CASCADE"
+		trig.Target = targetName
+		trig.Architecture = event.Architecture
+
+		if c.publisher != nil {
+			subject := natsqueue.TriggerSubject(natsqueue.PriorityMed, prjName, unresPkg)
+			data, _ := json.Marshal(trig)
+			_ = c.publisher.Publish(ctx, subject, data)
+		}
+		triggers = append(triggers, trig)
+	}
+	return triggers
 }
 
 func (c *CascadeEngine) evaluateTargetPackages(ctx context.Context, prjName, targetName string, targetCfg manifest.BuildTarget, event *v1.PublicationEvent) ([]*v1.BuildTrigger, error) {

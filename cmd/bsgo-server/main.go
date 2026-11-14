@@ -488,13 +488,20 @@ func (c *DiskS3Client) DeleteObject(_ context.Context, s3Key string) error {
 }
 
 func updateGatekeeperStatus(gk *scheduler.MemoryGatekeeper, prjName, pkgName, phase string) {
-	if prjName == "" || pkgName == "" {
+	if gk == nil || prjName == "" || pkgName == "" {
 		return
 	}
 	switch phase {
 	case "BUILDING":
 		gk.SetBuilding(prjName, pkgName, true)
-	case "SUCCEEDED", "FAILED":
+		gk.SetUnresolvable(prjName, pkgName, false)
+	case "SUCCEEDED":
+		gk.SetBuilding(prjName, pkgName, false)
+		gk.SetUnresolvable(prjName, pkgName, false)
+	case "UNRESOLVABLE":
+		gk.SetBuilding(prjName, pkgName, false)
+		gk.SetUnresolvable(prjName, pkgName, true)
+	case "FAILED", "ABORTED":
 		gk.SetBuilding(prjName, pkgName, false)
 	}
 }

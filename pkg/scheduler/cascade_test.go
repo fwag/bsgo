@@ -263,6 +263,64 @@ func TestCascadeEngineWithTargetSolvCache(t *testing.T) {
 		t.Fatalf("ProcessPublicationEvent for unrelated package failed: %v", err)
 	}
 	if len(triggers2) != 0 {
-		t.Errorf("expected 0 triggers for unrelated package, got %d: %+v", len(triggers2), triggers2)
+		t.Errorf("expected 0 triggers for unrelated publication, got %d: %+v", len(triggers2), triggers2)
+	}
+}
+
+func TestCascadeEngineAutomaticUnresolvableRecheck(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+
+	prj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "my:project"},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {
+				Architectures: []string{"x86_64"},
+				Flags:         manifest.TargetFlags{Build: true, Rebuild: "transitive"},
+			},
+		},
+	}
+	_ = store.CreateProject(ctx, prj)
+
+	pkgWaiting := &manifest.PackageManifest{
+		SchemaVersion: "v1",
+		Package:       manifest.PackageInfo{Name: "pkg-waiting"},
+		Source:        manifest.PackageSource{Git: "https://git/waiting.git", Commit: "123"},
+		Build:         manifest.PackageBuild{Enabled: true},
+	}
+	_ = store.UpsertPackage(ctx, "my:project", pkgWaiting)
+
+	gk := scheduler.NewMemoryGatekeeper()
+	// Mark pkg-waiting as currently UNRESOLVABLE
+	gk.SetUnresolvable("my:project", "pkg-waiting", true)
+
+	var triggeredPackages []string
+	pub := scheduler.NewNatsPublisher(func(_ context.Context, _ string, data []byte) error {
+		var tr v1.BuildTrigger
+		if err := json.Unmarshal(data, &tr); err == nil {
+			triggeredPackages = append(triggeredPackages, tr.Package)
+		}
+		return nil
+	})
+
+	engine := scheduler.NewCascadeEngine(store, nil, pub, gk)
+
+	// Publish an upstream dependency in the same project
+	ev := v1.NewPublicationEvent("my:project", "standard", "x86_64", "pkg-dep", []string{"pkg-dep.rpm"}, "repomd.xml")
+	triggers, err := engine.ProcessPublicationEvent(ctx, ev)
+	if err != nil {
+		t.Fatalf("ProcessPublicationEvent failed: %v", err)
+	}
+
+	found := false
+	for _, tr := range triggers {
+		if tr.Package == "pkg-waiting" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected pkg-waiting to be automatically re-triggered upon publication, got: %+v", triggers)
 	}
 }
