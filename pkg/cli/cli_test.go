@@ -184,3 +184,51 @@ targets:
 		t.Errorf("expected project name openSUSE:Crypto, got %s", prj.Project.Name)
 	}
 }
+
+func TestProjectStatusCmd(t *testing.T) {
+	store := storage.NewMemoryStore()
+	ctx := context.Background()
+
+	prj := &manifest.ProjectManifest{
+		SchemaVersion: "v1",
+		Project:       manifest.ProjectInfo{Name: "openSUSE:StatusPrj", Title: "Status Project"},
+		Targets:       map[string]manifest.BuildTarget{"standard": {Architectures: []string{"x86_64"}}},
+	}
+	_ = store.CreateProject(ctx, prj)
+
+	for _, name := range []string{"pkgA", "pkgB"} {
+		_ = store.UpsertPackage(ctx, "openSUSE:StatusPrj", &manifest.PackageManifest{
+			Package: manifest.PackageInfo{Name: name},
+			Build:   manifest.PackageBuild{Enabled: true},
+		})
+	}
+
+	// 1. Test JSON output
+	cmdJSON := cli.NewRootCommand(store)
+	outJSON := new(bytes.Buffer)
+	cmdJSON.SetOut(outJSON)
+	cmdJSON.SetArgs([]string{"project", "status", "openSUSE:StatusPrj", "--json"})
+	if err := cmdJSON.Execute(); err != nil {
+		t.Fatalf("unexpected error on project status --json: %v", err)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal(outJSON.Bytes(), &res); err != nil {
+		t.Fatalf("failed to parse JSON status: %v", err)
+	}
+	if res["project"] != "openSUSE:StatusPrj" || int(res["total_packages"].(float64)) != 2 {
+		t.Errorf("unexpected status JSON result: %v", res)
+	}
+
+	// 2. Test Human output
+	cmdHuman := cli.NewRootCommand(store)
+	outHuman := new(bytes.Buffer)
+	cmdHuman.SetOut(outHuman)
+	cmdHuman.SetArgs([]string{"project", "status", "openSUSE:StatusPrj"})
+	if err := cmdHuman.Execute(); err != nil {
+		t.Fatalf("unexpected error on human project status: %v", err)
+	}
+	if !strings.Contains(outHuman.String(), "Project Status: openSUSE:StatusPrj") {
+		t.Errorf("expected header in human output, got: %s", outHuman.String())
+	}
+}

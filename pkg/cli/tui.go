@@ -49,6 +49,11 @@ var (
 			Bold(true).
 			Foreground(lipgloss.Color("#FF3333")).
 			SetString("✖ FAILED")
+
+	unresolvableBadge = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#E5C07B")).
+				SetString("⊘ UNRESOLVABLE")
 )
 
 type HeartbeatMsg v1.WorkerHeartbeat
@@ -178,32 +183,25 @@ func (m *DashboardModel) replayStream(ctx context.Context, streamName string, ha
 		return
 	}
 
+	it, err := cons.Messages()
+	if err != nil {
+		return
+	}
+	defer it.Stop()
+
 	total := int(info.State.Msgs)
-	received := 0
-	for received < total {
+	for i := 0; i < total; i++ {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
 
-		batchSize := 1000
-		if remaining := total - received; remaining < batchSize {
-			batchSize = remaining
-		}
-		batch, err := cons.FetchNoWait(batchSize)
+		msg, err := it.Next()
 		if err != nil {
 			break
 		}
-		count := 0
-		for msg := range batch.Messages() {
-			count++
-			handler(msg.Data())
-		}
-		if count == 0 {
-			break
-		}
-		received += count
+		handler(msg.Data())
 	}
 }
 
@@ -434,8 +432,8 @@ func (m *DashboardModel) View() string {
 
 func (m *DashboardModel) renderJobPanel() string {
 	var sb strings.Builder
-	active, pending, succ, fail := m.countJobStates()
-	sb.WriteString(titleStyle.Render(formatJobPanelTitle(len(m.jobs), active, pending, succ, fail)) + "\n")
+	active, pending, succ, unres, fail := m.countJobStates()
+	sb.WriteString(titleStyle.Render(formatJobPanelTitle(len(m.jobs), active, pending, succ, unres, fail)) + "\n")
 
 	if len(m.jobs) == 0 {
 		sb.WriteString(subtleStyle.Render("  No build jobs queued or completed.\n  Run './bin/bsgo package trigger <pkg>' to trigger a build.\n"))
@@ -463,14 +461,18 @@ func (m *DashboardModel) renderJobPanel() string {
 			cursor = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render("▶ ")
 		}
 
-		badge := buildingBadge.Render()
+		var badge string
 		switch j.Target {
+		case "BUILDING":
+			badge = buildingBadge.Render()
 		case "SUCCEEDED":
 			badge = succeededBadge.Render()
-		case "PENDING", "QUEUED":
-			badge = pendingBadge.Render()
+		case "UNRESOLVABLE":
+			badge = unresolvableBadge.Render()
 		case "FAILED", "ABORTED":
 			badge = failedBadge.SetString("✖ " + j.Target).Render()
+		default:
+			badge = pendingBadge.Render()
 		}
 
 		displayName := j.Package
@@ -509,30 +511,32 @@ func (m *DashboardModel) renderLogBox() string {
 	return sb.String()
 }
 
-func (m *DashboardModel) countJobStates() (active, pending, succ, fail int) {
+func (m *DashboardModel) countJobStates() (active, pending, succ, unres, fail int) {
 	for _, j := range m.jobs {
 		switch j.Target {
 		case "BUILDING":
 			active++
-		case "PENDING", "QUEUED":
-			pending++
 		case "SUCCEEDED":
 			succ++
+		case "UNRESOLVABLE":
+			unres++
 		case "FAILED", "ABORTED":
 			fail++
+		default:
+			pending++
 		}
 	}
 	return
 }
 
-func formatJobPanelTitle(total, active, pending, succ, fail int) string {
+func formatJobPanelTitle(total, active, pending, succ, unres, fail int) string {
 	if total == 0 {
 		return "Build Jobs (0)"
 	}
 	if active == 0 && pending == 0 {
-		return fmt.Sprintf("Build Jobs (%d) • Completed (✔ %d, ✖ %d)", total, succ, fail)
+		return fmt.Sprintf("Build Jobs (%d) • Completed (✔ %d, ⊘ %d, ✖ %d)", total, succ, unres, fail)
 	}
-	return fmt.Sprintf("Build Jobs (%d) • ◐ %d active, ○ %d queued", total, active, pending)
+	return fmt.Sprintf("Build Jobs (%d) • ◐ %d active, ○ %d queued, ✔ %d, ⊘ %d", total, active, pending, succ, unres)
 }
 
 func (m *DashboardModel) renderWorkerPanel() string {
