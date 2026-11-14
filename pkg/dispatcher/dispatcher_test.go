@@ -358,3 +358,91 @@ func TestDispatcherMultiJobCapacityBinPacking(t *testing.T) {
 		t.Fatalf("job 4 should be dispatched after job 1 releases capacity: w=%s, j=%v, err=%v", w4, j4, err)
 	}
 }
+
+func TestDispatcherReapStaleJobs(t *testing.T) {
+	ctx := context.Background()
+	pub := dispatcher.NewMockPublisher(nil)
+	disp := dispatcher.NewDispatcher(pub, 10*time.Second)
+
+	// 1. Register worker and dispatch job
+	disp.Registry().UpdateHeartbeat(v1.WorkerHeartbeat{
+		WorkerID:     "worker-timeout-01",
+		Architecture: "x86_64",
+		Status:       "IDLE",
+		Hardware: v1.WorkerHardware{
+			TotalVCPUs:        4,
+			AvailableVCPUs:    4,
+			TotalMemoryMB:     8192,
+			AvailableMemoryMB: 8192,
+		},
+	})
+
+	job1 := &v1.BuildJob{
+		JobID:        "job-reap-1",
+		Project:      "prjA",
+		Package:      "pkg1",
+		Target:       "standard",
+		Architecture: "x86_64",
+		Resources:    v1.ResourceRequirements{MemoryMB: 2048, VCPUs: 2},
+	}
+	disp.EnqueueJob(job1)
+
+	w, j, err := disp.DispatchNext(ctx)
+	if err != nil || j == nil || w != "worker-timeout-01" {
+		t.Fatalf("failed dispatching job: w=%s, j=%v, err=%v", w, j, err)
+	}
+
+	// Case A: Advance time past 10s TTL without heartbeat -> worker dead
+	pastTTL := time.Now().Add(15 * time.Second)
+	reaped := disp.ReapStaleJobs(pastTTL)
+	if len(reaped) != 1 || reaped[0].JobID != "job-reap-1" {
+		t.Fatalf("expected 1 reaped job due to worker timeout, got: %v", reaped)
+	}
+
+	// Verify job is back in priority queue
+	if disp.Queue().Len() != 1 {
+		t.Fatalf("expected job to be re-enqueued, queue len: %d", disp.Queue().Len())
+	}
+
+	// Case B: Worker restarts and sends IDLE heartbeat with active allocations
+	disp2 := dispatcher.NewDispatcher(pub, 10*time.Second)
+	disp2.Registry().UpdateHeartbeat(v1.WorkerHeartbeat{
+		WorkerID:     "worker-restart-01",
+		Architecture: "x86_64",
+		Status:       "IDLE",
+		Hardware: v1.WorkerHardware{
+			TotalVCPUs:        4,
+			AvailableVCPUs:    4,
+			TotalMemoryMB:     8192,
+			AvailableMemoryMB: 8192,
+		},
+	})
+	job2 := &v1.BuildJob{
+		JobID:        "job-reap-2",
+		Project:      "prjA",
+		Package:      "pkg2",
+		Target:       "standard",
+		Architecture: "x86_64",
+		Resources:    v1.ResourceRequirements{MemoryMB: 2048, VCPUs: 2},
+	}
+	disp2.EnqueueJob(job2)
+	w2, j2, _ := disp2.DispatchNext(ctx)
+	if j2 == nil || w2 != "worker-restart-01" {
+		t.Fatalf("failed dispatching job 2: w=%s, j=%v", w2, j2)
+	}
+
+	// Worker restarts and sends an IDLE heartbeat
+	disp2.Registry().UpdateHeartbeat(v1.WorkerHeartbeat{
+		WorkerID:     "worker-restart-01",
+		Architecture: "x86_64",
+		Status:       "IDLE",
+	})
+
+	reapedRestart := disp2.ReapStaleJobs(time.Now())
+	if len(reapedRestart) != 1 || reapedRestart[0].JobID != "job-reap-2" {
+		t.Fatalf("expected 1 reaped job due to worker restart, got: %v", reapedRestart)
+	}
+	if disp2.Queue().Len() != 1 {
+		t.Fatalf("expected job 2 to be re-enqueued, queue len: %d", disp2.Queue().Len())
+	}
+}

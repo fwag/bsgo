@@ -359,13 +359,16 @@ func subscribeJobStatus(nc *nats.Conn, gk *scheduler.MemoryGatekeeper, disp *dis
 		}
 
 		updateGatekeeperStatus(gk, prjName, pkgName, phase)
-		if (phase == "SUCCEEDED" || phase == "FAILED") && prjName != "" {
+		if (phase == "SUCCEEDED" || phase == "FAILED" || phase == "ABORTED") && prjName != "" {
 			exitCode := 0
-			if phase == "FAILED" {
+			switch phase {
+			case "FAILED":
 				exitCode = 1
 				if c, ok := st["exit_code"].(float64); ok {
 					exitCode = int(c)
 				}
+			case "ABORTED":
+				exitCode = 137
 			}
 			workerID, _ := st["worker_id"].(string)
 			disp.RecordJobResult(jobID, workerID, prjName, exitCode, 30*time.Second)
@@ -574,10 +577,29 @@ func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nat
 	go func() {
 		ticker := time.NewTicker(300 * time.Millisecond)
 		defer ticker.Stop()
+		reaperTicker := time.NewTicker(5 * time.Second)
+		defer reaperTicker.Stop()
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-reaperTicker.C:
+				reaped := disp.ReapStaleJobs(time.Now())
+				for _, rj := range reaped {
+					fmt.Printf("[%s] [WATCHDOG] Re-queued stale/interrupted job %s (%s/%s) due to worker failure/restart\n",
+						time.Now().Format("15:04:05"), rj.JobID, rj.Project, rj.Package)
+
+					statusMsg, _ := json.Marshal(map[string]any{
+						"job_id":       rj.JobID,
+						"project":      rj.Project,
+						"package":      rj.Package,
+						"phase":        "ABORTED",
+						"reason":       "WORKER_LEASE_EXPIRED",
+						"architecture": rj.Architecture,
+					})
+					_ = nc.Publish("bsgo.status", statusMsg)
+				}
 			case <-ticker.C:
 				assignedWorker, dispatchedJob, _ := disp.DispatchNext(ctx)
 				if dispatchedJob != nil {
