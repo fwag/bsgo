@@ -247,7 +247,7 @@ func (r *WorkerRegistry) IsJobHostExhausted(jobID string, threshold int) bool {
 	return len(r.badHosts[jobID]) >= threshold
 }
 
-// FindStaleOrResetWorkers identifies dead workers (heartbeat timeout) and reset workers (restarted and reported IDLE with active allocations).
+// FindStaleOrResetWorkers identifies dead workers (heartbeat timeout) and reset workers (restarted and reported 0 active jobs while having allocations).
 func (r *WorkerRegistry) FindStaleOrResetWorkers(now time.Time) (deadWorkers, idleResetWorkers []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -257,7 +257,7 @@ func (r *WorkerRegistry) FindStaleOrResetWorkers(now time.Time) (deadWorkers, id
 			deadWorkers = append(deadWorkers, wid)
 			continue
 		}
-		if (w.Status == "IDLE" || w.Status == "") && len(w.Allocations) > 0 {
+		if len(w.ActiveJobIDs) == 0 && w.ActiveJobID == "" && len(w.Allocations) > 0 {
 			idleResetWorkers = append(idleResetWorkers, wid)
 		}
 	}

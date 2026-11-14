@@ -170,7 +170,6 @@ func (d *Dispatcher) ReapStaleJobs(now time.Time) []*v1.BuildJob {
 		delete(d.activeBuilds, buildKey)
 
 		d.registry.ReleaseJobResources(wid, jobID, nil)
-		d.registry.RecordJobFailure(jobID, wid, 2, now) // code 2 = host infrastructure failure
 
 		d.signalAbort(jobID, "WORKER_LEASE_EXPIRED")
 		d.queue.Push(job)
