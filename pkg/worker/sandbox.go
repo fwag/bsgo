@@ -485,6 +485,12 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 
 	args := s.buildKVMArgs(ctx, job, buildRoot, vmDisk, vmSwap, cacheDir, specFile, configPath, w)
 
+	defer func() {
+		wipeBuildRoot(context.Background(), obsBin, buildRoot, w)
+		_ = os.RemoveAll(filepath.Join(jobDir, "repo_snapshot"))
+		_ = os.RemoveAll(filepath.Join(jobDir, "packages"))
+	}()
+
 	fmt.Fprintf(w, "[%s] bsgo-worker: executing %s %s\n", time.Now().Format("15:04:05"), obsBin, strings.Join(args, " "))
 	// #nosec G204 -- obs-build runner executes parameterized sandbox binary
 	cmd := exec.CommandContext(ctx, obsBin, args...)
@@ -498,6 +504,18 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	}
 
 	return s.collectKVMArtifacts(ctx, buildRoot, jobDir, job, w, start)
+}
+
+func wipeBuildRoot(ctx context.Context, obsBin, buildRoot string, w io.Writer) {
+	if buildRoot == "" || !checkFileExists(buildRoot) {
+		return
+	}
+	// #nosec G204 -- obs-build runner executes parameterized sandbox binary
+	cmd := exec.CommandContext(ctx, obsBin, "--root", buildRoot, "--wipe")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(w, "[%s] bsgo-worker: failed to wipe build root: %v (%s)\n",
+			time.Now().Format("15:04:05"), err, strings.TrimSpace(string(out)))
+	}
 }
 
 func (s *ProcessSandbox) ResolveJobRepositories(ctx context.Context, job *v1.BuildJob, w io.Writer) []string {
