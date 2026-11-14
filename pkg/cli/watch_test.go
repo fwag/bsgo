@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/openSUSE/bsgo/pkg/manifest"
+	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
@@ -82,20 +84,20 @@ func TestWatchShowsJobsCreatedPriorToInvocation(t *testing.T) {
 	defer nc.Close()
 
 	m := newLiveDashboardModel(natsURL, nc, js)
-	if len(m.jobs) == 0 {
+	if len(m.Jobs) == 0 {
 		t.Fatalf("expected job %s to be loaded and shown in watch dashboard, but got 0 jobs", jobID)
 	}
-	if m.jobs[0].JobID != jobID {
-		t.Errorf("expected job ID %s, got %s", jobID, m.jobs[0].JobID)
+	if m.Jobs[0].JobID != jobID {
+		t.Errorf("expected job ID %s, got %s", jobID, m.Jobs[0].JobID)
 	}
-	if m.jobs[0].Package != "mypackage" {
-		t.Errorf("expected package mypackage, got %s", m.jobs[0].Package)
+	if m.Jobs[0].Package != "mypackage" {
+		t.Errorf("expected package mypackage, got %s", m.Jobs[0].Package)
 	}
-	if m.jobs[0].Project != "myproject" {
-		t.Errorf("expected project myproject, got %s", m.jobs[0].Project)
+	if m.Jobs[0].Project != "myproject" {
+		t.Errorf("expected project myproject, got %s", m.Jobs[0].Project)
 	}
-	if m.jobs[0].Target != "PENDING" {
-		t.Errorf("expected phase PENDING, got %s", m.jobs[0].Target)
+	if m.Jobs[0].Target != "PENDING" {
+		t.Errorf("expected phase PENDING, got %s", m.Jobs[0].Target)
 	}
 }
 
@@ -164,11 +166,11 @@ func TestWatchShowsJobsWithUpdatedStatus(t *testing.T) {
 
 	// Now start watch dashboard
 	m := newLiveDashboardModel(natsURL, nc, js)
-	if len(m.jobs) == 0 {
+	if len(m.Jobs) == 0 {
 		t.Fatalf("expected job %s to be present, got 0", jobID)
 	}
-	if m.jobs[0].Target != "SUCCEEDED" {
-		t.Errorf("expected phase SUCCEEDED, got %s", m.jobs[0].Target)
+	if m.Jobs[0].Target != "SUCCEEDED" {
+		t.Errorf("expected phase SUCCEEDED, got %s", m.Jobs[0].Target)
 	}
 }
 
@@ -220,13 +222,79 @@ func TestWatchShowsAdminTriggeredJobs(t *testing.T) {
 	defer nc.Close()
 
 	m := newLiveDashboardModel(natsURL, nc, js)
-	if len(m.jobs) == 0 {
+	if len(m.Jobs) == 0 {
 		t.Fatalf("expected admin-triggered job %s to appear in watch, got 0", jobID)
 	}
-	if m.jobs[0].JobID != jobID {
-		t.Errorf("expected job ID %s, got %s", jobID, m.jobs[0].JobID)
+	if m.Jobs[0].JobID != jobID {
+		t.Errorf("expected job ID %s, got %s", jobID, m.Jobs[0].JobID)
 	}
-	if m.jobs[0].Package != "ripgrep" {
-		t.Errorf("expected package ripgrep, got %s", m.jobs[0].Package)
+	if m.Jobs[0].Package != "ripgrep" {
+		t.Errorf("expected package ripgrep, got %s", m.Jobs[0].Package)
+	}
+}
+
+func TestWatchProjectAndArchMatrixView(t *testing.T) {
+	m := newLiveDashboardModel("nats://localhost:4222", nil, nil)
+	m.Jobs = []v1.BuildJob{
+		{JobID: "j1", Project: "SUSE:SLFO:1.2", Package: "pkg1", Architecture: "x86_64", Target: "SUCCEEDED"},
+		{JobID: "j2", Project: "SUSE:SLFO:1.2", Package: "pkg2", Architecture: "x86_64", Target: "BUILDING"},
+		{JobID: "j3", Project: "SUSE:SLFO:1.2", Package: "pkg3", Architecture: "x86_64", Target: "UNRESOLVABLE"},
+		{JobID: "j4", Project: "SUSE:SLFO:1.2", Package: "pkg4", Architecture: "aarch64", Target: "SUCCEEDED"},
+		{JobID: "j5", Project: "openSUSE:Factory", Package: "pkg5", Architecture: "x86_64", Target: "FAILED"},
+	}
+
+	// 1. Unfiltered matrix
+	rows := m.ComputeMatrixRows()
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 arch rows, got %d", len(rows))
+	}
+
+	// 2. Project-filtered matrix
+	m.ProjectFilter = "SUSE:SLFO:1.2"
+	m.ShowMatrix = true
+	slfoRows := m.ComputeMatrixRows()
+	if len(slfoRows) != 2 {
+		t.Fatalf("expected 2 arch rows for SLFO, got %d", len(slfoRows))
+	}
+	for _, r := range slfoRows {
+		if r.Arch == "x86_64" {
+			if r.Total != 3 || r.Succeeded != 1 || r.Building != 1 || r.Unresolvable != 1 {
+				t.Errorf("unexpected x86_64 stats: %+v", r)
+			}
+		}
+		if r.Arch == "aarch64" {
+			if r.Total != 1 || r.Succeeded != 1 {
+				t.Errorf("unexpected aarch64 stats: %+v", r)
+			}
+		}
+	}
+
+	// 3. Filtered jobs view
+	filtered := m.GetFilteredJobs()
+	if len(filtered) != 4 {
+		t.Fatalf("expected 4 jobs for SUSE:SLFO:1.2, got %d", len(filtered))
+	}
+
+	// 4. Matrix Panel Render
+	matrixView := m.RenderMatrixPanel()
+	if !strings.Contains(matrixView, "Architecture Status Matrix: SUSE:SLFO:1.2") {
+		t.Errorf("expected title in matrix view, got: %s", matrixView)
+	}
+	if !strings.Contains(matrixView, "x86_64") || !strings.Contains(matrixView, "aarch64") {
+		t.Errorf("expected arches in matrix view, got: %s", matrixView)
+	}
+
+	// 5. Test cycling arch filter
+	m.CycleArchFilter()
+	if m.ArchFilter != "aarch64" {
+		t.Errorf("expected first cycled arch to be aarch64, got %s", m.ArchFilter)
+	}
+	m.CycleArchFilter()
+	if m.ArchFilter != "x86_64" {
+		t.Errorf("expected second cycled arch to be x86_64, got %s", m.ArchFilter)
+	}
+	m.CycleArchFilter()
+	if m.ArchFilter != "" {
+		t.Errorf("expected third cycled arch to be empty (all), got %s", m.ArchFilter)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -68,17 +69,20 @@ func tickCmd() tea.Cmd {
 }
 
 type DashboardModel struct {
-	cursor       int
-	termWidth    int
-	termHeight   int
-	natsURL      string
-	nc           *nats.Conn
-	js           jetstream.JetStream
-	workers      map[string]v1.WorkerHeartbeat
-	jobs         []v1.BuildJob
-	viewLog      bool
-	logLines     []string
-	activeLogSub *nats.Subscription
+	cursor        int
+	termWidth     int
+	termHeight    int
+	natsURL       string
+	nc            *nats.Conn
+	js            jetstream.JetStream
+	workers       map[string]v1.WorkerHeartbeat
+	Jobs          []v1.BuildJob
+	viewLog       bool
+	logLines      []string
+	activeLogSub  *nats.Subscription
+	ProjectFilter string
+	ArchFilter    string
+	ShowMatrix    bool
 }
 
 func newWatchCmd() *cobra.Command {
@@ -87,11 +91,18 @@ func newWatchCmd() *cobra.Command {
 		defaultNATSURL = "nats://localhost:4222"
 	}
 	var natsURL string
+	var projectFilter string
+	var archFilter string
 
 	cmd := &cobra.Command{
-		Use:   "watch",
+		Use:   "watch [project]",
 		Short: "Open the interactive live TUI dashboard connected to NATS",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				projectFilter = args[0]
+			}
+
 			nc, js, err := natsqueue.ConnectJetStream(natsURL)
 			if err != nil {
 				return fmt.Errorf("failed to connect to NATS at %s: %w", natsURL, err)
@@ -104,6 +115,13 @@ func newWatchCmd() *cobra.Command {
 			_ = natsqueue.SetupStreams(ctx, js)
 
 			m := newLiveDashboardModel(natsURL, nc, js)
+			if projectFilter != "" {
+				m.ProjectFilter = projectFilter
+				m.ShowMatrix = true
+			}
+			if archFilter != "" {
+				m.ArchFilter = archFilter
+			}
 			p := tea.NewProgram(m, tea.WithAltScreen())
 
 			go m.listenNATS(ctx, p)
@@ -116,6 +134,8 @@ func newWatchCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&natsURL, "nats-url", defaultNATSURL, "NATS JetStream connection URL")
+	cmd.Flags().StringVarP(&projectFilter, "project", "p", "", "Filter dashboard to a specific project")
+	cmd.Flags().StringVarP(&archFilter, "arch", "a", "", "Filter dashboard to a specific architecture")
 	return cmd
 }
 
@@ -125,7 +145,7 @@ func newLiveDashboardModel(natsURL string, nc *nats.Conn, js jetstream.JetStream
 		nc:         nc,
 		js:         js,
 		workers:    make(map[string]v1.WorkerHeartbeat),
-		jobs:       make([]v1.BuildJob, 0),
+		Jobs:       make([]v1.BuildJob, 0),
 		logLines:   make([]string, 0),
 		termWidth:  110,
 		termHeight: 30,
@@ -209,13 +229,13 @@ func (m *DashboardModel) handleTrigger(trig v1.BuildTrigger) {
 	if trig.TriggerID == "" {
 		return
 	}
-	for i, j := range m.jobs {
+	for i, j := range m.Jobs {
 		if j.JobID == trig.TriggerID {
 			if trig.Package != "" {
-				m.jobs[i].Package = trig.Package
+				m.Jobs[i].Package = trig.Package
 			}
 			if trig.Project != "" {
-				m.jobs[i].Project = trig.Project
+				m.Jobs[i].Project = trig.Project
 			}
 			return
 		}
@@ -225,7 +245,7 @@ func (m *DashboardModel) handleTrigger(trig v1.BuildTrigger) {
 	if arch == "" {
 		arch = "x86_64"
 	}
-	m.jobs = append(m.jobs, v1.BuildJob{
+	m.Jobs = append(m.Jobs, v1.BuildJob{
 		JobID:        trig.TriggerID,
 		Project:      trig.Project,
 		Package:      trig.Package,
@@ -283,12 +303,22 @@ func (m *DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "tab", "v":
+			m.ShowMatrix = !m.ShowMatrix
+		case "a":
+			m.CycleArchFilter()
+		case "p":
+			m.CycleProjectFilter()
+		case "c":
+			m.ProjectFilter = ""
+			m.ArchFilter = ""
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(m.jobs)-1 {
+			filtered := m.GetFilteredJobs()
+			if m.cursor < len(filtered)-1 {
 				m.cursor++
 			}
 		case "l", "enter":
@@ -331,20 +361,20 @@ func (m *DashboardModel) handleStatusUpdate(st map[string]any) {
 		arch = "x86_64"
 	}
 
-	for i, j := range m.jobs {
+	for i, j := range m.Jobs {
 		if j.JobID == jobID {
-			m.jobs[i].Target = phase
+			m.Jobs[i].Target = phase
 			if pkgName != "package" {
-				m.jobs[i].Package = pkgName
+				m.Jobs[i].Package = pkgName
 			}
 			if projectName != "" {
-				m.jobs[i].Project = projectName
+				m.Jobs[i].Project = projectName
 			}
 			return
 		}
 	}
 
-	m.jobs = append(m.jobs, v1.BuildJob{
+	m.Jobs = append(m.Jobs, v1.BuildJob{
 		JobID:        jobID,
 		Project:      projectName,
 		Package:      pkgName,
@@ -355,43 +385,82 @@ func (m *DashboardModel) handleStatusUpdate(st map[string]any) {
 
 func (m *DashboardModel) toggleLogSubscription() {
 	m.viewLog = !m.viewLog
-	if !m.viewLog && m.activeLogSub != nil {
-		_ = m.activeLogSub.Unsubscribe()
-		m.activeLogSub = nil
+	if !m.viewLog {
+		if m.activeLogSub != nil {
+			_ = m.activeLogSub.Unsubscribe()
+			m.activeLogSub = nil
+		}
 		return
 	}
 
-	if m.viewLog && len(m.jobs) > 0 {
-		curJob := m.jobs[m.cursor]
-		m.logLines = []string{fmt.Sprintf("─── Build Logs: %s (%s) ───", curJob.JobID, curJob.Package)}
+	filtered := m.GetFilteredJobs()
+	if len(filtered) == 0 {
+		return
+	}
 
-		cleanJobID := filepath.Clean(curJob.JobID)
-		savedLog := filepath.Clean(filepath.Join("/tmp/bsgo-worker/jobs", cleanJobID, "build.log"))
-		if data, err := os.ReadFile(savedLog); err == nil && len(data) > 0 {
-			lines := strings.Split(string(data), "\n")
-			for _, l := range lines {
-				if strings.TrimSpace(l) != "" {
-					m.appendLog(l)
-				}
-			}
-		}
+	if m.cursor >= len(filtered) {
+		m.cursor = len(filtered) - 1
+	}
+	curJob := filtered[m.cursor]
+	m.logLines = []string{fmt.Sprintf("─── Build Logs: %s (%s) ───", curJob.JobID, curJob.Package)}
 
-		sub, err := m.nc.Subscribe("bsgo.logs."+curJob.JobID, func(msg *nats.Msg) {
-			m.appendLog(string(msg.Data))
-		})
-		if err == nil {
-			m.activeLogSub = sub
+	for _, l := range readSavedJobLogs(curJob.JobID) {
+		m.appendLog(l)
+	}
+
+	sub, err := m.nc.Subscribe("bsgo.logs."+curJob.JobID, func(msg *nats.Msg) {
+		m.appendLog(string(msg.Data))
+	})
+	if err == nil {
+		m.activeLogSub = sub
+	}
+}
+
+func readSavedJobLogs(jobID string) []string {
+	savedLog := filepath.Clean(filepath.Join("/tmp/bsgo-worker/jobs", filepath.Clean(jobID), "build.log"))
+	data, err := os.ReadFile(savedLog)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	var out []string
+	for _, l := range strings.Split(string(data), "\n") {
+		if trimmed := strings.TrimSpace(l); trimmed != "" {
+			out = append(out, trimmed)
 		}
 	}
+	return out
 }
 
 func (m *DashboardModel) View() string {
 	var s strings.Builder
 
+	filterInfo := ""
+	if m.ProjectFilter != "" || m.ArchFilter != "" {
+		pStr := m.ProjectFilter
+		if pStr == "" {
+			pStr = "All"
+		}
+		aStr := m.ArchFilter
+		if aStr == "" {
+			aStr = "All"
+		}
+		filterInfo = fmt.Sprintf(" • Filter: %s/%s", pStr, aStr)
+	}
+
 	header := headerStyle.Render(" bsgo ") + " " +
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Render("Live Cloud-Native Build Service Dashboard") +
-		subtleStyle.Render(" (NATS: "+m.natsURL+" • Postgres: Connected)")
+		subtleStyle.Render(" (NATS: "+m.natsURL+filterInfo+")")
 	s.WriteString(header + "\n\n")
+
+	if m.ShowMatrix {
+		matrixBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#7D56F4")).
+			Padding(0, 1).
+			Width(106).
+			Render(m.RenderMatrixPanel())
+		s.WriteString(matrixBox + "\n\n")
+	}
 
 	jobPanel := m.renderJobPanel()
 	workerPanel := m.renderWorkerPanel()
@@ -426,17 +495,22 @@ func (m *DashboardModel) View() string {
 			Render(logBox) + "\n\n")
 	}
 
-	s.WriteString(subtleStyle.Render("  [↑/↓] Navigate  •  [Enter/l] Toggle Live Logs  •  [q] Quit"))
+	s.WriteString(subtleStyle.Render("  [↑/↓] Navigate  •  [Enter/l] Logs  •  [Tab/v] Matrix  •  [p] Project  •  [a] Arch  •  [c] Reset  •  [q] Quit"))
 	return s.String()
 }
 
 func (m *DashboardModel) renderJobPanel() string {
 	var sb strings.Builder
-	active, pending, succ, unres, fail := m.countJobStates()
-	sb.WriteString(titleStyle.Render(formatJobPanelTitle(len(m.jobs), active, pending, succ, unres, fail)) + "\n")
+	filteredJobs := m.GetFilteredJobs()
+	active, pending, succ, unres, fail := m.countJobStates(filteredJobs)
+	title := formatJobPanelTitle(len(filteredJobs), active, pending, succ, unres, fail)
+	if m.ProjectFilter != "" {
+		title += fmt.Sprintf(" [%s]", m.ProjectFilter)
+	}
+	sb.WriteString(titleStyle.Render(title) + "\n")
 
-	if len(m.jobs) == 0 {
-		sb.WriteString(subtleStyle.Render("  No build jobs queued or completed.\n  Run './bin/bsgo package trigger <pkg>' to trigger a build.\n"))
+	if len(filteredJobs) == 0 {
+		sb.WriteString(subtleStyle.Render("  No build jobs match the selected filter.\n"))
 		return sb.String()
 	}
 
@@ -446,8 +520,8 @@ func (m *DashboardModel) renderJobPanel() string {
 		startIdx = m.cursor - maxVisible + 1
 	}
 	endIdx := startIdx + maxVisible
-	if endIdx > len(m.jobs) {
-		endIdx = len(m.jobs)
+	if endIdx > len(filteredJobs) {
+		endIdx = len(filteredJobs)
 	}
 
 	if startIdx > 0 {
@@ -455,7 +529,7 @@ func (m *DashboardModel) renderJobPanel() string {
 	}
 
 	for i := startIdx; i < endIdx; i++ {
-		j := m.jobs[i]
+		j := filteredJobs[i]
 		cursor := "  "
 		if m.cursor == i {
 			cursor = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4")).Render("▶ ")
@@ -490,8 +564,8 @@ func (m *DashboardModel) renderJobPanel() string {
 		fmt.Fprintf(&sb, "%s%-16s %s %-22s\n", cursor, displayJobID, badge, displayName)
 	}
 
-	if endIdx < len(m.jobs) {
-		fmt.Fprintf(&sb, "%s\n", subtleStyle.Render(fmt.Sprintf("  ▼ %d more below", len(m.jobs)-endIdx)))
+	if endIdx < len(filteredJobs) {
+		fmt.Fprintf(&sb, "%s\n", subtleStyle.Render(fmt.Sprintf("  ▼ %d more below", len(filteredJobs)-endIdx)))
 	}
 
 	return sb.String()
@@ -511,8 +585,8 @@ func (m *DashboardModel) renderLogBox() string {
 	return sb.String()
 }
 
-func (m *DashboardModel) countJobStates() (active, pending, succ, unres, fail int) {
-	for _, j := range m.jobs {
+func (m *DashboardModel) countJobStates(jobs []v1.BuildJob) (active, pending, succ, unres, fail int) {
+	for _, j := range jobs {
 		switch j.Target {
 		case "BUILDING":
 			active++
@@ -537,6 +611,186 @@ func formatJobPanelTitle(total, active, pending, succ, unres, fail int) string {
 		return fmt.Sprintf("Build Jobs (%d) • Completed (✔ %d, ⊘ %d, ✖ %d)", total, succ, unres, fail)
 	}
 	return fmt.Sprintf("Build Jobs (%d) • ◐ %d active, ○ %d queued, ✔ %d, ⊘ %d", total, active, pending, succ, unres)
+}
+
+func (m *DashboardModel) GetFilteredJobs() []v1.BuildJob {
+	if m.ProjectFilter == "" && m.ArchFilter == "" {
+		return m.Jobs
+	}
+	var res []v1.BuildJob
+	for _, j := range m.Jobs {
+		if m.ProjectFilter != "" && j.Project != m.ProjectFilter {
+			continue
+		}
+		if m.ArchFilter != "" && j.Architecture != m.ArchFilter {
+			continue
+		}
+		res = append(res, j)
+	}
+	return res
+}
+
+type ArchMatrixRow struct {
+	Arch         string
+	Total        int
+	Succeeded    int
+	Building     int
+	Failed       int
+	Unresolvable int
+	Pending      int
+}
+
+func (m *DashboardModel) ComputeMatrixRows() []ArchMatrixRow {
+	stats := make(map[string]*ArchMatrixRow)
+	var archList []string
+
+	for _, j := range m.Jobs {
+		if m.ProjectFilter != "" && j.Project != m.ProjectFilter {
+			continue
+		}
+		arch := j.Architecture
+		if arch == "" {
+			arch = "x86_64"
+		}
+		row, exists := stats[arch]
+		if !exists {
+			row = &ArchMatrixRow{Arch: arch}
+			stats[arch] = row
+			archList = append(archList, arch)
+		}
+		row.Total++
+		switch j.Target {
+		case "BUILDING":
+			row.Building++
+		case "SUCCEEDED":
+			row.Succeeded++
+		case "UNRESOLVABLE":
+			row.Unresolvable++
+		case "FAILED", "ABORTED":
+			row.Failed++
+		default:
+			row.Pending++
+		}
+	}
+
+	sort.Strings(archList)
+	var rows []ArchMatrixRow
+	for _, a := range archList {
+		rows = append(rows, *stats[a])
+	}
+	return rows
+}
+
+func (m *DashboardModel) RenderMatrixPanel() string {
+	var sb strings.Builder
+	title := "Architecture Status Matrix"
+	if m.ProjectFilter != "" {
+		title = fmt.Sprintf("Architecture Status Matrix: %s", m.ProjectFilter)
+	}
+	sb.WriteString(titleStyle.Render(title) + "\n\n")
+
+	rows := m.ComputeMatrixRows()
+	if len(rows) == 0 {
+		sb.WriteString(subtleStyle.Render("  No data available for the selected filter.\n"))
+		return sb.String()
+	}
+
+	fmt.Fprintf(&sb, "  %-10s %6s %13s %12s %10s %16s %11s\n",
+		"ARCH", "TOTAL", "✔ SUCCEEDED", "◐ BUILDING", "✖ FAILED", "⊘ UNRESOLVABLE", "○ PENDING")
+
+	var totTotal, totSucc, totBuild, totFail, totUnres, totPend int
+	for _, r := range rows {
+		totTotal += r.Total
+		totSucc += r.Succeeded
+		totBuild += r.Building
+		totFail += r.Failed
+		totUnres += r.Unresolvable
+		totPend += r.Pending
+
+		fmt.Fprintf(&sb, "  %-10s %6d %13d %12d %10d %16d %11d\n",
+			r.Arch, r.Total, r.Succeeded, r.Building, r.Failed, r.Unresolvable, r.Pending)
+	}
+
+	sb.WriteString("  " + strings.Repeat("─", 84) + "\n")
+	fmt.Fprintf(&sb, "  %-10s %6d %13d %12d %10d %16d %11d\n",
+		"TOTAL", totTotal, totSucc, totBuild, totFail, totUnres, totPend)
+
+	return sb.String()
+}
+
+func (m *DashboardModel) CycleArchFilter() {
+	arches := m.getDistinctArches()
+	if len(arches) == 0 {
+		return
+	}
+	if m.ArchFilter == "" {
+		m.ArchFilter = arches[0]
+		return
+	}
+	for i, a := range arches {
+		if a == m.ArchFilter {
+			if i+1 < len(arches) {
+				m.ArchFilter = arches[i+1]
+			} else {
+				m.ArchFilter = ""
+			}
+			return
+		}
+	}
+	m.ArchFilter = ""
+}
+
+func (m *DashboardModel) CycleProjectFilter() {
+	projects := m.getDistinctProjects()
+	if len(projects) == 0 {
+		return
+	}
+	if m.ProjectFilter == "" {
+		m.ProjectFilter = projects[0]
+		return
+	}
+	for i, p := range projects {
+		if p == m.ProjectFilter {
+			if i+1 < len(projects) {
+				m.ProjectFilter = projects[i+1]
+			} else {
+				m.ProjectFilter = ""
+			}
+			return
+		}
+	}
+	m.ProjectFilter = ""
+}
+
+func (m *DashboardModel) getDistinctArches() []string {
+	seen := make(map[string]bool)
+	var list []string
+	for _, j := range m.Jobs {
+		a := j.Architecture
+		if a == "" {
+			a = "x86_64"
+		}
+		if !seen[a] {
+			seen[a] = true
+			list = append(list, a)
+		}
+	}
+	sort.Strings(list)
+	return list
+}
+
+func (m *DashboardModel) getDistinctProjects() []string {
+	seen := make(map[string]bool)
+	var list []string
+	for _, j := range m.Jobs {
+		p := j.Project
+		if p != "" && !seen[p] {
+			seen[p] = true
+			list = append(list, p)
+		}
+	}
+	sort.Strings(list)
+	return list
 }
 
 func (m *DashboardModel) renderWorkerPanel() string {
