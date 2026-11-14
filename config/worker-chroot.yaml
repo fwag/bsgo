@@ -1,0 +1,26 @@
+# bsgo Worker Daemon - chroot Isolation Configuration
+# Uses /usr/bin/build with standard Linux chroot isolation at 100% native CPU & I/O speed
+# Avoids nested virtualization penalties in Proxmox, KVM, and cloud virtual machines
+
+worker:
+  id: "worker-chroot-01"
+  arch: "x86_64"
+  work_dir: "/var/cache/bsgo/worker"
+  state_dir: "/run/bsgo/worker"
+  cache_dir: "/var/cache/bsgo/worker/cache"
+  disk_dir: "/var/cache/bsgo/worker/disks"
+
+nats:
+  url: "nats://localhost:4222"
+
+storage:
+  s3_endpoint: "http://127.0.0.1:3900"
+  s3_bucket: "bsgo-artifacts"
+  s3_region: "garage"
+  access_key: "${AWS_ACCESS_KEY_ID}"
+  secret_key: "${AWS_SECRET_ACCESS_KEY}"
+
+# Sandbox Execution Engine
+sandbox:
+  mode: "obs-build"
+  obs_build_bin: "/usr/bin/build"

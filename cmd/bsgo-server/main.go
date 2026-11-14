@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/openSUSE/bsgo/pkg/auth"
 	"github.com/openSUSE/bsgo/pkg/dispatcher"
+	"github.com/openSUSE/bsgo/pkg/dod"
 	"github.com/openSUSE/bsgo/pkg/gateway"
 	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
@@ -125,7 +127,7 @@ func runControlPlane(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js je
 		fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher)...\n")
 	}
 
-	startSchedulerAndDispatcher(ctx, nc, store, pubService)
+	startSchedulerAndDispatcher(ctx, cfg, nc, store, pubService)
 	startHTTPServer(ctx, cfg.HTTPPort, store, nc)
 
 	fmt.Printf("bsgo Control Plane is LIVE and listening for triggers and workers\n")
@@ -134,14 +136,18 @@ func runControlPlane(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js je
 }
 
 func initControlPlaneStore(ctx context.Context, dbURL string) storage.Store {
-	connectCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	pgStore, err := postgres.NewPostgresStore(connectCtx, dbURL)
-	if err == nil {
-		return pgStore
+	for attempts := 0; attempts < 10; attempts++ {
+		connectCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		pgStore, err := postgres.NewPostgresStore(connectCtx, dbURL)
+		cancel()
+		if err == nil {
+			fmt.Println("[STORAGE] Connected to PostgreSQL metadata store")
+			return pgStore
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 
+	fmt.Println("[STORAGE] WARNING: Failed to connect to PostgreSQL, falling back to In-Memory store")
 	return storage.NewMemoryStore()
 }
 
@@ -249,7 +255,41 @@ func processPublishMessage(ctx context.Context, msg jetstream.Msg, pub *publishe
 		time.Now().Format("15:04:05"), res.RepomdXMLKey)
 }
 
-func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store storage.Store, pubService *publisher.Publisher) {
+type s3DoDAdapter struct {
+	storage publisher.S3Client
+}
+
+func (a *s3DoDAdapter) GetObject(ctx context.Context, key string) ([]byte, error) {
+	if s3Store, ok := a.storage.(*s3.S3Storage); ok {
+		rc, _, _, err := s3Store.GetObject(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		defer rc.Close()
+		return io.ReadAll(rc)
+	}
+	if diskStore, ok := a.storage.(*DiskS3Client); ok {
+		path := filepath.Clean(filepath.Join(diskStore.rootDir, key))
+		return os.ReadFile(path)
+	}
+	return nil, fmt.Errorf("unsupported s3 storage type")
+}
+
+func (a *s3DoDAdapter) PutObject(ctx context.Context, key string, data []byte) error {
+	tmpFile, err := os.CreateTemp("", "bsgo-dod-put-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	_ = tmpFile.Close()
+	return a.storage.UploadFile(ctx, tmpFile.Name(), key)
+}
+
+func startSchedulerAndDispatcher(ctx context.Context, cfg ServerConfig, nc *nats.Conn, store storage.Store, pubService *publisher.Publisher) {
 	disp := dispatcher.NewDispatcher(dispatcher.NewFuncPublisher(func(subj string, data []byte) {
 		_ = nc.Publish(subj, data)
 	}), 30*time.Second)
@@ -263,7 +303,18 @@ func startSchedulerAndDispatcher(ctx context.Context, nc *nats.Conn, store stora
 	pub := scheduler.NewNatsPublisher(func(pCtx context.Context, subject string, data []byte) error {
 		return nc.Publish(subject, data)
 	})
-	sched := scheduler.NewScheduler(store, solverPool, pub, scheduler.Config{S3Bucket: "bsgo-artifacts"})
+	sched := scheduler.NewScheduler(store, solverPool, pub, scheduler.Config{S3Bucket: cfg.S3Bucket})
+
+	var s3Client publisher.S3Client
+	if s3Storage, err := s3.NewS3Storage(ctx, cfg.S3Endpoint, "garage", cfg.S3Bucket, "", ""); err == nil {
+		s3Client = s3Storage
+	} else {
+		s3Client = NewDiskS3Client("/tmp/bsgo-artifacts")
+	}
+	dodIngestor := dod.NewExternalRepoIngestor(nil)
+	dodFetcher := dod.NewDoDFetcher(nil, &s3DoDAdapter{storage: s3Client})
+	sched.SetDoD(dodIngestor, dodFetcher)
+
 	cascade := scheduler.NewCascadeEngine(store, solverPool, pub, gatekeeper)
 
 	subscribeTriggers(ctx, nc, sched, disp, store)
@@ -472,6 +523,8 @@ func subscribeTriggers(ctx context.Context, nc *nats.Conn, sched *scheduler.Sche
 
 		jobs, err := sched.ProcessTrigger(ctx, &trig)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] [SCHEDULER] Trigger processing failed for %s/%s: %v\n",
+				time.Now().Format("15:04:05"), trig.Project, trig.Package, err)
 			fallbackJob, fErr := createFallbackJob(ctx, store, &trig)
 			if fErr != nil {
 				fmt.Fprintf(os.Stderr, "[SCHEDULER] Invalid trigger rejected: %v\n", fErr)

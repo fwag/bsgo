@@ -236,13 +236,48 @@ func findPackageSources(pkgName, recipePath string) (string, string) {
 	return "test/fixtures/hello", "hello.spec"
 }
 
-func (s *ProcessSandbox) setupKVMSources(job *v1.BuildJob, jobDir string) (string, error) {
+func (s *ProcessSandbox) setupKVMSources(ctx context.Context, job *v1.BuildJob, jobDir string) (string, error) {
 	sourcesDir := filepath.Join(jobDir, "sources")
 	if err := os.MkdirAll(sourcesDir, 0750); err != nil {
 		return "", err
 	}
 
+	if job.Source.GitURL != "" {
+		return cloneGitSources(ctx, job.Source, sourcesDir)
+	}
+
 	srcDir, specName := findPackageSources(job.Package, job.Source.RecipePath)
+	copyLocalSources(srcDir, sourcesDir)
+	return filepath.Join(sourcesDir, specName), nil
+}
+
+func cloneGitSources(ctx context.Context, src v1.SourceSpec, sourcesDir string) (string, error) {
+	cloneArgs := []string{"clone", "--depth", "1"}
+	if src.Branch != "" {
+		cloneArgs = append(cloneArgs, "--branch", src.Branch)
+	}
+	cloneArgs = append(cloneArgs, src.GitURL, sourcesDir)
+	cmd := exec.CommandContext(ctx, "git", cloneArgs...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git clone %s failed: %s (%w)", src.GitURL, string(out), err)
+	}
+	if src.CommitSHA != "" && src.CommitSHA != "HEAD" {
+		chkCmd := exec.CommandContext(ctx, "git", "-C", sourcesDir, "checkout", src.CommitSHA)
+		_ = chkCmd.Run()
+	}
+	_ = exec.CommandContext(ctx, "git", "-C", sourcesDir, "lfs", "install", "--local").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", sourcesDir, "lfs", "pull").Run()
+	specName := src.RecipePath
+	if specName == "" {
+		specs, _ := filepath.Glob(filepath.Join(sourcesDir, "*.spec"))
+		if len(specs) > 0 {
+			specName = filepath.Base(specs[0])
+		}
+	}
+	return filepath.Join(sourcesDir, specName), nil
+}
+
+func copyLocalSources(srcDir, sourcesDir string) {
 	srcEntries, _ := filepath.Glob(filepath.Join(srcDir, "*"))
 	for _, f := range srcEntries {
 		cleanF := filepath.Clean(f)
@@ -253,7 +288,6 @@ func (s *ProcessSandbox) setupKVMSources(job *v1.BuildJob, jobDir string) (strin
 			_ = os.WriteFile(destFile, data, 0600)
 		}
 	}
-	return filepath.Join(sourcesDir, specName), nil
 }
 
 func (s *ProcessSandbox) setupKVMDisks(job *v1.BuildJob) (string, string, error) {
@@ -312,29 +346,40 @@ func (s *ProcessSandbox) buildKVMArgs(ctx context.Context, job *v1.BuildJob, bui
 		vcpus = 1
 	}
 
-	args := []string{
-		"--clean",
-		"--vm-type", "kvm",
-		"--root", buildRoot,
-		"--vm-disk", vmDisk,
-		"--vm-swap", vmSwap,
-		"--cachedir", cacheDir,
-		"--vm-memory", strconv.FormatInt(memMB, 10),
-		"--vm-disk-size", strconv.FormatInt(diskMB, 10),
-		"--jobs", strconv.Itoa(int(vcpus)),
-	}
+	var args []string
+	if s.SandboxMode == "obs-build" {
+		args = []string{
+			"--clean",
+			"--changelog",
+			"--root", buildRoot,
+			"--cachedir", cacheDir,
+			"--jobs", strconv.Itoa(int(vcpus)),
+		}
+	} else {
+		args = []string{
+			"--clean",
+			"--changelog",
+			"--vm-type", "kvm",
+			"--root", buildRoot,
+			"--vm-disk", vmDisk,
+			"--vm-swap", vmSwap,
+			"--cachedir", cacheDir,
+			"--vm-memory", strconv.FormatInt(memMB, 10),
+			"--vm-disk-size", strconv.FormatInt(diskMB, 10),
+			"--jobs", strconv.Itoa(int(vcpus)),
+		}
+		kvmUser := s.KVMUser
+		if kvmUser == "" {
+			kvmUser = "qemu"
+		}
+		args = append(args, "--vm-user", kvmUser)
 
-	kvmUser := s.KVMUser
-	if kvmUser == "" {
-		kvmUser = "qemu"
+		vmArgs := s.KVMVMArgs
+		if vmArgs == "" {
+			vmArgs = "-sandbox on -net none"
+		}
+		args = append(args, "--vm-args", vmArgs)
 	}
-	args = append(args, "--vm-user", kvmUser)
-
-	vmArgs := s.KVMVMArgs
-	if vmArgs == "" {
-		vmArgs = "-sandbox on -net none"
-	}
-	args = append(args, "--vm-args", vmArgs)
 
 	if checkFileExists(configPath) {
 		args = append(args, "--dist", configPath)
@@ -342,7 +387,10 @@ func (s *ProcessSandbox) buildKVMArgs(ctx context.Context, job *v1.BuildJob, bui
 
 	repoArgs := s.ResolveJobRepositories(ctx, job, w)
 	args = append(args, repoArgs...)
-	args = append(args, "--repo", "zypp://", specFile)
+	if len(repoArgs) == 0 {
+		args = append(args, "--repo", "zypp://")
+	}
+	args = append(args, specFile)
 	return args
 }
 
@@ -394,7 +442,7 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	}
 	fmt.Fprintf(w, "[%s] bsgo-worker: preparing KVM micro-VM sandbox via %s\n", time.Now().Format("15:04:05"), obsBin)
 
-	specFile, err := s.setupKVMSources(job, jobDir)
+	specFile, err := s.setupKVMSources(ctx, job, jobDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed setting up package sources: %w", err)
 	}
@@ -411,15 +459,25 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	defer cleanupKVMRun(jobDir, buildRoot, vmDisk, vmSwap)
 
 	configPath := filepath.Join(jobDir, ".build.config")
-	if !checkFileExists(configPath) && (job.BuildEngine != "" || job.BuildType != "" || job.Macros != "" || len(job.BuildFlags) > 0) {
-		cfg := &manifest.ProjectConfig{
-			BuildEngine: job.BuildEngine,
-			BuildTypes:  []string{job.BuildType},
-			Macros:      job.Macros,
-			BuildFlags:  job.BuildFlags,
-		}
-		if rendered := RenderBuildConfig(cfg); rendered != "" {
-			_ = os.WriteFile(configPath, []byte(rendered), 0600)
+	if !checkFileExists(configPath) {
+		if job.BuildConfig != "" {
+			_ = os.WriteFile(configPath, []byte(job.BuildConfig), 0600)
+		} else if job.BuildEngine != "" || job.BuildType != "" || job.Macros != "" || len(job.BuildFlags) > 0 || len(job.Prefer) > 0 || len(job.Preinstall) > 0 || len(job.Support) > 0 || len(job.Required) > 0 {
+			cfg := &manifest.ProjectConfig{
+				BuildEngine: job.BuildEngine,
+				BuildTypes:  []string{job.BuildType},
+				Macros:      job.Macros,
+				BuildFlags:  job.BuildFlags,
+				Prefer:      job.Prefer,
+				Preinstall:  job.Preinstall,
+				VMinstall:   job.VMinstall,
+				Support:     job.Support,
+				Required:    job.Required,
+				Order:       job.Order,
+			}
+			if rendered := RenderBuildConfig(cfg); rendered != "" {
+				_ = os.WriteFile(configPath, []byte(rendered), 0600)
+			}
 		}
 	}
 

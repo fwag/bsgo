@@ -45,8 +45,15 @@ type BuildJob struct {
 	Reason        string                 `json:"reason,omitempty"`
 	BuildType     string                 `json:"build_type,omitempty"`
 	BuildEngine   string                 `json:"build_engine,omitempty"`
+	BuildConfig   string                 `json:"build_config,omitempty"`
 	Macros        string                 `json:"macros,omitempty"`
 	BuildFlags    []string               `json:"build_flags,omitempty"`
+	Prefer        []string               `json:"prefer,omitempty"`
+	Preinstall    []string               `json:"preinstall,omitempty"`
+	VMinstall     []string               `json:"vminstall,omitempty"`
+	Support       []string               `json:"support,omitempty"`
+	Required      []string               `json:"required,omitempty"`
+	Order         []string               `json:"order,omitempty"`
 	Source        SourceSpec             `json:"source"`
 	Repositories  []RepositoryDependency `json:"repositories,omitempty"`
 	ChrootRPMs    []ChrootRPM            `json:"chroot_rpms"`
@@ -65,6 +72,7 @@ type RepositoryDependency struct {
 
 type SourceSpec struct {
 	GitURL     string `json:"git_url"`
+	Branch     string `json:"branch,omitempty"`
 	CommitSHA  string `json:"commit_sha"`
 	RecipePath string `json:"recipe_path"`
 }

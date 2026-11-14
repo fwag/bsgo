@@ -209,7 +209,7 @@ func (c *ProjectConfig) Merge(override *ProjectConfig) *ProjectConfig {
 		merged.RepoTypes = cloneSlice(override.RepoTypes)
 	}
 
-	merged.Prefer = mergeSlices(merged.Prefer, override.Prefer)
+	merged.Prefer = mergePreferSlices(merged.Prefer, override.Prefer)
 	merged.Ignore = mergeSlices(merged.Ignore, override.Ignore)
 	merged.Preinstall = mergeSlices(merged.Preinstall, override.Preinstall)
 	merged.VMinstall = mergeSlices(merged.VMinstall, override.VMinstall)
@@ -382,16 +382,67 @@ func cloneConflicts(c [][]string) [][]string {
 	return res
 }
 
+func cleanItemPrefix(item string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(item, "-"), "!")
+}
+
+func findCancelledItems(base, override []string) map[string]bool {
+	basePos := make(map[string]bool, len(base))
+	for _, item := range base {
+		if !strings.HasPrefix(item, "-") && !strings.HasPrefix(item, "!") {
+			basePos[item] = true
+		}
+	}
+	cancelled := make(map[string]bool)
+	for _, item := range override {
+		if strings.HasPrefix(item, "-") || strings.HasPrefix(item, "!") {
+			target := cleanItemPrefix(item)
+			if basePos[target] {
+				cancelled[target] = true
+			}
+		}
+	}
+	return cancelled
+}
+
+func appendPreferItems(result []string, items []string, cancelled map[string]bool, seen map[string]struct{}) []string {
+	for _, item := range items {
+		target := cleanItemPrefix(item)
+		if cancelled[target] {
+			continue
+		}
+		if _, exists := seen[item]; !exists {
+			seen[item] = struct{}{}
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func mergePreferSlices(base, override []string) []string {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	cancelled := findCancelledItems(base, override)
+	seen := make(map[string]struct{}, len(base)+len(override))
+	var result []string
+	result = appendPreferItems(result, base, cancelled, seen)
+	return appendPreferItems(result, override, cancelled, seen)
+}
+
 func mergeSlices(base, override []string) []string {
 	if len(base) == 0 && len(override) == 0 {
 		return nil
 	}
 	removals := make(map[string]struct{})
+	for _, item := range base {
+		if strings.HasPrefix(item, "-") || strings.HasPrefix(item, "!") {
+			removals[strings.TrimPrefix(strings.TrimPrefix(item, "-"), "!")] = struct{}{}
+		}
+	}
 	for _, item := range override {
-		if strings.HasPrefix(item, "-") {
-			removals[strings.TrimPrefix(item, "-")] = struct{}{}
-		} else if strings.HasPrefix(item, "!") {
-			removals[strings.TrimPrefix(item, "!")] = struct{}{}
+		if strings.HasPrefix(item, "-") || strings.HasPrefix(item, "!") {
+			removals[strings.TrimPrefix(strings.TrimPrefix(item, "-"), "!")] = struct{}{}
 		}
 	}
 
@@ -408,7 +459,8 @@ func mergeSlices(base, override []string) []string {
 		}
 	}
 	for _, item := range override {
-		if strings.HasPrefix(item, "-") || strings.HasPrefix(item, "!") {
+		clean := strings.TrimPrefix(strings.TrimPrefix(item, "-"), "!")
+		if _, removed := removals[clean]; removed {
 			continue
 		}
 		if _, exists := seen[item]; !exists {

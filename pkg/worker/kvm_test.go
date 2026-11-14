@@ -58,7 +58,7 @@ func TestKVMDiskAndSourceIsolation(t *testing.T) {
 	}
 
 	// 1. Verify sources are placed strictly in jobDir/sources, not jobDir root
-	specFile, err := sandbox.setupKVMSources(job, jobDir)
+	specFile, err := sandbox.setupKVMSources(context.Background(), job, jobDir)
 	if err != nil {
 		t.Fatalf("setupKVMSources failed: %v", err)
 	}

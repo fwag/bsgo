@@ -6,22 +6,29 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "Starting bsgo local dependencies via Podman..."
 
 # 1. NATS JetStream
-podman rm -f bsgo-nats 2>/dev/null || true
-podman run -d --name bsgo-nats -p 4222:4222 docker.io/library/nats:2.10-alpine -js
+if ! podman ps -q -f name=bsgo-nats | grep -q .; then
+  podman rm -f bsgo-nats 2>/dev/null || true
+  podman run -d --name bsgo-nats -p 4222:4222 docker.io/library/nats:2.10-alpine -js
+fi
 
 # 2. PostgreSQL
-podman rm -f bsgo-postgres 2>/dev/null || true
-podman run -d --name bsgo-postgres -p 5432:5432 \
-  -e POSTGRES_USER=bsgo \
-  -e POSTGRES_PASSWORD=password \
-  -e POSTGRES_DB=bsgodb \
-  docker.io/library/postgres:16-alpine
+if ! podman ps -q -f name=bsgo-postgres | grep -q .; then
+  podman rm -f bsgo-postgres 2>/dev/null || true
+  podman run -d --name bsgo-postgres -p 5432:5432 \
+    -v bsgo-pgdata:/var/lib/postgresql/data:Z \
+    -e POSTGRES_USER=bsgo \
+    -e POSTGRES_PASSWORD=password \
+    -e POSTGRES_DB=bsgodb \
+    docker.io/library/postgres:16-alpine
+fi
 
 # 3. Garage S3
-podman rm -f bsgo-garage 2>/dev/null || true
-podman run -d --name bsgo-garage -p 3900:3900 -p 3903:3903 \
-  -v "$DIR/garage.toml:/etc/garage.toml:ro,Z" \
-  docker.io/dxflrs/garage:v1.0.1 /garage server
+if ! podman ps -q -f name=bsgo-garage | grep -q .; then
+  podman rm -f bsgo-garage 2>/dev/null || true
+  podman run -d --name bsgo-garage -p 3900:3900 -p 3903:3903 \
+    -v "$DIR/garage.toml:/etc/garage.toml:ro,Z" \
+    docker.io/dxflrs/garage:v1.0.1 /garage server
+fi
 
 echo "Waiting for services to initialize..."
 sleep 2

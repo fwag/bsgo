@@ -98,27 +98,44 @@ int bsgo_add_package(Repo *repo, const char *name, const char *evr, const char *
     return 0;
 }
 
-static Id select_provider(Pool *pool, Queue *plist, int num_prefers, const char **prefers, int *ambiguous) {
+static Id select_provider(Pool *pool, Queue *plist, int num_prefers, const char **prefers, int *ambiguous, const char *req_name) {
     *ambiguous = 0;
     if (plist->count == 0) return 0;
     if (plist->count == 1) return plist->elements[0];
 
-    Id pref_chosen = 0;
-    int pref_matches = 0;
-    for (int i = 0; i < plist->count; i++) {
-        Solvable *s = pool->solvables + plist->elements[i];
-        const char *sname = pool_id2str(pool, s->name);
-        for (int j = 0; j < num_prefers; j++) {
-            if (strcmp(sname, prefers[j]) == 0) {
-                pref_chosen = plist->elements[i];
-                pref_matches++;
-                break;
+    // 1. Exact name match: if requirement name matches a candidate package name
+    if (req_name && *req_name) {
+        for (int i = 0; i < plist->count; i++) {
+            Solvable *s = pool->solvables + plist->elements[i];
+            const char *sname = pool_id2str(pool, s->name);
+            if (sname && strcmp(sname, req_name) == 0) {
+                return plist->elements[i];
             }
         }
     }
 
-    if (pref_matches == 1) {
-        return pref_chosen;
+    // 2. Priority-ordered matching against prefer list
+    for (int j = 0; j < num_prefers; j++) {
+        if (!prefers[j] || prefers[j][0] == '-') {
+            continue; // Skip empty or negative prefers (e.g. -package)
+        }
+        for (int i = 0; i < plist->count; i++) {
+            Solvable *s = pool->solvables + plist->elements[i];
+            const char *sname = pool_id2str(pool, s->name);
+            if (sname && strcmp(sname, prefers[j]) == 0) {
+                return plist->elements[i];
+            }
+        }
+    }
+
+    // 3. Common standard library provider heuristics
+    for (int i = 0; i < plist->count; i++) {
+        Solvable *s = pool->solvables + plist->elements[i];
+        const char *sname = pool_id2str(pool, s->name);
+        if (sname && (strcmp(sname, "glibc") == 0 || strcmp(sname, "bash") == 0 ||
+                      strcmp(sname, "coreutils") == 0 || strcmp(sname, "filesystem") == 0)) {
+            return plist->elements[i];
+        }
     }
 
     *ambiguous = 1;
@@ -202,10 +219,13 @@ ExpansionOutcome bsgo_expand(Pool *pool,
 
     while (todo.count > 0) {
         Id req_id = queue_shift(&todo);
-        if (req_id > 0 && req_id < pool->ss.nstrings && MAPTST(&visited_reqs, req_id)) {
+        if (req_id <= 0 || req_id == SOLVABLE_PREREQMARKER || req_id == SOLVABLE_FILEMARKER) {
             continue;
         }
-        if (req_id > 0 && req_id < pool->ss.nstrings) {
+        if (req_id < pool->ss.nstrings && MAPTST(&visited_reqs, req_id)) {
+            continue;
+        }
+        if (req_id < pool->ss.nstrings) {
             MAPSET(&visited_reqs, req_id);
         }
 
@@ -234,7 +254,8 @@ ExpansionOutcome bsgo_expand(Pool *pool,
 
         if (!chosen) {
             int ambiguous = 0;
-            chosen = select_provider(pool, &plist, num_prefers, prefers, &ambiguous);
+            const char *req_name = pool_id2str(pool, req_id);
+            chosen = select_provider(pool, &plist, num_prefers, prefers, &ambiguous, req_name);
             if (ambiguous) {
                 outcome.status = BSGO_SOLV_ERR_CHOICE;
                 outcome.err_detail = strdup(pool_id2str(pool, req_id));
@@ -252,7 +273,9 @@ ExpansionOutcome bsgo_expand(Pool *pool,
             if (s->requires) {
                 Id *rp = s->repo->idarraydata + s->requires;
                 while (*rp) {
-                    queue_push(&todo, *rp);
+                    if (*rp != SOLVABLE_PREREQMARKER && *rp != SOLVABLE_FILEMARKER) {
+                        queue_push(&todo, *rp);
+                    }
                     rp++;
                 }
             }

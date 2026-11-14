@@ -4,8 +4,10 @@
 worker:
   id: "worker-local-01"
   arch: "x86_64"
-  work_dir: "/tmp/bsgo-worker"
-  cache_dir: "/tmp/bsgo-worker/cache"
+  work_dir: "/var/cache/bsgo/worker"
+  state_dir: "/run/bsgo/worker"
+  cache_dir: "/var/cache/bsgo/worker/cache"
+  disk_dir: "/var/cache/bsgo/worker/disks"
 
 nats:
   url: "nats://localhost:4222"
@@ -20,19 +22,22 @@ storage:
 # Sandbox Execution Engine
 sandbox:
   # Supported modes:
+  #   "obs-build" : Full /usr/bin/build with standard Linux chroot isolation (fastest, native speed)
+  #   "kvm"       : Sterile hardware-assisted QEMU/KVM micro-VMs
   #   "rpmbuild"  : Direct host rpmbuild (rootless, instant local developer loop)
-  #   "obs-build" : Full /usr/bin/build with sterile VM / Container isolation
-  mode: "rpmbuild"
+  mode: "obs-build"
   obs_build_bin: "/usr/bin/build"
 
   # QEMU / KVM Micro-VM Driver (Bare-Metal Production Nodes)
   kvm:
     vm_type: "kvm"
     device: "/dev/kvm"
-    kernel: "/boot/vmlinuz"
-    initrd: "/boot/initrd"
     memory_mb: 4096
     vcpus: 4
+    user: "qemu"
+    vm_args: "-sandbox on -net none"
+    aio: "io_uring"
+    cache_mode: "unsafe"
 
   # Rootless Podman Container Driver (Workstations & Desktop CI)
   podman:

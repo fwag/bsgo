@@ -226,8 +226,23 @@ func (s *Scheduler) buildChrootRPMs(ctx context.Context, project, targetName str
 func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigger, targetName, arch string, pkg *manifest.PackageManifest, targetCfg manifest.BuildTarget, effectiveCfg *manifest.ProjectConfig, jobID string) (*v1.BuildJob, error) {
 	rpmmdRepos, externalURLs := s.ingestExternalRepos(ctx, targetCfg.Dependencies)
 
+	buildReqs := []string{pkg.Package.Name}
+	if len(pkg.Build.Requires) > 0 {
+		buildReqs = pkg.Build.Requires
+	}
+
+	var preferList []string
+	if effectiveCfg != nil && len(effectiveCfg.Prefer) > 0 {
+		preferList = make([]string, len(effectiveCfg.Prefer))
+		copy(preferList, effectiveCfg.Prefer)
+	}
+	// Ensure common standard providers for core capabilities to prevent choice errors
+	preferList = append(preferList, "filesystem", "glibc", "bash", "coreutils", "util-linux", "tar", "gzip", "system-user-root", "shadow")
+
 	req := solv.ExpansionRequest{
-		BuildRequires: []string{pkg.Package.Name},
+		BuildRequires: buildReqs,
+		Prefer:        preferList,
+		Architecture:  arch,
 		RPMMDRepos:    rpmmdRepos,
 	}
 
@@ -245,17 +260,7 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		buildEngine = "podman"
 	}
 
-	var buildFlags []string
-	var macros string
-	if effectiveCfg != nil {
-		if len(effectiveCfg.BuildFlags) > 0 {
-			buildFlags = make([]string, len(effectiveCfg.BuildFlags))
-			copy(buildFlags, effectiveCfg.BuildFlags)
-		}
-		macros = effectiveCfg.Macros
-	}
-
-	return &v1.BuildJob{
+	job := &v1.BuildJob{
 		JobID:        jobID,
 		Project:      trigger.Project,
 		Package:      trigger.Package,
@@ -265,10 +270,10 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		Reason:       trigger.Reason,
 		BuildType:    recipeType,
 		BuildEngine:  buildEngine,
-		Macros:       macros,
-		BuildFlags:   buildFlags,
+		Prefer:       preferList,
 		Source: v1.SourceSpec{
 			GitURL:     trigger.SourceGitURL,
+			Branch:     pkg.Source.Branch,
 			CommitSHA:  trigger.CommitSHA,
 			RecipePath: pkg.Source.Recipe,
 		},
@@ -284,7 +289,26 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 			S3Prefix: fmt.Sprintf("artifacts/%s/%s/%s/%s/", trigger.Project, targetName, arch, trigger.Package),
 		},
 		CreatedAtUnix: time.Now().Unix(),
-	}, nil
+	}
+	populateJobBuildConfig(job, effectiveCfg)
+	return job, nil
+}
+
+func populateJobBuildConfig(job *v1.BuildJob, effectiveCfg *manifest.ProjectConfig) {
+	if effectiveCfg == nil {
+		return
+	}
+	job.BuildConfig = manifest.RenderBuildConfig(effectiveCfg)
+	if len(effectiveCfg.BuildFlags) > 0 {
+		job.BuildFlags = make([]string, len(effectiveCfg.BuildFlags))
+		copy(job.BuildFlags, effectiveCfg.BuildFlags)
+	}
+	job.Macros = effectiveCfg.Macros
+	job.Preinstall = effectiveCfg.Preinstall
+	job.VMinstall = effectiveCfg.VMinstall
+	job.Support = effectiveCfg.Support
+	job.Required = effectiveCfg.Required
+	job.Order = effectiveCfg.Order
 }
 
 // DetectRecipeBuildType returns the build type based on the recipe filename or extension.

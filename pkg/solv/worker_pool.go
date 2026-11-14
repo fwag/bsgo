@@ -48,18 +48,18 @@ func (wp *WorkerPool) runWorker() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	pool, err := NewPool(wp.arch)
-	if err != nil {
-		return
-	}
-	defer pool.Close()
-
 	for {
 		select {
 		case <-wp.stop:
 			return
 		case job := <-wp.jobChan:
+			pool, err := NewPool(wp.arch)
+			if err != nil {
+				job.respChan <- workerResponse{result: nil, err: err}
+				continue
+			}
 			res, resErr := pool.Resolve(job.req)
+			pool.Close()
 			job.respChan <- workerResponse{result: res, err: resErr}
 		}
 	}
