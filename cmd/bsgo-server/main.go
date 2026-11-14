@@ -127,7 +127,7 @@ func runControlPlane(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js je
 		fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher)...\n")
 	}
 
-	startSchedulerAndDispatcher(ctx, cfg, nc, store, pubService)
+	startSchedulerAndDispatcher(ctx, cfg, nc, js, store, pubService)
 	startHTTPServer(ctx, cfg.HTTPPort, store, nc)
 
 	fmt.Printf("bsgo Control Plane is LIVE and listening for triggers and workers\n")
@@ -289,12 +289,13 @@ func (a *s3DoDAdapter) PutObject(ctx context.Context, key string, data []byte) e
 	return a.storage.UploadFile(ctx, tmpFile.Name(), key)
 }
 
-func startSchedulerAndDispatcher(ctx context.Context, cfg ServerConfig, nc *nats.Conn, store storage.Store, pubService *publisher.Publisher) {
+func startSchedulerAndDispatcher(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jetstream.JetStream, store storage.Store, pubService *publisher.Publisher) {
 	disp := dispatcher.NewDispatcher(dispatcher.NewFuncPublisher(func(subj string, data []byte) {
 		_ = nc.Publish(subj, data)
 	}), 30*time.Second)
 
 	gatekeeper := scheduler.NewMemoryGatekeeper()
+	reconcileGatekeeperFromHistory(ctx, js, gatekeeper)
 
 	subscribeWorkerHeartbeats(nc, disp)
 	subscribeJobStatus(nc, gatekeeper, disp)
@@ -320,6 +321,21 @@ func startSchedulerAndDispatcher(ctx context.Context, cfg ServerConfig, nc *nats
 	subscribeTriggers(ctx, nc, sched, disp, store)
 	subscribePublicationEvents(ctx, nc, cascade)
 	startDispatchLoop(ctx, disp, nc)
+
+	go func() {
+		time.Sleep(1 * time.Second)
+		prjs, err := store.ListProjects(ctx)
+		if err == nil {
+			for _, p := range prjs {
+				ev := v1.NewPublicationEvent(p.Project.Name, "standard", "x86_64", "", nil, "")
+				trigs, _ := cascade.ProcessPublicationEvent(ctx, ev)
+				if len(trigs) > 0 {
+					fmt.Printf("[%s] [CASCADE] Evaluated %d unresolvable packages on startup for %s\n",
+						time.Now().Format("15:04:05"), len(trigs), p.Project.Name)
+				}
+			}
+		}
+	}()
 }
 
 func subscribeWorkerHeartbeats(nc *nats.Conn, disp *dispatcher.Dispatcher) {
@@ -485,6 +501,56 @@ func (c *DiskS3Client) DeleteObject(_ context.Context, s3Key string) error {
 	dest := filepath.Clean(filepath.Join(c.rootDir, cleanKey))
 	_ = os.Remove(dest)
 	return nil
+}
+
+func reconcileGatekeeperFromHistory(ctx context.Context, js jetstream.JetStream, gk *scheduler.MemoryGatekeeper) {
+	if js == nil || gk == nil {
+		return
+	}
+	ctxTimeout, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	str, err := js.Stream(ctxTimeout, natsqueue.StreamJobStatus)
+	if err != nil {
+		return
+	}
+	info, err := str.Info(ctxTimeout)
+	if err != nil || info.State.Msgs == 0 {
+		return
+	}
+
+	cons, err := js.OrderedConsumer(ctxTimeout, natsqueue.StreamJobStatus, jetstream.OrderedConsumerConfig{
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+	})
+	if err != nil {
+		return
+	}
+	it, err := cons.Messages()
+	if err != nil {
+		return
+	}
+	defer it.Stop()
+
+	total := int(info.State.Msgs)
+	count := 0
+	for i := 0; i < total; i++ {
+		msg, err := it.Next()
+		if err != nil {
+			break
+		}
+		var st map[string]any
+		if err := json.Unmarshal(msg.Data(), &st); err == nil {
+			prj, _ := st["project"].(string)
+			pkg, _ := st["package"].(string)
+			phase, _ := st["phase"].(string)
+			updateGatekeeperStatus(gk, prj, pkg, phase)
+			count++
+		}
+	}
+	if count > 0 {
+		fmt.Printf("[%s] [GATEKEEPER] Reconciled %d historical job statuses from stream\n",
+			time.Now().Format("15:04:05"), count)
+	}
 }
 
 func updateGatekeeperStatus(gk *scheduler.MemoryGatekeeper, prjName, pkgName, phase string) {
