@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -79,6 +80,7 @@ type ProcessSandbox struct {
 	KVMCache    string
 	S3Storage   *s3.S3Storage
 	PublishFunc func(ctx context.Context, subject string, data []byte) error
+	repoMu      sync.Mutex
 }
 
 func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWriter io.Writer) (*ExecutionResult, error) {
@@ -500,7 +502,11 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 
 func (s *ProcessSandbox) ResolveJobRepositories(ctx context.Context, job *v1.BuildJob, w io.Writer) []string {
 	attachedRepos := make(map[string]bool)
-	args := s.attachJobRepositories(ctx, job.Repositories, attachedRepos, w)
+	jobID := ""
+	if job != nil {
+		jobID = job.JobID
+	}
+	args := s.attachJobRepositories(ctx, job.Repositories, jobID, attachedRepos, w)
 
 	arch := job.Architecture
 	if arch == "" {
@@ -529,11 +535,17 @@ func (s *ProcessSandbox) ResolveJobRepositories(ctx context.Context, job *v1.Bui
 	return args
 }
 
-func (s *ProcessSandbox) attachJobRepositories(ctx context.Context, repos []v1.RepositoryDependency, attached map[string]bool, w io.Writer) []string {
+func (s *ProcessSandbox) attachJobRepositories(
+	ctx context.Context,
+	repos []v1.RepositoryDependency,
+	jobID string,
+	attached map[string]bool,
+	w io.Writer,
+) []string {
 	var args []string
 	for _, repo := range repos {
 		if repo.S3Prefix != "" && s.S3Storage != nil {
-			if s3Arg := s.pullS3Repository(ctx, repo.S3Prefix, attached, w); s3Arg != "" {
+			if s3Arg := s.pullS3Repository(ctx, repo.S3Prefix, jobID, attached, w); s3Arg != "" {
 				args = append(args, "--repo", s3Arg)
 			}
 		}
@@ -546,10 +558,17 @@ func (s *ProcessSandbox) attachJobRepositories(ctx context.Context, repos []v1.R
 	return args
 }
 
-func (s *ProcessSandbox) pullS3Repository(ctx context.Context, prefix string, attached map[string]bool, w io.Writer) string {
+func (s *ProcessSandbox) pullS3Repository(ctx context.Context, prefix, jobID string, attached map[string]bool, w io.Writer) string {
+	s.repoMu.Lock()
 	cleanPrefix := strings.Trim(filepath.Clean(prefix), "/") + "/"
 	s3RepoDir := filepath.Join(s.WorkDir, "cache", "s3_repos", filepath.Clean(cleanPrefix))
 	count, err := s.S3Storage.DownloadPrefix(ctx, cleanPrefix, s3RepoDir)
+	var activeRepoDir string
+	if err == nil && count > 0 {
+		activeRepoDir = s.SnapshotRepoForJob(s3RepoDir, jobID)
+	}
+	s.repoMu.Unlock()
+
 	if err != nil {
 		fmt.Fprintf(w, "[%s] bsgo-worker: S3 download error for s3://bsgo-artifacts/%s: %v\n",
 			time.Now().Format("15:04:05"), cleanPrefix, err)
@@ -561,10 +580,74 @@ func (s *ProcessSandbox) pullS3Repository(ctx context.Context, prefix string, at
 		return ""
 	}
 
-	attached[s3RepoDir] = true
+	attached[activeRepoDir] = true
 	fmt.Fprintf(w, "[%s] bsgo-worker: pulled S3 repository from s3://bsgo-artifacts/%s (%d files)\n",
 		time.Now().Format("15:04:05"), cleanPrefix, count)
-	return s3RepoDir
+	return activeRepoDir
+}
+
+// SnapshotRepoForJob creates an isolated, frozen snapshot of the repository for the given job ID.
+func (s *ProcessSandbox) SnapshotRepoForJob(s3RepoDir, jobID string) string {
+	if jobID == "" {
+		return s3RepoDir
+	}
+	jobRepoDir := filepath.Join(s.WorkDir, "jobs", filepath.Clean(jobID), "repo_snapshot")
+	if _, err := os.Stat(filepath.Join(jobRepoDir, "repodata", "repomd.xml")); err == nil {
+		return jobRepoDir
+	}
+	if err := os.MkdirAll(jobRepoDir, 0750); err != nil {
+		return s3RepoDir
+	}
+
+	matches, _ := filepath.Glob(filepath.Join(s3RepoDir, "*.rpm"))
+	for _, m := range matches {
+		_ = os.Symlink(m, filepath.Join(jobRepoDir, filepath.Base(m)))
+	}
+
+	srcMeta := filepath.Join(s3RepoDir, "repodata")
+	destMeta := filepath.Join(jobRepoDir, "repodata")
+	if err := copyDir(srcMeta, destMeta); err != nil {
+		return s3RepoDir
+	}
+	return jobRepoDir
+}
+
+func copyDir(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dst, 0750); err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		srcFile := filepath.Join(src, entry.Name())
+		dstFile := filepath.Join(dst, entry.Name())
+		if err := copyFileContents(srcFile, dstFile); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyFileContents(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
 
 func (s *ProcessSandbox) discoverLocalRepositories(arch, target string, attached map[string]bool, w io.Writer) []string {

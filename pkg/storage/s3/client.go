@@ -2,6 +2,7 @@ package s3
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
+	awss3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 type S3Storage struct {
@@ -85,14 +87,28 @@ func (s *S3Storage) DownloadFile(ctx context.Context, s3Key, localPath string) e
 		return err
 	}
 
-	outFile, err := os.OpenFile(cleanPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	tmpPath := fmt.Sprintf("%s.tmp.%d", cleanPath, time.Now().UnixNano())
+	outFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
-	defer outFile.Close()
 
-	_, err = io.Copy(outFile, resp.Body)
-	return err
+	_, copyErr := io.Copy(outFile, resp.Body)
+	closeErr := outFile.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmpPath)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return closeErr
+	}
+
+	if err := os.Rename(tmpPath, cleanPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 func (s *S3Storage) Bucket() string {
@@ -130,31 +146,157 @@ func (s *S3Storage) DownloadMetadata(ctx context.Context, prefix, localDir strin
 	return err
 }
 
-func (s *S3Storage) DownloadPrefix(ctx context.Context, s3Prefix, localDir string) (int, error) {
+type repomdManifest struct {
+	Data []struct {
+		Type     string `xml:"type,attr"`
+		Location struct {
+			Href string `xml:"href,attr"`
+		} `xml:"location"`
+	} `xml:"data"`
+}
+
+func (s *S3Storage) listRPMObjects(ctx context.Context, s3Prefix string) ([]awss3types.Object, error) {
 	paginator := awss3.NewListObjectsV2Paginator(s.client, &awss3.ListObjectsV2Input{
 		Bucket: aws.String(s.bucket),
 		Prefix: aws.String(s3Prefix),
 	})
 
-	count := 0
+	var rpms []awss3types.Object
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return count, fmt.Errorf("failed to list s3 objects: %w", err)
+			return nil, fmt.Errorf("failed to list s3 objects: %w", err)
 		}
-
 		for _, obj := range page.Contents {
 			relPath := *obj.Key
 			if len(relPath) >= len(s3Prefix) {
 				relPath = relPath[len(s3Prefix):]
 			}
-			localDest := filepath.Join(localDir, relPath)
-			if err := s.DownloadFile(ctx, *obj.Key, localDest); err == nil {
-				count++
+			relClean := filepath.Clean(relPath)
+			if !strings.HasPrefix(relClean, "repodata/") && relClean != "repodata" {
+				rpms = append(rpms, obj)
 			}
 		}
 	}
+	return rpms, nil
+}
+
+func (s *S3Storage) downloadRPMsWithCache(ctx context.Context, s3Prefix, localDir string, rpms []awss3types.Object) int {
+	count := 0
+	for _, obj := range rpms {
+		relPath := (*obj.Key)[len(s3Prefix):]
+		dest := filepath.Join(localDir, relPath)
+		if isCachedFile(dest, obj.Size) {
+			count++
+			continue
+		}
+		if err := s.DownloadFile(ctx, *obj.Key, dest); err == nil {
+			count++
+		}
+	}
+	return count
+}
+
+func isCachedFile(path string, expectedSize *int64) bool {
+	if expectedSize == nil || *expectedSize <= 0 {
+		return false
+	}
+	fi, err := os.Stat(path)
+	return err == nil && fi.Size() == *expectedSize
+}
+
+func (s *S3Storage) DownloadPrefix(ctx context.Context, s3Prefix, localDir string) (int, error) {
+	rpms, err := s.listRPMObjects(ctx, s3Prefix)
+	if err != nil {
+		return 0, err
+	}
+
+	count := s.downloadRPMsWithCache(ctx, s3Prefix, localDir, rpms)
+
+	metaCount, err := s.downloadRepodataManifest(ctx, s3Prefix, localDir)
+	if err != nil {
+		return count, err
+	}
+	count += metaCount
+
 	return count, nil
+}
+
+func (s *S3Storage) downloadRepodataManifest(ctx context.Context, s3Prefix, localDir string) (int, error) {
+	stagingDir := filepath.Join(localDir, fmt.Sprintf(".repodata.stage.%d", time.Now().UnixNano()))
+	if err := os.MkdirAll(stagingDir, 0750); err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = os.RemoveAll(stagingDir)
+	}()
+
+	repomdKey := s3Prefix + "repodata/repomd.xml"
+	localRepomd := filepath.Join(stagingDir, "repomd.xml")
+	if err := s.DownloadFile(ctx, repomdKey, localRepomd); err != nil {
+		return 0, nil // No repodata published yet
+	}
+
+	_ = s.DownloadFile(ctx, s3Prefix+"repodata/repomd.xml.asc", filepath.Join(stagingDir, "repomd.xml.asc"))
+	_ = s.DownloadFile(ctx, s3Prefix+"repodata/repomd.xml.key", filepath.Join(stagingDir, "repomd.xml.key"))
+
+	repomdBytes, err := os.ReadFile(localRepomd)
+	if err != nil {
+		return 0, err
+	}
+
+	var manifest repomdManifest
+	if err := xml.Unmarshal(repomdBytes, &manifest); err != nil {
+		return 0, fmt.Errorf("failed to parse repomd.xml: %w", err)
+	}
+
+	count := 1
+	for _, entry := range manifest.Data {
+		href := entry.Location.Href
+		if href == "" {
+			continue
+		}
+		dest := filepath.Join(stagingDir, filepath.Base(href))
+		s3Key := s3Prefix + strings.TrimPrefix(href, "/")
+		if err := s.downloadWithRetry(ctx, s3Key, dest, 3); err != nil {
+			return 0, fmt.Errorf("failed to download manifest file %s: %w", s3Key, err)
+		}
+		count++
+	}
+
+	finalDir := filepath.Join(localDir, "repodata")
+	if err := atomicSwapDir(stagingDir, finalDir); err != nil {
+		return 0, fmt.Errorf("failed to atomically replace repodata: %w", err)
+	}
+
+	return count, nil
+}
+
+func (s *S3Storage) downloadWithRetry(ctx context.Context, s3Key, dest string, retries int) error {
+	var err error
+	for i := 0; i < retries; i++ {
+		err = s.DownloadFile(ctx, s3Key, dest)
+		if err == nil {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return err
+}
+
+func atomicSwapDir(stagingDir, finalDir string) error {
+	trashDir := fmt.Sprintf("%s.trash.%d", finalDir, time.Now().UnixNano())
+	if _, err := os.Stat(finalDir); err == nil {
+		if err := os.Rename(finalDir, trashDir); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(stagingDir, finalDir); err != nil {
+		_ = os.Rename(trashDir, finalDir)
+		return err
+	}
+	_ = os.RemoveAll(trashDir)
+	return nil
 }
 
 // S3ObjectInfo represents metadata for an object in an S3 bucket.

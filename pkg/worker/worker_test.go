@@ -370,6 +370,35 @@ func TestProcessSandboxDynamicRepositories(t *testing.T) {
 	}
 }
 
+func TestProcessSandboxRepoSnapshot(t *testing.T) {
+	tempDir := t.TempDir()
+	sandbox := &worker.ProcessSandbox{WorkDir: tempDir}
+
+	s3RepoDir := filepath.Join(tempDir, "cache", "s3_repos", "my-repo")
+	_ = os.MkdirAll(filepath.Join(s3RepoDir, "repodata"), 0750)
+	_ = os.WriteFile(filepath.Join(s3RepoDir, "pkg-1.0.rpm"), []byte("rpmcontent"), 0600)
+	_ = os.WriteFile(filepath.Join(s3RepoDir, "repodata", "repomd.xml"), []byte("<repomd>v1</repomd>"), 0600)
+
+	jobID := "job-snap-123"
+	jobRepo := sandbox.SnapshotRepoForJob(s3RepoDir, jobID)
+	if !strings.Contains(jobRepo, jobID) {
+		t.Fatalf("expected jobID in snapshot path, got %s", jobRepo)
+	}
+
+	snapRepomd := filepath.Join(jobRepo, "repodata", "repomd.xml")
+	data, err := os.ReadFile(snapRepomd)
+	if err != nil || string(data) != "<repomd>v1</repomd>" {
+		t.Fatalf("unexpected snapshot repomd content: %s, err: %v", string(data), err)
+	}
+
+	// Mutate original repomd.xml and ensure snapshot is immune
+	_ = os.WriteFile(filepath.Join(s3RepoDir, "repodata", "repomd.xml"), []byte("<repomd>v2</repomd>"), 0600)
+	dataAfter, _ := os.ReadFile(snapRepomd)
+	if string(dataAfter) != "<repomd>v1</repomd>" {
+		t.Fatalf("snapshot repomd was altered after mutation: %s", string(dataAfter))
+	}
+}
+
 func TestRenderBuildConfig(t *testing.T) {
 	cfg := &manifest.ProjectConfig{
 		Preinstall:   []string{"bash", "coreutils", "rpm"},
