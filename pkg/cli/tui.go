@@ -136,7 +136,7 @@ func (m *DashboardModel) loadHistoricalJobs(ctx context.Context) {
 		return
 	}
 
-	loadCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	loadCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	m.replayTriggers(loadCtx)
@@ -144,44 +144,66 @@ func (m *DashboardModel) loadHistoricalJobs(ctx context.Context) {
 }
 
 func (m *DashboardModel) replayTriggers(ctx context.Context) {
-	cons, err := m.js.OrderedConsumer(ctx, natsqueue.StreamTriggers, jetstream.OrderedConsumerConfig{
-		DeliverPolicy: jetstream.DeliverAllPolicy,
-	})
-	if err != nil {
-		return
-	}
-
-	batch, err := cons.FetchNoWait(1000)
-	if err != nil {
-		return
-	}
-
-	for msg := range batch.Messages() {
+	m.replayStream(ctx, natsqueue.StreamTriggers, func(data []byte) {
 		var trig v1.BuildTrigger
-		if err := json.Unmarshal(msg.Data(), &trig); err == nil {
+		if err := json.Unmarshal(data, &trig); err == nil {
 			m.handleTrigger(trig)
 		}
-	}
+	})
 }
 
 func (m *DashboardModel) replayJobStatuses(ctx context.Context) {
-	cons, err := m.js.OrderedConsumer(ctx, natsqueue.StreamJobStatus, jetstream.OrderedConsumerConfig{
+	m.replayStream(ctx, natsqueue.StreamJobStatus, func(data []byte) {
+		var st map[string]any
+		if err := json.Unmarshal(data, &st); err == nil {
+			m.handleStatusUpdate(st)
+		}
+	})
+}
+
+func (m *DashboardModel) replayStream(ctx context.Context, streamName string, handler func([]byte)) {
+	str, err := m.js.Stream(ctx, streamName)
+	if err != nil {
+		return
+	}
+	info, err := str.Info(ctx)
+	if err != nil || info.State.Msgs == 0 {
+		return
+	}
+
+	cons, err := m.js.OrderedConsumer(ctx, streamName, jetstream.OrderedConsumerConfig{
 		DeliverPolicy: jetstream.DeliverAllPolicy,
 	})
 	if err != nil {
 		return
 	}
 
-	batch, err := cons.FetchNoWait(1000)
-	if err != nil {
-		return
-	}
-
-	for msg := range batch.Messages() {
-		var st map[string]any
-		if err := json.Unmarshal(msg.Data(), &st); err == nil {
-			m.handleStatusUpdate(st)
+	total := int(info.State.Msgs)
+	received := 0
+	for received < total {
+		select {
+		case <-ctx.Done():
+			return
+		default:
 		}
+
+		batchSize := 1000
+		if remaining := total - received; remaining < batchSize {
+			batchSize = remaining
+		}
+		batch, err := cons.FetchNoWait(batchSize)
+		if err != nil {
+			break
+		}
+		count := 0
+		for msg := range batch.Messages() {
+			count++
+			handler(msg.Data())
+		}
+		if count == 0 {
+			break
+		}
+		received += count
 	}
 }
 
