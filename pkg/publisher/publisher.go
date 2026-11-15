@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/openSUSE/bsgo/pkg/bininfo"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
 	"github.com/openSUSE/bsgo/pkg/solv"
@@ -228,8 +230,9 @@ func (p *Publisher) processRPMSubRepos(ctx context.Context, req PublishRequest, 
 		}
 	}
 
-	stdDir := SubRepoWorkDir(p.workDir, req.Project, req.Target, req.Architecture, SubRepoStandard)
-	_ = p.updateTargetSolvCache(ctx, req, stdDir)
+	if err := p.updateTargetSolvCache(ctx, req); err != nil {
+		return nil, err
+	}
 
 	return res, nil
 }
@@ -407,62 +410,93 @@ func (p *Publisher) purgeDeletedRPMs(ctx context.Context, subRepoDir, s3Prefix s
 	}
 }
 
-func (p *Publisher) updateTargetSolvCache(ctx context.Context, req PublishRequest, repoDir string) error {
+// updateTargetSolvCache rebuilds the target's solv blob from the CURRENT set
+// of per-package bininfo.json objects under the target's artifact prefix. Each
+// package directory holds exactly one bininfo.json, so a new build of a
+// package replaces the binary set of its previous build.
+func (p *Publisher) updateTargetSolvCache(ctx context.Context, req PublishRequest) error {
 	if p.store == nil {
 		return nil
 	}
-
-	deletedMap := make(map[string]bool)
-	for _, del := range req.DeletedRPMs {
-		deletedMap[filepath.Base(del)] = true
+	infos, err := p.collectBinInfos(ctx, req)
+	if err != nil {
+		return err
 	}
-
-	rpmMap := make(map[string]bool)
-	for _, path := range req.NewRPMPaths {
-		base := filepath.Base(path)
-		if !deletedMap[base] && ClassifyRPM(path) == SubRepoStandard {
-			rpmMap[base] = true
-		}
-	}
-	if matches, err := filepath.Glob(filepath.Join(repoDir, "*.rpm")); err == nil {
-		for _, m := range matches {
-			base := filepath.Base(m)
-			if !deletedMap[base] && ClassifyRPM(m) == SubRepoStandard {
-				rpmMap[base] = true
-			}
-		}
-	}
-
-	var specs []solv.PackageSpec
-	for rpm := range rpmMap {
-		specs = append(specs, solv.ParseRPMFilename(rpm))
-	}
-	if len(specs) == 0 {
+	if len(infos) == 0 {
 		return nil
 	}
 
-	var existingBlob []byte
-	existing, err := p.store.GetTargetSolv(ctx, req.Project, req.Target, req.Architecture)
-	if err == nil && existing != nil {
-		existingBlob = existing.SolvBlob
-	}
-
 	repoName := fmt.Sprintf("%s:%s", req.Project, req.Target)
-	newBlob, err := solv.MergeAndDumpSolv(existingBlob, req.Architecture, repoName, specs)
+	newBlob, err := solv.BuildSolv(req.Architecture, infos)
 	if err != nil {
 		return fmt.Errorf("failed generating solv cache for %s: %w", repoName, err)
 	}
 
-	hash := fmt.Sprintf("%x", sha256.Sum256(newBlob))
 	solvRecord := &storage.TargetSolv{
 		ProjectName: req.Project,
 		TargetName:  req.Target,
 		Arch:        req.Architecture,
 		SolvBlob:    newBlob,
-		ContentHash: hash,
+		ContentHash: fmt.Sprintf("%x", sha256.Sum256(newBlob)),
 	}
-
 	return p.store.SaveTargetSolv(ctx, solvRecord)
+}
+
+// collectBinInfos reads every package's bininfo.json below
+// artifacts/<project>/<target>/<arch>/ and returns the infos of the standard
+// sub-repository that are not deleted by req.
+func (p *Publisher) collectBinInfos(ctx context.Context, req PublishRequest) ([]bininfo.BinInfo, error) {
+	prefix := fmt.Sprintf("artifacts/%s/%s/%s/", req.Project, req.Target, req.Architecture)
+	objs, err := p.s3Client.ListObjects(ctx, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("listing bininfo under %s: %w", prefix, err)
+	}
+	deleted := make(map[string]bool)
+	for _, del := range req.DeletedRPMs {
+		deleted[filepath.Base(del)] = true
+	}
+	if err := os.MkdirAll(p.workDir, 0o750); err != nil {
+		return nil, fmt.Errorf("creating work dir: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp(p.workDir, "bininfo-")
+	if err != nil {
+		return nil, fmt.Errorf("creating bininfo scratch dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	var infos []bininfo.BinInfo
+	for i, obj := range objs {
+		rel := strings.TrimPrefix(obj.Key, prefix)
+		if path.Base(rel) != bininfo.FileName || strings.Count(rel, "/") != 1 {
+			continue
+		}
+		list, err := p.fetchBinInfo(ctx, obj.Key, filepath.Join(tmpDir, fmt.Sprintf("%d.json", i)))
+		if err != nil {
+			return nil, err
+		}
+		for _, info := range list {
+			if !deleted[info.Filename] && ClassifyRPM(info.Filename) == SubRepoStandard {
+				infos = append(infos, info)
+			}
+		}
+	}
+	return infos, nil
+}
+
+func (p *Publisher) fetchBinInfo(ctx context.Context, key, local string) ([]bininfo.BinInfo, error) {
+	if err := p.s3Client.DownloadFile(ctx, key, local); err != nil {
+		return nil, fmt.Errorf("downloading %s: %w", key, err)
+	}
+	// #nosec G304 -- local is a file created by DownloadFile in our scratch dir
+	data, err := os.ReadFile(local)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", key, err)
+	}
+	list, err := bininfo.Unmarshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", key, err)
+	}
+	return list, nil
 }
 
 func (p *Publisher) processHelmRepo(ctx context.Context, repoDir, s3Prefix string) (string, error) {
