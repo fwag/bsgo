@@ -1,0 +1,4 @@
+<multibuild>
+  <package>addons</package>
+  <package>qt6</package>
+</multibuild>
