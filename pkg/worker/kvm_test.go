@@ -58,7 +58,7 @@ func TestKVMDiskAndSourceIsolation(t *testing.T) {
 	}
 
 	// 1. Verify sources are placed strictly in jobDir/sources, not jobDir root
-	specFile, err := sandbox.setupKVMSources(context.Background(), job, jobDir)
+	specFile, _, err := sandbox.setupKVMSources(context.Background(), job, jobDir, io.Discard)
 	if err != nil {
 		t.Fatalf("setupKVMSources failed: %v", err)
 	}
@@ -365,12 +365,12 @@ func TestVerifyChrootRPMsValidation(t *testing.T) {
 		t.Errorf("expected verification success for authentic hash, got: %v", err)
 	}
 
-	// 2. Mock hash -> bypassed without error
-	mockList := []v1.ChrootRPM{
+	// 2. Legacy placeholder digest is no longer special: it is a mismatch
+	placeholderList := []v1.ChrootRPM{
 		{Filename: "curl-8.1.0-1.x86_64.rpm", SHA256: "mock-sha256-digest"},
 	}
-	if err := VerifyChrootRPMs(tmpDir, mockList); err != nil {
-		t.Errorf("expected mock hash to be skipped, got: %v", err)
+	if err := VerifyChrootRPMs(tmpDir, placeholderList); err == nil {
+		t.Errorf("expected placeholder digest to be rejected as a mismatch")
 	}
 
 	// 3. Tampered / mismatched hash -> error

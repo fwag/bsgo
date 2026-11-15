@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,20 +17,10 @@ import (
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 )
 
-func (s *ProcessSandbox) collectKVMArtifacts(ctx context.Context, buildRoot, jobDir string, job *v1.BuildJob, w io.Writer, start time.Time) (*ExecutionResult, error) {
-	pkgDir := filepath.Join(jobDir, "packages")
-	_ = os.MkdirAll(pkgDir, 0750)
-
-	target, arch, err := jobTargetArch(job)
-	if err != nil {
-		return &ExecutionResult{ExitCode: 1}, err
-	}
-
-	localRepo := filepath.Join(s.WorkDir, "repos", job.Project, target, arch)
-	_ = os.MkdirAll(localRepo, 0750)
-
-	var artifacts []v1.ChrootRPM
-	patterns := []string{
+// kvmArtifactPatterns lists where obs-build leaves its results inside the
+// build root.
+func kvmArtifactPatterns(buildRoot string) []string {
+	return []string{
 		filepath.Join(buildRoot, ".build.packages/RPMS/*/*.rpm"),
 		filepath.Join(buildRoot, "usr/src/packages/RPMS/*/*.rpm"),
 		filepath.Join(buildRoot, ".build.packages/OTHER/*.iso"),
@@ -38,16 +29,49 @@ func (s *ProcessSandbox) collectKVMArtifacts(ctx context.Context, buildRoot, job
 		filepath.Join(buildRoot, ".build.packages/OTHER/*.tar*"),
 		filepath.Join(buildRoot, ".build.packages/OTHER/*.tgz"),
 	}
-	for _, p := range patterns {
+}
+
+// artifactPrefix is the S3 prefix of one build's results:
+// artifacts/<project>/<target>/<arch>/<package[:flavor]>/.
+func artifactPrefix(job *v1.BuildJob, target, arch string) string {
+	pkg := job.Package
+	if job.BuildInfo != nil && job.BuildInfo.Flavor != "" {
+		pkg += ":" + job.BuildInfo.Flavor
+	}
+	return fmt.Sprintf("artifacts/%s/%s/%s/%s/", job.Project, target, arch, pkg)
+}
+
+func (s *ProcessSandbox) collectKVMArtifacts(ctx context.Context, buildRoot, jobDir string, job *v1.BuildJob, commit string, w io.Writer, start time.Time) (*ExecutionResult, error) {
+	pkgDir := filepath.Join(jobDir, "packages")
+	_ = os.MkdirAll(pkgDir, 0750)
+
+	target, arch, err := jobTargetArch(job)
+	if err != nil {
+		return &ExecutionResult{ExitCode: 1}, err
+	}
+
+	var artifacts []v1.ChrootRPM
+	for _, p := range kvmArtifactPatterns(buildRoot) {
 		arts := collectRPMsFromPattern(p, pkgDir, job.Project, job.Package, "extracted KVM artifact", w)
 		artifacts = append(artifacts, arts...)
 	}
+
+	if job.BuildInfo != nil {
+		return s.publishHermeticResults(ctx, buildRoot, jobDir, pkgDir, job, artifacts, commit, w, start)
+	}
+
+	localRepo := filepath.Join(s.WorkDir, "repos", job.Project, target, arch)
+	_ = os.MkdirAll(localRepo, 0750)
 
 	if err := s.uploadAndPublishArtifacts(ctx, job, pkgDir, target, arch, artifacts, w); err != nil {
 		return &ExecutionResult{ExitCode: 1}, err
 	}
 
-	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
+	res, err := finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
+	if res != nil {
+		res.SourceCommit = commit
+	}
+	return res, err
 }
 
 // uploadBinInfo extracts the RPM headers of every produced RPM and uploads
@@ -78,7 +102,7 @@ func (s *ProcessSandbox) uploadBinInfo(ctx context.Context, job *v1.BuildJob, pk
 	if s.S3Storage == nil {
 		return nil
 	}
-	key := fmt.Sprintf("artifacts/%s/%s/%s/%s/%s", job.Project, target, arch, job.Package, bininfo.FileName)
+	key := artifactPrefix(job, target, arch) + bininfo.FileName
 	if err := s.S3Storage.UploadFile(ctx, local, key); err != nil {
 		return fmt.Errorf("failed uploading %s to S3: %w", bininfo.FileName, err)
 	}
@@ -94,14 +118,15 @@ func (s *ProcessSandbox) uploadAndPublishArtifacts(ctx context.Context, job *v1.
 		return err
 	}
 	if s.S3Storage != nil {
-		for _, a := range artifacts {
+		for i, a := range artifacts {
 			src := filepath.Join(pkgDir, a.Filename)
-			s3Key := fmt.Sprintf("artifacts/%s/%s/%s/%s/%s", job.Project, target, arch, job.Package, a.Filename)
+			s3Key := artifactPrefix(job, target, arch) + a.Filename
 			if err := s.S3Storage.UploadFile(ctx, src, s3Key); err != nil {
 				fmt.Fprintf(w, "[%s] bsgo-worker: failed uploading artifact %s to S3: %v\n",
 					time.Now().Format("15:04:05"), a.Filename, err)
 				return fmt.Errorf("failed uploading artifact to S3: %w", err)
 			}
+			artifacts[i].S3Key = s3Key
 			artifactPaths = append(artifactPaths, src)
 			artifactKeys = append(artifactKeys, s3Key)
 			fmt.Fprintf(w, "[%s] bsgo-worker: uploaded RPM artifact to s3://%s/%s\n",
@@ -277,4 +302,106 @@ func (s *ProcessSandbox) collectJobArtifacts(ctx context.Context, jobDir string,
 	}
 
 	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
+}
+
+// stageFile describes a file that already sits in pkgDir as a result artifact.
+func stageFile(pkgDir, name, key string) (v1.ChrootRPM, error) {
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(pkgDir, name)))
+	if err != nil {
+		return v1.ChrootRPM{}, err
+	}
+	return v1.ChrootRPM{Filename: name, S3Key: key, SHA256: v1.ComputeSHA256(data), SizeBytes: int64(len(data))}, nil
+}
+
+// copyIntoPkgDir copies an optional extra result (build log, _statistics)
+// into pkgDir. A missing source is not an error.
+func copyIntoPkgDir(src, pkgDir, name string) (bool, error) {
+	if !checkFileExists(src) {
+		return false, nil
+	}
+	if err := copyFileContents(src, filepath.Join(pkgDir, name)); err != nil {
+		return false, fmt.Errorf("staging %s: %w", name, err)
+	}
+	return true, nil
+}
+
+// stageExtras describes bininfo.json (when present) and stages the build log
+// and _statistics (when present) next to the binaries.
+func stageExtras(pkgDir, jobDir, buildRoot, prefix string) ([]v1.ChrootRPM, error) {
+	names := []string{}
+	if checkFileExists(filepath.Join(pkgDir, bininfo.FileName)) {
+		names = append(names, bininfo.FileName)
+	}
+	optional := []struct{ src, name string }{
+		{filepath.Join(jobDir, "build.log"), "build.log"},
+		{filepath.Join(buildRoot, ".build.packages/OTHER/_statistics"), "_statistics"},
+	}
+	for _, o := range optional {
+		ok, err := copyIntoPkgDir(o.src, pkgDir, o.name)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			names = append(names, o.name)
+		}
+	}
+	var entries []v1.ChrootRPM
+	for _, n := range names {
+		entry, err := stageFile(pkgDir, n, prefix+n)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+// publishHermeticResults uploads the results of a BuildInfo job: binaries,
+// bininfo.json, the SLSA provenance, the build log and _statistics, all under
+// artifacts/<project>/<target>/<arch>/<package[:flavor]>/. It deliberately
+// does not call the publisher: the indexer integrates the binaries from the
+// job-finished message.
+func (s *ProcessSandbox) publishHermeticResults(ctx context.Context, buildRoot, jobDir, pkgDir string, job *v1.BuildJob, artifacts []v1.ChrootRPM, commit string, w io.Writer, start time.Time) (*ExecutionResult, error) {
+	failed := func(err error) (*ExecutionResult, error) {
+		return &ExecutionResult{ExitCode: 1, SourceCommit: commit}, err
+	}
+	target, arch, err := jobTargetArch(job)
+	if err != nil {
+		return failed(err)
+	}
+	if s.S3Storage == nil {
+		return failed(errors.New("buildinfo job needs an object store to deliver its results"))
+	}
+	if len(artifacts) == 0 {
+		return failed(errors.New("build succeeded but produced no artifacts"))
+	}
+	prefix := artifactPrefix(job, target, arch)
+	if err := s.uploadBinInfo(ctx, job, pkgDir, target, arch, artifacts, w); err != nil {
+		return failed(err)
+	}
+	res, err := finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
+	if err != nil {
+		return failed(err)
+	}
+	extras, err := stageExtras(pkgDir, jobDir, buildRoot, prefix)
+	if err != nil {
+		return failed(err)
+	}
+	files := append(res.Artifacts, extras...)
+	for i := range files {
+		files[i].S3Key = prefix + files[i].Filename
+		if files[i].Filename == bininfo.FileName {
+			continue // already uploaded by uploadBinInfo
+		}
+		if err := s.S3Storage.UploadFile(ctx, filepath.Join(pkgDir, files[i].Filename), files[i].S3Key); err != nil {
+			return failed(fmt.Errorf("uploading %s: %w", files[i].Filename, err))
+		}
+	}
+	fmt.Fprintf(w, "[%s] bsgo-worker: uploaded %d result files to s3://%s/%s\n",
+		time.Now().Format("15:04:05"), len(files), s.S3Storage.Bucket(), prefix)
+	res.Artifacts = files
+	res.SourceCommit = commit
+	res.Meta = job.BuildInfo.Meta
+	res.Release = job.BuildInfo.Release
+	return res, nil
 }

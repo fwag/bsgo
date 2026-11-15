@@ -36,30 +36,103 @@ func (t *BuildTrigger) NormalizedPriority() string {
 }
 
 type BuildJob struct {
-	JobID         string                 `json:"job_id"`
-	Project       string                 `json:"project"`
-	Package       string                 `json:"package"`
-	Target        string                 `json:"target"`
-	Architecture  string                 `json:"architecture"`
-	Priority      int32                  `json:"priority"`
-	Reason        string                 `json:"reason,omitempty"`
-	BuildType     string                 `json:"build_type,omitempty"`
-	BuildEngine   string                 `json:"build_engine,omitempty"`
-	BuildConfig   string                 `json:"build_config,omitempty"`
-	Macros        string                 `json:"macros,omitempty"`
-	BuildFlags    []string               `json:"build_flags,omitempty"`
-	Prefer        []string               `json:"prefer,omitempty"`
-	Preinstall    []string               `json:"preinstall,omitempty"`
-	VMinstall     []string               `json:"vminstall,omitempty"`
-	Support       []string               `json:"support,omitempty"`
-	Required      []string               `json:"required,omitempty"`
-	Order         []string               `json:"order,omitempty"`
-	Source        SourceSpec             `json:"source"`
-	Repositories  []RepositoryDependency `json:"repositories,omitempty"`
-	ChrootRPMs    []ChrootRPM            `json:"chroot_rpms"`
-	Resources     ResourceRequirements   `json:"resources"`
-	Destination   ArtifactDestination    `json:"destination"`
-	CreatedAtUnix int64                  `json:"created_at_unix"`
+	JobID        string `json:"job_id"`
+	Project      string `json:"project"`
+	Package      string `json:"package"`
+	Target       string `json:"target"`
+	Architecture string `json:"architecture"`
+	Priority     int32  `json:"priority"`
+	Reason       string `json:"reason,omitempty"`
+	BuildType    string `json:"build_type,omitempty"`
+	BuildEngine  string `json:"build_engine,omitempty"`
+	// Legacy build inputs (BuildConfig .. Order, Repositories, ChrootRPMs).
+	// LEGACY: superseded by BuildInfo. Kept so the pre-WP4 scheduler keeps
+	// working; the worker only honours them when BuildInfo is nil.
+	BuildConfig  string                 `json:"build_config,omitempty"`
+	Macros       string                 `json:"macros,omitempty"`
+	BuildFlags   []string               `json:"build_flags,omitempty"`
+	Prefer       []string               `json:"prefer,omitempty"`
+	Preinstall   []string               `json:"preinstall,omitempty"`
+	VMinstall    []string               `json:"vminstall,omitempty"`
+	Support      []string               `json:"support,omitempty"`
+	Required     []string               `json:"required,omitempty"`
+	Order        []string               `json:"order,omitempty"`
+	Repositories []RepositoryDependency `json:"repositories,omitempty"`
+	ChrootRPMs   []ChrootRPM            `json:"chroot_rpms"`
+
+	Source SourceSpec `json:"source"`
+	// BuildInfo is the complete, pre-resolved build contract (the bs_sched
+	// "buildinfo"). When set the worker runs hermetically: it never resolves
+	// dependencies itself and never passes --repo to obs-build.
+	BuildInfo     *BuildInfo           `json:"buildinfo,omitempty"`
+	Resources     ResourceRequirements `json:"resources"`
+	Destination   ArtifactDestination  `json:"destination"`
+	CreatedAtUnix int64                `json:"created_at_unix"`
+}
+
+// BuildInfo carries everything the worker needs for a hermetic build. It is
+// filled in by the scheduler; the worker must not invent any of it.
+type BuildInfo struct {
+	// Config is the worker variant of the layered project config, written to
+	// .build.config and passed as --dist.
+	Config string `json:"config"`
+	// Bdeps is the ordered, fully expanded build dependency list.
+	Bdeps []Bdep `json:"bdeps"`
+	// ArchPath is the obs-build architecture path passed as --arch, for
+	// example "x86_64:i686:i586:noarch". Provided by the scheduler.
+	ArchPath string `json:"archpath"`
+	// Release is the --release value (OBS bcnt based).
+	Release string `json:"release,omitempty"`
+	// DistURL is the --disturl value.
+	DistURL string `json:"disturl,omitempty"`
+	// Flavor is the multibuild flavor (--buildflavor).
+	Flavor string `json:"flavor,omitempty"`
+	// ObsPackage is the --obspackage value.
+	ObsPackage string `json:"obspackage,omitempty"`
+	// SourceCommit is the git commit id the sources must be checked out at.
+	SourceCommit string `json:"source_commit"`
+	// Meta is the build meta (bdep identity digest) echoed back in the result.
+	Meta string `json:"meta,omitempty"`
+	// LogIdleLimit aborts the build after this many seconds without log
+	// output. Zero disables the limit. Enforced by the worker.
+	LogIdleLimit int32 `json:"logidlelimit,omitempty"`
+	// Jobs is the --jobs value. Zero lets the worker use Resources.VCPUs.
+	Jobs int32 `json:"jobs,omitempty"`
+}
+
+// Bdep is one build dependency binary. SHA256 is the binary identity.
+type Bdep struct {
+	Name    string     `json:"name"`
+	Epoch   string     `json:"epoch,omitempty"`
+	Version string     `json:"version"`
+	Release string     `json:"release"`
+	Arch    string     `json:"arch"`
+	SHA256  string     `json:"sha256"`
+	Size    int64      `json:"size"`
+	Source  BdepSource `json:"source"`
+
+	Preinstall  bool `json:"preinstall,omitempty"`
+	VMInstall   bool `json:"vminstall,omitempty"`
+	RunScripts  bool `json:"runscripts,omitempty"`
+	NoInstall   bool `json:"noinstall,omitempty"`
+	InstallOnly bool `json:"installonly,omitempty"`
+	// NotMeta excludes the bdep from the meta digest only. It has no rpmlist
+	// representation (bs_worker does not write it either).
+	NotMeta bool `json:"notmeta,omitempty"`
+}
+
+// BdepSource says where the worker fetches a bdep from. Exactly one of S3Key
+// (own repositories, in the artifact bucket) or URL (DoD binaries: remote
+// rpm-md base URL joined with the location href by the scheduler, absolute
+// http or https) must be set.
+type BdepSource struct {
+	S3Key string `json:"s3_key,omitempty"`
+	URL   string `json:"url,omitempty"`
+}
+
+// Filename is the on-disk name of the bdep inside jobs/<id>/bdeps/.
+func (b Bdep) Filename() string {
+	return b.Name + "-" + b.Version + "-" + b.Release + "." + b.Arch + ".rpm"
 }
 
 type RepositoryDependency struct {

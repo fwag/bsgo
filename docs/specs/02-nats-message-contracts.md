@@ -84,7 +84,61 @@ message BuildJob {
   ResourceRequirements resources = 9;
   ArtifactDestination destination = 10;
   int64 created_at_unix = 11;
+
+  // Pre-resolved build contract (WP5). When set, the worker runs hermetically:
+  // it fetches exactly these bdeps, passes --rpmlist and no --repo, and checks
+  // out exactly source_commit. When absent the worker falls back to the legacy
+  // fields (chroot_rpms, repositories, build_config, ...) and logs
+  // "legacy job without buildinfo" on stderr.
+  BuildInfo buildinfo = 12;
 }
+
+message BuildInfo {
+  string config = 1;          // worker variant of the layered prjconf -> .build.config, --dist
+  repeated Bdep bdeps = 2;    // ordered, fully expanded
+  string archpath = 3;        // --arch, e.g. "x86_64:i686:i586:noarch" (scheduler-provided)
+  string release = 4;         // --release
+  string disturl = 5;         // --disturl
+  string flavor = 6;          // --buildflavor (multibuild)
+  string obspackage = 7;      // --obspackage
+  string source_commit = 8;   // full commit id, fetched with "fetch --depth 1 origin <id>"
+  string meta = 9;            // echoed back in the job-finished message
+  int32 logidlelimit = 10;    // seconds without output before ABORTED; 0 = off (worker enforced)
+  int32 jobs = 11;            // --jobs; 0 = Resources.vcpus
+}
+
+message Bdep {
+  string name = 1;
+  string epoch = 2;
+  string version = 3;
+  string release = 4;
+  string arch = 5;
+  string sha256 = 6;          // binary identity, mandatory; mismatch fails the job
+  int64 size = 7;
+  BdepSource source = 8;      // exactly one of s3_key / url
+  bool preinstall = 9;        // rpmlist "preinstall:" line
+  bool vminstall = 10;        // rpmlist "vminstall:" line
+  bool runscripts = 11;       // rpmlist "runscripts:" line
+  bool noinstall = 12;        // rpmlist "noinstall:" line
+  bool installonly = 13;      // rpmlist "installonly:" line
+  bool notmeta = 14;          // meta digest only, not in the rpmlist
+}
+
+message BdepSource {
+  string s3_key = 1;          // own repositories, artifact bucket
+  string url = 2;             // DoD: absolute http(s) URL = rpm-md base URL + location href
+}
+```
+
+The legacy fields `chroot_rpms`, `repositories`, `build_config`, `macros`,
+`build_flags`, `prefer`, `preinstall`, `vminstall`, `support`, `required` and
+`order` are superseded by `buildinfo` and ignored whenever it is present.
+
+BuildInfo jobs are refused in `obs-build` (plain chroot) sandbox mode unless
+the worker sets `sandbox.allow_unisolated_chroot: true`, because obs-build
+chroot mode has no network isolation. KVM mode runs with `-net none`.
+
+```protobuf
 
 message SourceSpec {
   string git_url = 1;
@@ -213,6 +267,9 @@ message JobStatusUpdate {
   BuildStatistics statistics = 6;
   repeated ProducedArtifact artifacts = 7;
   int64 timestamp_unix = 8;
+  string source_commit = 9;   // exact commit built (provenance); BuildInfo jobs only
+  string meta = 10;           // BuildInfo.meta echoed back
+  string release = 11;        // BuildInfo.release echoed back
 }
 
 message BuildStatistics {
@@ -232,6 +289,19 @@ message ProducedArtifact {
   string sha256 = 4;
 }
 ```
+
+Implementation notes (wire format of the current worker): the status message is
+a JSON object on `bsgo.status` with `phase` in `SUCCEEDED | FAILED | ABORTED`,
+`exit_code`, `reason`, `artifacts`, `total_seconds`, and for BuildInfo jobs
+`source_commit`, `meta` and `release`. `ABORTED` (with `reason`) is reported for
+the job timeout (`resources.timeout_seconds`), the log idle limit
+(`buildinfo.logidlelimit`), an abort control message, and a build killed by a
+signal; a build that exits non-zero is `FAILED`. For BuildInfo jobs the artifact
+list holds the binaries plus `bininfo.json`, `_slsa_provenance.json`,
+`build.log` and `_statistics` (when present), all uploaded under
+`artifacts/<project>/<target>/<arch>/<package[:flavor]>/`, with `s3_key` set to
+the real object key. The worker does not emit a publication request for
+BuildInfo jobs; the indexer integrates the binaries from this message.
 
 ### 3.7. Publication Request: `bsgo.publish.<type>.<project>.<target>.<arch>`
 Emitted by the Dispatcher or Scheduler when a build finishes with new artifacts.

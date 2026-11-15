@@ -310,6 +310,9 @@ func determineJobOutcome(jobCtx context.Context, execErr error, res *ExecutionRe
 	if jobCtx.Err() != nil {
 		return "ABORTED", 137
 	}
+	if res != nil && res.Aborted {
+		return "ABORTED", res.ExitCode
+	}
 	if execErr != nil || (res != nil && res.ExitCode != 0) {
 		if res != nil {
 			return "FAILED", res.ExitCode
@@ -332,13 +335,30 @@ func (w *WorkerDaemon) publishStatusUpdate(job *v1.BuildJob, phase string, exitC
 	}
 	if execErr != nil {
 		status["reason"] = execErr.Error()
+	} else if phase == "ABORTED" {
+		status["reason"] = "aborted by control message or worker shutdown"
 	}
 	if res != nil {
 		status["artifacts"] = res.Artifacts
 		status["total_seconds"] = res.TotalSeconds
+		addBuildProvenance(status, res)
 	}
 	data, _ := json.Marshal(status)
 	_ = w.nc.Publish("bsgo.status", data)
+}
+
+// addBuildProvenance adds the fields downstream consumers (indexer, build
+// state store) need: the exact source commit, the meta and the release.
+func addBuildProvenance(status map[string]any, res *ExecutionResult) {
+	if res.SourceCommit != "" {
+		status["source_commit"] = res.SourceCommit
+	}
+	if res.Meta != "" {
+		status["meta"] = res.Meta
+	}
+	if res.Release != "" {
+		status["release"] = res.Release
+	}
 }
 
 type natsLogWriter struct {

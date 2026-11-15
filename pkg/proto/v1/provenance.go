@@ -41,6 +41,7 @@ type SLSABuildDefinition struct {
 }
 
 type ResolvedDependency struct {
+	Name   string            `json:"name,omitempty"`
 	URI    string            `json:"uri"`
 	Digest map[string]string `json:"digest"`
 }
@@ -96,6 +97,17 @@ func GenerateSLSAProvenance(job *BuildJob, artifacts []ChrootRPM, builderID stri
 		})
 	}
 
+	externalSource := map[string]string{
+		"git_url":    job.Source.GitURL,
+		"commit_sha": job.Source.CommitSHA,
+		"recipe":     job.Source.RecipePath,
+	}
+	if bi := job.BuildInfo; bi != nil {
+		resolvedDeps = buildInfoDependencies(bi)
+		externalSource["commit_sha"] = bi.SourceCommit
+		externalSource["source_commit"] = bi.SourceCommit
+	}
+
 	builderURI := fmt.Sprintf("https://github.com/openSUSE/bsgo/worker/%s", builderID)
 	if builderID == "" {
 		builderURI = "https://github.com/openSUSE/bsgo/worker/unknown"
@@ -109,11 +121,7 @@ func GenerateSLSAProvenance(job *BuildJob, artifacts []ChrootRPM, builderID stri
 			BuildDefinition: SLSABuildDefinition{
 				BuildType: BSGOBuildType,
 				ExternalParameters: map[string]any{
-					"source": map[string]string{
-						"git_url":    job.Source.GitURL,
-						"commit_sha": job.Source.CommitSHA,
-						"recipe":     job.Source.RecipePath,
-					},
+					"source":       externalSource,
 					"target":       job.Target,
 					"architecture": job.Architecture,
 					"project":      job.Project,
@@ -138,4 +146,23 @@ func GenerateSLSAProvenance(job *BuildJob, artifacts []ChrootRPM, builderID stri
 			},
 		},
 	}
+}
+
+// buildInfoDependencies lists the exact build-time dependency binaries of a
+// BuildInfo job: name-version-release.arch with the sha256 and the place the
+// worker fetched it from.
+func buildInfoDependencies(bi *BuildInfo) []ResolvedDependency {
+	deps := make([]ResolvedDependency, 0, len(bi.Bdeps))
+	for _, b := range bi.Bdeps {
+		uri := b.Source.URL
+		if b.Source.S3Key != "" {
+			uri = "s3://" + b.Source.S3Key
+		}
+		deps = append(deps, ResolvedDependency{
+			Name:   b.Filename(),
+			URI:    uri,
+			Digest: map[string]string{"sha256": b.SHA256},
+		})
+	}
+	return deps
 }

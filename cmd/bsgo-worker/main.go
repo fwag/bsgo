@@ -55,18 +55,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Warning: failed to connect to S3 (%s): %v\n", cfg.S3Endpoint, err)
 	}
 
+	var store worker.ObjectStore
+	if s3Storage != nil && err == nil {
+		store = s3Storage
+	}
 	sandbox := &worker.ProcessSandbox{
-		WorkDir:     cfg.WorkDir,
-		StateDir:    cfg.StateDir,
-		DiskDir:     cfg.DiskDir,
-		CacheDir:    cfg.CacheDir,
-		SandboxMode: cfg.SandboxMode,
-		ObsBuildBin: cfg.ObsBuildBin,
-		KVMUser:     cfg.KVMUser,
-		KVMVMArgs:   cfg.KVMVMArgs,
-		KVMAio:      cfg.KVMAio,
-		KVMCache:    cfg.KVMCache,
-		S3Storage:   s3Storage,
+		WorkDir:               cfg.WorkDir,
+		StateDir:              cfg.StateDir,
+		DiskDir:               cfg.DiskDir,
+		CacheDir:              cfg.CacheDir,
+		SandboxMode:           cfg.SandboxMode,
+		ObsBuildBin:           cfg.ObsBuildBin,
+		KVMUser:               cfg.KVMUser,
+		KVMVMArgs:             cfg.KVMVMArgs,
+		KVMAio:                cfg.KVMAio,
+		KVMCache:              cfg.KVMCache,
+		S3Storage:             store,
+		AllowUnisolatedChroot: cfg.AllowUnisolatedChroot,
 		PublishFunc: func(_ context.Context, subject string, data []byte) error {
 			return nc.Publish(subject, data)
 		},
@@ -147,6 +152,7 @@ func applyFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile)
 		cfg.SandboxMode = fileCfg.Sandbox.Mode
 		cfg.Hardware.SandboxType = fileCfg.Sandbox.Mode
 	}
+	cfg.AllowUnisolatedChroot = fileCfg.Sandbox.AllowUnisolatedChroot
 	if fileCfg.Sandbox.ObsBuildBin != "" {
 		cfg.ObsBuildBin = fileCfg.Sandbox.ObsBuildBin
 	}

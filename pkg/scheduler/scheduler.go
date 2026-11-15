@@ -224,9 +224,6 @@ func (s *Scheduler) buildChrootRPMs(ctx context.Context, project, targetName str
 	var chrootRPMs []v1.ChrootRPM
 	for _, p := range pkgs {
 		digest := p.SHA256
-		if digest == "" {
-			digest = "mock-sha256-digest"
-		}
 		filename := fmt.Sprintf("%s-%s.%s.rpm", p.Name, p.EVR, p.Arch)
 		s3Key := fmt.Sprintf("repos/%s/%s/%s/%s", project, targetName, p.Arch, filename)
 

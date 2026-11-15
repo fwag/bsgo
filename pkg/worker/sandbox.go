@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,9 +72,48 @@ type ProcessSandbox struct {
 	KVMVMArgs   string
 	KVMAio      string
 	KVMCache    string
-	S3Storage   *s3.S3Storage
-	PublishFunc func(ctx context.Context, subject string, data []byte) error
-	repoMu      sync.Mutex
+	// S3Storage is the artifact store. nil disables all S3 interaction
+	// (legacy local development only; hermetic jobs require it).
+	S3Storage ObjectStore
+	// HTTPClient fetches DoD bdeps; nil selects a client with a long timeout.
+	HTTPClient *http.Client
+	// AllowUnisolatedChroot permits BuildInfo jobs in plain obs-build chroot
+	// mode. obs-build chroot mode has no network isolation, so the default
+	// is to refuse such jobs.
+	AllowUnisolatedChroot bool
+	PublishFunc           func(ctx context.Context, subject string, data []byte) error
+	repoMu                sync.Mutex
+}
+
+// ObjectStore is the subset of the S3 client the sandbox uses. *s3.S3Storage
+// implements it; tests use an in-memory fake.
+type ObjectStore interface {
+	GetObject(ctx context.Context, s3Key string) (io.ReadCloser, int64, string, error)
+	UploadFile(ctx context.Context, localPath, s3Key string) error
+	DownloadPrefix(ctx context.Context, s3Prefix, localDir string) (int, error)
+	Bucket() string
+}
+
+var _ ObjectStore = (*s3.S3Storage)(nil)
+
+// prepareJobInputs handles the per-contract pre-flight: BuildInfo jobs are
+// checked against the isolation policy, legacy jobs download and verify their
+// prerequisite RPMs as before.
+func (s *ProcessSandbox) prepareJobInputs(ctx context.Context, job *v1.BuildJob, w io.Writer) error {
+	if job.BuildInfo != nil {
+		if err := s.checkHermeticAllowed(job); err != nil {
+			fmt.Fprintf(w, "[%s] bsgo-worker: refusing job: %v\n", time.Now().Format("15:04:05"), err)
+			return err
+		}
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "bsgo-worker: warning: legacy job without buildinfo: %s\n", job.JobID)
+	s.downloadPrerequisiteRPMs(ctx, job.ChrootRPMs)
+	if err := VerifyChrootRPMs(s.CacheDir, job.ChrootRPMs); err != nil {
+		fmt.Fprintf(w, "[%s] bsgo-worker: integrity error: %v\n", time.Now().Format("15:04:05"), err)
+		return err
+	}
+	return nil
 }
 
 func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWriter io.Writer) (*ExecutionResult, error) {
@@ -108,10 +148,7 @@ func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWrite
 	fmt.Fprintf(multiWriter, "[%s] bsgo-worker: starting build job %s (%s/%s, mode: %s, engine: %s, type: %s)\n",
 		time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package, s.SandboxMode, job.BuildEngine, job.BuildType)
 
-	s.downloadPrerequisiteRPMs(ctx, job.ChrootRPMs)
-
-	if err := VerifyChrootRPMs(s.CacheDir, job.ChrootRPMs); err != nil {
-		fmt.Fprintf(multiWriter, "[%s] bsgo-worker: integrity error: %v\n", time.Now().Format("15:04:05"), err)
+	if err := s.prepareJobInputs(ctx, job, multiWriter); err != nil {
 		return nil, err
 	}
 

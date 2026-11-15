@@ -37,6 +37,9 @@ type WorkerConfig struct {
 	KVMVMArgs    string
 	KVMAio       string
 	KVMCache     string
+	// AllowUnisolatedChroot lets BuildInfo jobs run in plain obs-build chroot
+	// mode, which has no network isolation. Default deny.
+	AllowUnisolatedChroot bool
 }
 
 type WorkerConfigFile struct {
@@ -61,7 +64,10 @@ type WorkerConfigFile struct {
 	Sandbox struct {
 		Mode        string `yaml:"mode"`
 		ObsBuildBin string `yaml:"obs_build_bin"`
-		KVM         struct {
+		// AllowUnisolatedChroot permits hermetic (BuildInfo) jobs in chroot
+		// mode, which cannot isolate the network. Default false.
+		AllowUnisolatedChroot bool `yaml:"allow_unisolated_chroot"`
+		KVM                   struct {
 			VMType    string `yaml:"vm_type"`
 			Device    string `yaml:"device"`
 			Kernel    string `yaml:"kernel"`
@@ -103,6 +109,14 @@ type ExecutionResult struct {
 	PreinstallSeconds float64
 	MainBuildSeconds  float64
 	TotalSeconds      float64
+	// SourceCommit is the exact source commit the build ran on (provenance).
+	SourceCommit string
+	// Meta and Release echo BuildInfo.Meta and BuildInfo.Release.
+	Meta    string
+	Release string
+	// Aborted marks a job stopped from the outside (timeout, log idle limit,
+	// abort request, killed by a signal) as opposed to a genuine build failure.
+	Aborted bool
 }
 
 type Sandbox interface {
