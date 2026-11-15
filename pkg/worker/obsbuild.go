@@ -123,11 +123,21 @@ func (s *ProcessSandbox) obsBuildBin() string {
 	return s.ObsBuildBin
 }
 
+// jobBuildRoot returns the build root of a job. Its basename must be unique per
+// job: obs-build derives the systemd-nspawn machine name from it
+// ("obsbuild.<basename>", build-vm-nspawn), and two concurrent jobs with the
+// same machine name make the second one fail ("Mount point ... exists
+// already"). The job directory name is the job ID, a UUID, so "root-<id>" is
+// unique and stays within the 64-character machine name limit.
+func jobBuildRoot(jobDir string) string {
+	return filepath.Join(jobDir, "root-"+filepath.Base(jobDir))
+}
+
 // buildArgsFor prepares the inputs and the obs-build command line of a job:
 // the hermetic BuildInfo flow (fetch and verify bdeps, rpmlist, no --repo) or
 // the legacy flow.
 func (s *ProcessSandbox) buildArgsFor(ctx context.Context, job *v1.BuildJob, jobDir, specFile, vmDisk, vmSwap string, w io.Writer) ([]string, error) {
-	buildRoot := filepath.Join(jobDir, "build-root")
+	buildRoot := jobBuildRoot(jobDir)
 	if job.BuildInfo == nil {
 		cacheDir := filepath.Join(s.WorkDir, "cache")
 		_ = os.MkdirAll(cacheDir, 0o750)
@@ -157,7 +167,7 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 		return nil, fmt.Errorf("failed setting up package sources: %w", err)
 	}
 
-	buildRoot := filepath.Join(jobDir, "build-root")
+	buildRoot := jobBuildRoot(jobDir)
 	vmDisk, vmSwap, err := s.setupKVMDisks(job)
 	if err != nil {
 		return nil, fmt.Errorf("failed configuring VM disks: %w", err)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"strings"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -59,5 +60,23 @@ func TestDetermineJobOutcomeAborted(t *testing.T) {
 	phase, _ = determineJobOutcome(context.Background(), context.DeadlineExceeded, &ExecutionResult{ExitCode: 2})
 	if phase != "FAILED" {
 		t.Errorf("genuine failure reported as %s", phase)
+	}
+}
+
+func TestJobBuildRootUniqueMachineName(t *testing.T) {
+	tests := []struct {
+		jobDir, want string
+	}{
+		{"/w/jobs/a5bedcc7-eb9e-5c53-8317-0ba36072036f", "/w/jobs/a5bedcc7-eb9e-5c53-8317-0ba36072036f/root-a5bedcc7-eb9e-5c53-8317-0ba36072036f"},
+		{"/w/jobs/x", "/w/jobs/x/root-x"},
+	}
+	for _, tt := range tests {
+		got := jobBuildRoot(tt.jobDir)
+		if got != tt.want {
+			t.Errorf("jobBuildRoot(%q) = %q, want %q", tt.jobDir, got, tt.want)
+		}
+		if name := "obsbuild." + filepath.Base(got); len(name) > 64 {
+			t.Errorf("machine name %q exceeds 64 characters", name)
+		}
 	}
 }
