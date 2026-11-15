@@ -79,6 +79,7 @@ func main() {
 		CacheDir:              cfg.CacheDir,
 		SandboxMode:           cfg.SandboxMode,
 		ObsBuildBin:           cfg.ObsBuildBin,
+		HostArch:              cfg.Architecture,
 		KVMUser:               cfg.KVMUser,
 		KVMVMArgs:             cfg.KVMVMArgs,
 		KVMAio:                cfg.KVMAio,
@@ -123,6 +124,9 @@ func applyFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile)
 	}
 	if fileCfg.Worker.Arch != "" {
 		cfg.Architecture = fileCfg.Worker.Arch
+	}
+	if len(fileCfg.Worker.Archs) > 0 {
+		cfg.Archs = fileCfg.Worker.Archs
 	}
 	if fileCfg.Worker.WorkDir != "" {
 		cfg.WorkDir = fileCfg.Worker.WorkDir

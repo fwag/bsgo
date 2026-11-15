@@ -68,10 +68,13 @@ type ProcessSandbox struct {
 	CacheDir    string
 	SandboxMode string
 	ObsBuildBin string
-	KVMUser     string
-	KVMVMArgs   string
-	KVMAio      string
-	KVMCache    string
+	// HostArch is the architecture of the worker host; it selects the
+	// personality helper (linux32) for builds of 32 bit architectures.
+	HostArch  string
+	KVMUser   string
+	KVMVMArgs string
+	KVMAio    string
+	KVMCache  string
 	// S3Storage is the artifact store. nil disables all S3 interaction
 	// (legacy local development only; hermetic jobs require it).
 	S3Storage ObjectStore

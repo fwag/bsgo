@@ -197,8 +197,9 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 		_ = os.RemoveAll(filepath.Join(jobDir, "obs-cache"))
 	}()
 
-	fmt.Fprintf(w, "[%s] bsgo-worker: executing %s %s\n", time.Now().Format("15:04:05"), obsBin, strings.Join(args, " "))
-	run := runWatched(ctx, obsBin, args, jobDir, limitsFor(job), w)
+	bin, runArgs := personalityCommand(PersonalityHelper(s.HostArch, job.Architecture), obsBin, args)
+	fmt.Fprintf(w, "[%s] bsgo-worker: executing %s %s\n", time.Now().Format("15:04:05"), bin, strings.Join(runArgs, " "))
+	run := runWatched(ctx, bin, runArgs, jobDir, limitsFor(job), w)
 	if run.err != nil {
 		fmt.Fprintf(w, "[%s] bsgo-worker: KVM execution exited: %v\n", time.Now().Format("15:04:05"), run.err)
 		res := &ExecutionResult{ExitCode: run.exitCode, Aborted: run.aborted, SourceCommit: commit}
@@ -286,6 +287,19 @@ func watchIdle(iw *idleWriter, idle time.Duration, cancel context.CancelCauseFun
 			}
 		}
 	}
+}
+
+// personalityCommand puts the personality helper in front of the obs-build
+// command, like bs_worker does: obs-build itself never switches to the 32 bit
+// personality, so without linux32 an i586 build on an x86_64 host would see
+// uname -m = x86_64 and build 64 bit binaries. Under the helper obs-build
+// reports the host as i686; the KVM VM type resets the personality for
+// qemu itself (linux64 in build-vm-kvm).
+func personalityCommand(helper, obsBin string, args []string) (string, []string) {
+	if helper == "" {
+		return obsBin, args
+	}
+	return helper, append([]string{obsBin}, args...)
 }
 
 // runWatched runs bin in its own process group, enforcing the timeout and the

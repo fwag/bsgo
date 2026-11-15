@@ -18,20 +18,24 @@ func RenderBuildConfig(cfg *manifest.ProjectConfig) string {
 }
 
 type WorkerConfig struct {
-	WorkerID     string
+	WorkerID string
+	// Architecture is the host architecture.
 	Architecture string
-	NatsURL      string
-	S3Endpoint   string
-	S3Bucket     string
-	S3Region     string
-	S3AccessKey  string
-	S3SecretKey  string
-	WorkDir      string
-	StateDir     string
-	CacheDir     string
-	DiskDir      string
-	ObsBuildBin  string
-	Hardware     v1.WorkerHardware
+	// Archs are the architectures the worker advertises; empty means the
+	// BSCando set of Architecture (see DefaultArchs).
+	Archs       []string
+	NatsURL     string
+	S3Endpoint  string
+	S3Bucket    string
+	S3Region    string
+	S3AccessKey string
+	S3SecretKey string
+	WorkDir     string
+	StateDir    string
+	CacheDir    string
+	DiskDir     string
+	ObsBuildBin string
+	Hardware    v1.WorkerHardware
 	// HardwareOverrides are explicit capacity settings; they win over detection.
 	HardwareOverrides HardwareOverrides
 	SandboxMode       string
@@ -47,14 +51,26 @@ type WorkerConfig struct {
 	KeepFailedJobs bool
 }
 
+// BuildArchs returns the architectures the worker advertises: the explicit
+// list, else the BSCando set of the host architecture.
+func (c WorkerConfig) BuildArchs() []string {
+	if len(c.Archs) > 0 {
+		return append([]string(nil), c.Archs...)
+	}
+	return DefaultArchs(c.Architecture)
+}
+
 type WorkerConfigFile struct {
 	Worker struct {
-		ID       string `yaml:"id"`
-		Arch     string `yaml:"arch"`
-		WorkDir  string `yaml:"work_dir"`
-		StateDir string `yaml:"state_dir"`
-		CacheDir string `yaml:"cache_dir"`
-		DiskDir  string `yaml:"disk_dir"`
+		ID   string `yaml:"id"`
+		Arch string `yaml:"arch"`
+		// Archs lists the architectures this worker builds, for example
+		// [x86_64, i586]. Default: everything the host can build (BSCando).
+		Archs    []string `yaml:"archs"`
+		WorkDir  string   `yaml:"work_dir"`
+		StateDir string   `yaml:"state_dir"`
+		CacheDir string   `yaml:"cache_dir"`
+		DiskDir  string   `yaml:"disk_dir"`
 		// Hardware overrides. Unset values are detected at startup.
 		TotalVCPUs      int32  `yaml:"total_vcpus"`
 		TotalMemoryMB   int64  `yaml:"total_memory_mb"`

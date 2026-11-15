@@ -177,14 +177,32 @@ type JobControl struct {
 }
 
 type WorkerHeartbeat struct {
-	WorkerID        string         `json:"worker_id"`
-	Architecture    string         `json:"architecture"`
+	WorkerID string `json:"worker_id"`
+	// Architecture is the host architecture of the worker.
+	Architecture string `json:"architecture"`
+	// Archs lists the architectures the worker can build (the BSCando set of
+	// the host, for example x86_64 builds x86_64, i586 and i686). Workers
+	// that predate the field send none and build only Architecture.
+	Archs           []string       `json:"archs,omitempty"`
 	Status          string         `json:"status"` // IDLE, BUSY, DRAINING
 	ActiveJobID     string         `json:"active_job_id,omitempty"`
 	ActiveJobIDs    []string       `json:"active_job_ids,omitempty"`
 	Hardware        WorkerHardware `json:"hardware"`
 	CachedRPMHashes []string       `json:"cached_rpm_hashes"`
 	TimestampUnix   int64          `json:"timestamp_unix"`
+}
+
+// CanBuild reports whether the worker advertises arch.
+func (h WorkerHeartbeat) CanBuild(arch string) bool {
+	if len(h.Archs) == 0 {
+		return h.Architecture == arch
+	}
+	for _, a := range h.Archs {
+		if a == arch {
+			return true
+		}
+	}
+	return false
 }
 
 type WorkerHardware struct {

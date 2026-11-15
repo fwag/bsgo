@@ -309,7 +309,7 @@ func (r *WorkerRegistry) isWorkerEligible(w *WorkerRecord, job *v1.BuildJob, now
 	if w.Status == "BUSY" && (w.Hardware.AvailableMemoryMB < 1024 || w.Hardware.AvailableVCPUs < 1) {
 		return false
 	}
-	if w.Architecture != job.Architecture {
+	if !w.CanBuild(job.Architecture) {
 		return false
 	}
 	if r.badHosts[job.JobID] != nil && r.badHosts[job.JobID][w.WorkerID] {

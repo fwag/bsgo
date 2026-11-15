@@ -71,15 +71,8 @@ func recipeType(file string) string {
 	return ""
 }
 
-// archpath is the --arch value: the architecture, the configured host
-// architecture when it differs, and noarch.
-func (ps *pass) archpath() string {
-	parts := []string{ps.prpa.Arch}
-	if h := ps.sched.HostArch; h != "" && h != ps.prpa.Arch {
-		parts = append(parts, h)
-	}
-	return strings.Join(append(parts, "noarch"), ":")
-}
+// archpath is the --arch value, see archpath.
+func (ps *pass) archpath() string { return archpath(ps.prpa.Arch, ps.sched.HostArch) }
 
 func (ps *pass) logIdleLimit() int32 {
 	n, err := strconv.ParseInt(ps.sched.BuildFlagsH["logidlelimit"], 10, 32)

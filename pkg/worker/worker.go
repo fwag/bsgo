@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,8 +90,8 @@ func (w *WorkerDaemon) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to subscribe to worker job inbox: %w", err)
 	}
 
-	fmt.Printf("[%s] [INFO] Worker registered: id=%s arch=%s (%d vCPUs, %dGB RAM)\n",
-		time.Now().Format("15:04:05"), w.cfg.WorkerID, w.cfg.Architecture, w.cfg.Hardware.TotalVCPUs, w.cfg.Hardware.TotalMemoryMB/1024)
+	fmt.Printf("[%s] [INFO] Worker registered: id=%s arch=%s builds=%s (%d vCPUs, %dGB RAM)\n",
+		time.Now().Format("15:04:05"), w.cfg.WorkerID, w.cfg.Architecture, strings.Join(w.cfg.BuildArchs(), ","), w.cfg.Hardware.TotalVCPUs, w.cfg.Hardware.TotalMemoryMB/1024)
 	fmt.Printf("[%s] [INFO] Listening for build jobs on: %s\n", time.Now().Format("15:04:05"), subject)
 	fmt.Printf("[%s] [INFO] Emitting heartbeats to: bsgo.workers.heartbeat (Status: IDLE)\n", time.Now().Format("15:04:05"))
 	fmt.Printf("[%s] [INFO] Ready for jobs. Waiting for server dispatch...\n", time.Now().Format("15:04:05"))
@@ -165,6 +166,7 @@ func (w *WorkerDaemon) emitHeartbeat() {
 	hb := v1.WorkerHeartbeat{
 		WorkerID:        w.cfg.WorkerID,
 		Architecture:    w.cfg.Architecture,
+		Archs:           w.cfg.BuildArchs(),
 		Status:          w.status,
 		ActiveJobID:     activeID,
 		ActiveJobIDs:    activeIDs,
