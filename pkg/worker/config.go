@@ -42,6 +42,9 @@ type WorkerConfig struct {
 	// AllowUnisolatedChroot lets BuildInfo jobs run in plain obs-build chroot
 	// mode, which has no network isolation. Default deny.
 	AllowUnisolatedChroot bool
+	// KeepFailedJobs keeps the build root, rpmlist and bdeps of failed jobs
+	// for debugging. Default false: every job directory is cleaned.
+	KeepFailedJobs bool
 }
 
 type WorkerConfigFile struct {
@@ -75,7 +78,9 @@ type WorkerConfigFile struct {
 		// AllowUnisolatedChroot permits hermetic (BuildInfo) jobs in chroot
 		// mode, which cannot isolate the network. Default false.
 		AllowUnisolatedChroot bool `yaml:"allow_unisolated_chroot"`
-		KVM                   struct {
+		// KeepFailedJobs keeps the build root of failed jobs for debugging.
+		KeepFailedJobs bool `yaml:"keep_failed_jobs"`
+		KVM            struct {
 			VMType    string `yaml:"vm_type"`
 			Device    string `yaml:"device"`
 			Kernel    string `yaml:"kernel"`

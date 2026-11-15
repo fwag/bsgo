@@ -162,7 +162,14 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	if err != nil {
 		return nil, fmt.Errorf("failed configuring VM disks: %w", err)
 	}
-	defer cleanupKVMRun(jobDir, buildRoot, vmDisk, vmSwap)
+	failed := true
+	defer func() {
+		if failed && s.KeepFailedJobs {
+			fmt.Fprintf(w, "[%s] bsgo-worker: keeping failed job directory %s (keep_failed_jobs)\n", time.Now().Format("15:04:05"), jobDir)
+			return
+		}
+		cleanupKVMRun(jobDir, buildRoot, vmDisk, vmSwap)
+	}()
 
 	args, err := s.buildArgsFor(ctx, job, jobDir, specFile, vmDisk, vmSwap, w)
 	if err != nil {
@@ -170,6 +177,9 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	}
 
 	defer func() {
+		if failed && s.KeepFailedJobs {
+			return
+		}
 		wipeBuildRoot(context.Background(), obsBin, buildRoot, w)
 		_ = os.RemoveAll(filepath.Join(jobDir, "repo_snapshot"))
 		_ = os.RemoveAll(filepath.Join(jobDir, "packages"))
@@ -185,7 +195,9 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 		return res, run.err
 	}
 
-	return s.collectKVMArtifacts(ctx, buildRoot, jobDir, job, commit, w, start)
+	res, err := s.collectKVMArtifacts(ctx, buildRoot, jobDir, job, commit, w, start)
+	failed = err != nil
+	return res, err
 }
 
 func wipeBuildRoot(ctx context.Context, obsBin, buildRoot string, w io.Writer) {

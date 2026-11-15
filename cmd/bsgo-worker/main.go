@@ -85,6 +85,7 @@ func main() {
 		KVMCache:              cfg.KVMCache,
 		S3Storage:             store,
 		AllowUnisolatedChroot: cfg.AllowUnisolatedChroot,
+		KeepFailedJobs:        cfg.KeepFailedJobs,
 	}
 	daemon := worker.NewWorkerDaemon(cfg, nc, sandbox)
 
@@ -159,6 +160,7 @@ func applyFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile)
 		cfg.Hardware.SandboxType = fileCfg.Sandbox.Mode
 	}
 	cfg.AllowUnisolatedChroot = fileCfg.Sandbox.AllowUnisolatedChroot
+	cfg.KeepFailedJobs = fileCfg.Sandbox.KeepFailedJobs
 	if fileCfg.Sandbox.ObsBuildBin != "" {
 		cfg.ObsBuildBin = fileCfg.Sandbox.ObsBuildBin
 	}

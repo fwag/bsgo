@@ -81,7 +81,9 @@ type ProcessSandbox struct {
 	// mode. obs-build chroot mode has no network isolation, so the default
 	// is to refuse such jobs.
 	AllowUnisolatedChroot bool
-	repoMu                sync.Mutex
+	// KeepFailedJobs keeps the job directory of failed builds for debugging.
+	KeepFailedJobs bool
+	repoMu         sync.Mutex
 }
 
 // ObjectStore is the subset of the S3 client the sandbox uses. *s3.S3Storage
