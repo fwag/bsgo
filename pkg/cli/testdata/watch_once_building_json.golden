@@ -1,0 +1,39 @@
+{
+  "project": "p",
+  "state": "building",
+  "counts": {
+    "building": 3,
+    "failed": 1,
+    "scheduled": 1,
+    "unresolvable": 1
+  },
+  "packages": [
+    {
+      "package": "glibc",
+      "repo": "standard",
+      "arch": "x86_64",
+      "state": "building",
+      "job_id": "job-glibc-5678",
+      "updated_at": "",
+      "building_seconds": 3700
+    },
+    {
+      "package": "python",
+      "flavor": "py312",
+      "repo": "standard",
+      "arch": "x86_64",
+      "state": "building",
+      "updated_at": "",
+      "building_seconds": 5
+    },
+    {
+      "package": "zlib",
+      "repo": "standard",
+      "arch": "x86_64",
+      "state": "building",
+      "job_id": "job-zlib-1234",
+      "updated_at": "",
+      "building_seconds": 30
+    }
+  ]
+}

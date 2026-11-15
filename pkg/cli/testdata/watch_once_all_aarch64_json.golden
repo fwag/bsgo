@@ -1,0 +1,26 @@
+{
+  "project": "p",
+  "arch": "aarch64",
+  "state": "all",
+  "counts": {
+    "failed": 1,
+    "unresolvable": 1
+  },
+  "packages": [
+    {
+      "package": "bash",
+      "repo": "standard",
+      "arch": "aarch64",
+      "state": "unresolvable",
+      "updated_at": ""
+    },
+    {
+      "package": "glibc",
+      "repo": "standard",
+      "arch": "aarch64",
+      "state": "failed",
+      "job_id": "j3",
+      "updated_at": ""
+    }
+  ]
+}

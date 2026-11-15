@@ -10,7 +10,7 @@ The `bsgo` CLI is built on a strict **Dual-Mode Contract**:
 1. **Interactive Human Mode (TTY Default)**:
    - Rich terminal aesthetics powered by Charm (`bubbletea` and `lipgloss`).
    - Visual status badges (`● SUCCEEDED`, `◐ BUILDING`, `○ PENDING`, `✖ FAILED`).
-   - Interactive live split-pane dashboard (`bsgo watch`) for monitoring jobs, worker fleet capacity, and streaming build logs with keyboard shortcuts.
+   - Live dashboard (`bsgo watch <project>`) of the persisted build state with `--once`, `--json` and `--history` for agents.
 2. **Machine & Agent Mode (`--json`)**:
    - Deterministic JSON output streams on `stdout`.
    - **Zero ANSI escape sequences**, zero spinners, zero progress bars, and zero interactive prompts.
@@ -44,7 +44,7 @@ bsgo
 │   ├── status <job-id>                 Inspect job state, worker assignment, and timings
 │   ├── logs <job-id> [-f]              Stream live logs via Core NATS or fetch from S3
 │   └── cancel <job-id>                 Dispatch abort signal to cancel active build
-└── watch                               Open interactive Charm TUI dashboard
+└── watch <project>                     Live build-state TUI (--once, --history, --json)
 ```
 
 ---
@@ -134,31 +134,42 @@ Removes the dependency with that `name` from one target of the stored project (u
 
 ---
 
-## 4. Interactive Live TUI Dashboard (`bsgo watch`)
+## 4. Watching a Project (`bsgo watch`)
 
-The live TUI provides real-time visibility into the build cluster:
+```bash
+bsgo watch <project> [--repo R] [--arch A] [--state S] [--interval 2s]
+bsgo watch <project> --once [--state S] [--json]
+bsgo watch <project> --history <package> [--limit 20] [--json]
+```
 
+The project is required (positional, or `-p/--project`). A missing or unknown project fails with the list of known projects.
+
+**Data.** The current state is read from the PostgreSQL table `package_build_state` (the same source and counts as `bsgo project status`), polled every `--interval`. One row is one package unit (`package[:flavor]`) in one repo and arch with its current or last job. NATS is only used for live build logs (`bsgo.logs.<jobid>`), worker names (heartbeats on `bsgo.workers.heartbeat` carry `active_job_ids`) and to refresh immediately when a `bsgo.status` message arrives. The TUI keeps working, without logs and worker names, if NATS is unreachable.
+
+**Default view.** Packages in state `building`: package[:flavor], repo/arch, elapsed time (`building_seconds`), short job id and worker, longest-building first. The header shows the counts per state.
+
+| Key | Action |
+|-----|--------|
+| `b` `s` `f` `u` `k` | building (default), scheduled, failed, unresolvable, blocked |
+| `a` | all states |
+| `/` | search by package substring (Enter keeps, Esc clears) |
+| Up/Down | select a row |
+| Enter, `l` | logs of the selected job (saved log plus live stream; Esc closes) |
+| `m` | architecture matrix (counts per arch and state; not the default) |
+| `q` | quit |
+
+**`--once`** prints the snapshot of `--state` (default `building`, `all` for every state) as a plain table and exits. With `--json` it emits one deterministic document on stdout, sorted by package, flavor, repo, arch, with no ANSI:
+
+```json
+{"project": "...", "repo": "...", "arch": "...", "state": "building",
+ "counts": {"building": 3, "failed": 1},
+ "packages": [{"package": "glibc", "repo": "standard", "arch": "x86_64", "state": "building",
+               "job_id": "...", "updated_at": "...", "building_seconds": 2832}]}
 ```
-┌────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ bsgo  Cloud-Native Build Service Dashboard (NATS JetStream: Connected • Postgres: Synced)      │
-├────────────────────────────────────────────────────────┬───────────────────────────────────────┤
-│ Active & Pending Jobs                                  │ Worker Fleet Capacity                 │
-│                                                        │                                       │
-│ ▶ job-9a8b1c  ◐ BUILDING   glibc        x86_64  p:100  │ • worker-x86-01  x86_64   BUSY        │
-│   job-7f6e5d  ◐ BUILDING   chromium     x86_64  p:10   │   (32 cores, 128GB) running: glibc    │
-│   job-3c2b1a  ● SUCCEEDED  ripgrep      aarch64 p:25   │ • worker-x86-02  x86_64   BUSY        │
-│   job-4d5e6f  ○ PENDING    kernel-def   s390x   p:90   │   (16 cores, 64GB)  running: chromium │
-│                                                        │ • worker-arm-01  aarch64  IDLE        │
-│                                                        │ • worker-s390x-01 s390x   IDLE        │
-├────────────────────────────────────────────────────────┴───────────────────────────────────────┤
-│ Live NATS Log Stream: bsgo.logs.job-9a8b1c                                                     │
-│ [00:00:01] bsgo-worker-x86-01: claiming job from bsgo.workers.worker-x86-01.job               │
-│ [00:00:04] obs-build: initializing QEMU/KVM VM overlay root.qcow2 (vCPUs: 16, RAM: 32Gi)       │
-│ [00:00:30] obs-build: entering build phase (%build) as user abuild                             │
-├────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ [↑/↓] Navigate  •  [Enter/l] Toggle Logs  •  [c] Abort Job  •  [q] Quit                        │
-└────────────────────────────────────────────────────────────────────────────────────────────────┘
-```
+
+`packages[]` uses the entry type of `bsgo project status --json`. Worker names are only resolved in the TUI.
+
+**`--history <package>`** lists earlier jobs of one package, newest first, one entry per job with its latest status (`job_id`, `phase`, `repo`, `arch`, `worker`, `exit_code`, `reason`, `last_update_at`). It reads the `JOB_STATUS` stream backwards, at most 20000 messages, and stops after `--limit` jobs (default 20). `--repo` and `--arch` narrow it.
 
 ---
 

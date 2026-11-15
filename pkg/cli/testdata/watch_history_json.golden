@@ -1,0 +1,14 @@
+{
+  "project": "p",
+  "package": "glibc",
+  "jobs": [
+    {
+      "job_id": "j1",
+      "phase": "SUCCEEDED",
+      "repo": "standard",
+      "arch": "x86_64",
+      "worker": "w1",
+      "last_update_at": "2026-11-15T10:00:02Z"
+    }
+  ]
+}

@@ -28,6 +28,8 @@ type PackageStateEntry struct {
 	// BuildingSeconds is how long a building package has been building
 	// (since it was dispatched to a worker); 0 for other states.
 	BuildingSeconds int64 `json:"building_seconds,omitempty"`
+	// Worker is the worker running a building package, when known (watch only).
+	Worker string `json:"worker,omitempty"`
 }
 
 // ProjectStatusResult is the machine contract of `bsgo project status --json`.
@@ -117,19 +119,24 @@ func loadProjectStatus(ctx context.Context, store storage.Store, projectName str
 	}
 	now := time.Now()
 	for _, st := range states {
-		res.Packages = append(res.Packages, PackageStateEntry{
-			Package:         st.Package,
-			Flavor:          st.Flavor,
-			Repo:            st.Repo,
-			Arch:            st.Arch,
-			State:           st.State,
-			Details:         st.Details,
-			JobID:           st.JobID,
-			UpdatedAt:       st.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-			BuildingSeconds: buildingSeconds(st, now),
-		})
+		res.Packages = append(res.Packages, stateEntry(st, now))
 	}
 	return res, nil
+}
+
+// stateEntry converts a persisted build state row into its JSON entry.
+func stateEntry(st *storage.PackageBuildState, now time.Time) PackageStateEntry {
+	return PackageStateEntry{
+		Package:         st.Package,
+		Flavor:          st.Flavor,
+		Repo:            st.Repo,
+		Arch:            st.Arch,
+		State:           st.State,
+		Details:         st.Details,
+		JobID:           st.JobID,
+		UpdatedAt:       st.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		BuildingSeconds: buildingSeconds(st, now),
+	}
 }
 
 // sumCounts adds up the per-state counts. With multibuild flavors a package

@@ -1,0 +1,5 @@
+p: building=3 scheduled=1 failed=1 unresolvable=1 blocked=0 succeeded=0
+PACKAGE       REPO/ARCH        STATE     ELAPSED  JOB       WORKER
+glibc         standard/x86_64  building  1h01m    job-glib  -
+python:py312  standard/x86_64  building  5s       -         -
+zlib          standard/x86_64  building  30s      job-zlib  -

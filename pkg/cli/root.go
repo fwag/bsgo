@@ -37,7 +37,7 @@ func NewRootCommand(store storage.Store, options ...RootOption) *cobra.Command {
 	rootCmd.AddCommand(newPackageCmd(store, &opts))
 	rootCmd.AddCommand(newAdminCmd(store, &opts, cfg.buildRepo))
 	rootCmd.AddCommand(newAuthCmd(&opts))
-	rootCmd.AddCommand(newWatchCmd())
+	rootCmd.AddCommand(newWatchCmd(store, &opts))
 	rootCmd.AddCommand(newJobCmd(&opts))
 
 	return rootCmd
