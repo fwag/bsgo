@@ -105,9 +105,9 @@ type world struct {
 	sink    *recordingSink
 	chk     *checker.Checker
 	prpa    checker.Prpa
-	// entries is the content of the own build repository by unit.
-	entries map[string][]buildrepo.Entry
-	prj     *manifest.ProjectManifest
+	// bins is the content of the own build repository by unit.
+	bins map[string][]bininfo.BinInfo
+	prj  *manifest.ProjectManifest
 }
 
 type worldOpt func(*world)
@@ -120,7 +120,7 @@ func newWorld(t *testing.T, boot []bininfo.BinInfo, opts ...worldOpt) *world {
 		indexes: &fakeIndexes{idx: map[string]*buildrepo.Index{}},
 		sink:    &recordingSink{},
 		prpa:    checker.Prpa{Project: testProject, Repo: testRepo, Arch: testArch},
-		entries: map[string][]buildrepo.Entry{},
+		bins:    map[string][]bininfo.BinInfo{},
 	}
 	target := manifest.BuildTarget{Architectures: []string{testArch}}
 	var dd *fakeDoD
@@ -278,12 +278,12 @@ func binary(name, version string) bininfo.BinInfo {
 // set in the build repository and the status consumer records success.
 func (w *world) finish(job *checker.JobSpec, outputs ...bininfo.BinInfo) {
 	w.t.Helper()
-	var es []buildrepo.Entry
+	var bs []bininfo.BinInfo
 	for _, b := range outputs {
 		b.SHA256 = sha(job.JobID + b.Name)
-		es = append(es, buildrepo.Entry{Unit: job.Package, Key: buildrepo.ArtifactPrefix(w.prpa, job.Package) + b.Filename, BinInfo: b})
+		bs = append(bs, b)
 	}
-	w.entries[job.Package] = es
+	w.bins[job.Package] = bs
 	w.publishIndex()
 	pkg, flavor := buildrepo.SplitUnit(job.Package)
 	err := w.store.UpsertBuildState(context.Background(), &storage.PackageBuildState{
@@ -299,11 +299,11 @@ func (w *world) publishIndex() {
 	w.t.Helper()
 	var all []buildrepo.Entry
 	var infos []bininfo.BinInfo
-	for _, es := range w.entries {
-		for _, e := range es {
-			all = append(all, e)
-			if buildrepo.UseForBuild(e.BinInfo) {
-				infos = append(infos, e.BinInfo)
+	for unit, bs := range w.bins {
+		for _, b := range bs {
+			all = append(all, buildrepo.NewEntry(unit, buildrepo.ArtifactPrefix(w.prpa, unit)+b.Filename, b))
+			if buildrepo.UseForBuild(b) {
+				infos = append(infos, b)
 			}
 		}
 	}

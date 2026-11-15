@@ -220,7 +220,7 @@ func (p *Publisher) execute(ctx context.Context, prpa buildrepo.Prpa, pol Policy
 func (p *Publisher) candidates(ctx context.Context, prpa buildrepo.Prpa, idx *buildrepo.Index, debug bool) ([]Binary, error) {
 	cands := make([]Binary, 0, len(idx.Entries))
 	for _, e := range idx.Entries {
-		cands = append(cands, Binary{BinInfo: e.BinInfo, Source: e.Key})
+		cands = append(cands, Binary{BinInfo: e.Info(), Source: e.Key})
 	}
 	if !debug {
 		return cands, nil

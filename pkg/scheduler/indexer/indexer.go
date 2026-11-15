@@ -86,8 +86,16 @@ func (ix *Indexer) Integrate(ctx context.Context, f Finished) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	entries := replaceUnit(cur.Entries, f.Unit, infos, keys)
-	changed, err := ix.publish(ctx, f.Prpa, cur, entries)
+	entries, same := replaceUnit(cur.Entries, f.Unit, infos, keys)
+	if same {
+		// Equal sha256 means equal content, so the solv blob is still right.
+		return false, nil
+	}
+	blob, err := solv.UpdateSolv(f.Prpa.Arch, cur.Solv, f.Unit, infos)
+	if err != nil {
+		return false, fmt.Errorf("index %s: %w", f.Prpa, err)
+	}
+	changed, err := ix.publish(ctx, f.Prpa, cur, blob, entries)
 	if err != nil || !changed {
 		return false, err
 	}
@@ -164,30 +172,46 @@ func (ix *Indexer) readBinaries(ctx context.Context, f Finished) ([]bininfo.BinI
 	return infos, keys, nil
 }
 
-func replaceUnit(old []buildrepo.Entry, unit string, infos []bininfo.BinInfo, keys map[string]string) []buildrepo.Entry {
+// replaceUnit returns old with the entries of unit replaced by the binaries
+// infos, and whether that left the entry set unchanged.
+func replaceUnit(old []buildrepo.Entry, unit string, infos []bininfo.BinInfo, keys map[string]string) ([]buildrepo.Entry, bool) {
 	out := make([]buildrepo.Entry, 0, len(old)+len(infos))
+	var before []buildrepo.Entry
 	for _, e := range old {
-		if e.Unit != unit {
-			out = append(out, e)
+		if e.Unit == unit {
+			before = append(before, e)
+			continue
 		}
+		out = append(out, e)
 	}
+	var after []buildrepo.Entry
 	for _, b := range infos {
-		out = append(out, buildrepo.Entry{Unit: unit, Key: keys[b.Filename], BinInfo: b})
+		after = append(after, buildrepo.NewEntry(unit, keys[b.Filename], b))
 	}
-	return out
+	return append(out, after...), sameEntries(before, after)
 }
 
-// publish writes the index for entries and moves the pointer; unchanged
-// content is not written.
-func (ix *Indexer) publish(ctx context.Context, p buildrepo.Prpa, cur *buildrepo.Index, entries []buildrepo.Entry) (bool, error) {
-	infos := make([]bininfo.BinInfo, 0, len(entries))
-	for _, e := range entries {
-		infos = append(infos, e.BinInfo)
+// sameEntries compares two entry sets of one unit regardless of order.
+func sameEntries(a, b []buildrepo.Entry) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	blob, err := solv.BuildSolv(p.Arch, infos)
-	if err != nil {
-		return false, fmt.Errorf("index %s: %w", p, err)
+	set := make(map[buildrepo.Entry]int, len(a))
+	for _, e := range a {
+		set[e]++
 	}
+	for _, e := range b {
+		if set[e] == 0 {
+			return false
+		}
+		set[e]--
+	}
+	return true
+}
+
+// publish writes the index for blob and entries and moves the pointer;
+// unchanged content is not written.
+func (ix *Indexer) publish(ctx context.Context, p buildrepo.Prpa, cur *buildrepo.Index, blob []byte, entries []buildrepo.Entry) (bool, error) {
 	raw, err := buildrepo.EncodeEntries(entries)
 	if err != nil {
 		return false, err

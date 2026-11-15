@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"sync"
 
@@ -65,13 +66,48 @@ func ArtifactPrefix(p Prpa, unit string) string {
 	return "artifacts/" + p.Project + "/" + p.Repo + "/" + p.Arch + "/" + unit + "/"
 }
 
-// Entry is one binary of the build repository.
+// Entry is one binary of the build repository. It carries identity only, no
+// dependencies or file lists: those live in the solv blob (and in the unit's
+// bininfo.json for readers that need them, such as the publisher for debug
+// packages). That keeps the entry list small enough to read on every checker
+// pass and to rewrite when a job finishes. JSON is kept because the list is
+// small and stays inspectable; a binary encoding would gain little for an
+// identity-only list.
 type Entry struct {
 	// Unit is the package unit ("pkg" or "pkg:flavor") that produced it.
 	Unit string `json:"unit"`
 	// Key is the S3 object key of the RPM.
-	Key string `json:"key"`
-	bininfo.BinInfo
+	Key     string `json:"key"`
+	Name    string `json:"name"`
+	Epoch   string `json:"epoch,omitempty"`
+	Version string `json:"version"`
+	Release string `json:"release"`
+	Arch    string `json:"arch"`
+	SHA256  string `json:"sha256"`
+	Size    int64  `json:"size"`
+}
+
+// NewEntry returns the entry of binary b of unit stored under key.
+func NewEntry(unit, key string, b bininfo.BinInfo) Entry {
+	return Entry{
+		Unit: unit, Key: key, Name: b.Name, Epoch: b.Epoch, Version: b.Version,
+		Release: b.Release, Arch: b.Arch, SHA256: b.SHA256, Size: b.Size,
+	}
+}
+
+// Filename is the RPM file name, the last element of Key.
+func (e Entry) Filename() string { return path.Base(e.Key) }
+
+// EVR returns [epoch:]version-release like bininfo.BinInfo.EVR.
+func (e Entry) EVR() string { return e.Info().EVR() }
+
+// Info returns the identity part of the binary as a BinInfo, without any
+// dependency data.
+func (e Entry) Info() bininfo.BinInfo {
+	return bininfo.BinInfo{
+		Name: e.Name, Epoch: e.Epoch, Version: e.Version, Release: e.Release,
+		Arch: e.Arch, Filename: e.Filename(), SHA256: e.SHA256, Size: e.Size,
+	}
 }
 
 // UseForBuild reports whether a binary belongs into the build repository.

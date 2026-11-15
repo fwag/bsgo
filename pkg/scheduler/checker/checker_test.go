@@ -212,7 +212,7 @@ func TestMetaUnchangedNoRebuildChangedRebuild(t *testing.T) {
 	libRow := w.state("lib")
 	rebuild := *libRow
 	rebuild.JobID = "rebuilt"
-	w.entries["lib"][0].SHA256 = sha("a-new-build")
+	w.bins["lib"][0].SHA256 = sha("a-new-build")
 	w.publishIndex()
 	w.run()
 	jobs := w.wantJobs("app")
@@ -317,7 +317,7 @@ func TestRebuildPolicyLocalIgnoresDependencyChanges(t *testing.T) {
 			w.run()
 			w.finish(w.wantJobs("app")[0], binary("app", "1"))
 
-			w.entries["lib"][0].SHA256 = sha("a-new-lib-build")
+			w.bins["lib"][0].SHA256 = sha("a-new-lib-build")
 			w.publishIndex()
 			w.run()
 			w.wantJobs(tc.wantJobs...)

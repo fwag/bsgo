@@ -12,7 +12,7 @@ func sortEntries(e []Entry) {
 		if e[i].Unit != e[j].Unit {
 			return e[i].Unit < e[j].Unit
 		}
-		return e[i].Filename < e[j].Filename
+		return e[i].Key < e[j].Key
 	})
 }
 

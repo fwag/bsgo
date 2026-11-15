@@ -2,9 +2,11 @@ package buildrepo_test
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/openSUSE/bsgo/pkg/bininfo"
 	"github.com/openSUSE/bsgo/pkg/scheduler/buildrepo"
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
@@ -71,5 +73,31 @@ func TestReaderLoadsAndVerifies(t *testing.T) {
 	r2 := buildrepo.NewReader(store, blobs)
 	if _, err := r2.Index(ctx, p); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
 		t.Errorf("tampered objects must be detected, got %v", err)
+	}
+}
+
+func TestEntryIsIdentityOnly(t *testing.T) {
+	b := bininfo.BinInfo{
+		Name: "app", Epoch: "1", Version: "2", Release: "3", Arch: "x86_64", Filename: "app-2-3.x86_64.rpm",
+		SHA256: "abc", Size: 7, SourceRPM: "app-2-3.src.rpm",
+		Provides: []bininfo.Dep{{Name: "feature"}}, Requires: []bininfo.Dep{{Name: "lib"}}, Files: []string{"/usr/bin/app"},
+	}
+	e := buildrepo.NewEntry("app:flavor", "artifacts/p/r/a/app:flavor/app-2-3.x86_64.rpm", b)
+	raw, err := buildrepo.EncodeEntries([]buildrepo.Entry{e})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaked := range []string{"provides", "requires", "files", "sourcerpm", "feature", "/usr/bin/app"} {
+		if strings.Contains(string(raw), leaked) {
+			t.Errorf("entry JSON contains %q: %s", leaked, raw)
+		}
+	}
+	if e.Filename() != b.Filename || e.EVR() != "1:2-3" {
+		t.Errorf("got %q %q", e.Filename(), e.EVR())
+	}
+	want := b
+	want.SourceRPM, want.Provides, want.Requires, want.Files = "", nil, nil, nil
+	if got := e.Info(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Info() = %+v, want %+v", got, want)
 	}
 }

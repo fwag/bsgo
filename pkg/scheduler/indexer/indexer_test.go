@@ -85,7 +85,7 @@ func (e *env) names() []string {
 	}
 	var out []string
 	for _, en := range idx.Entries {
-		out = append(out, en.Unit+":"+en.Filename)
+		out = append(out, en.Unit+":"+en.Filename())
 	}
 	return out
 }

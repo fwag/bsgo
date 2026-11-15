@@ -192,7 +192,7 @@ func (f *fakeIndex) builds(t *testing.T, store *publisher.MemoryStore, p buildre
 		store.Set(prefix+r.filename(), r.body())
 		infos = append(infos, r.info())
 		if buildrepo.UseForBuild(r.info()) {
-			entries = append(entries, buildrepo.Entry{Unit: unit, Key: prefix + r.filename(), BinInfo: r.info()})
+			entries = append(entries, buildrepo.NewEntry(unit, prefix+r.filename(), r.info()))
 		}
 	}
 	raw, err := bininfo.Marshal(infos)
