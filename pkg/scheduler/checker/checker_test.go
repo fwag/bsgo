@@ -178,6 +178,15 @@ func TestExcludedAndDisabled(t *testing.T) {
 			state:   storage.StateBroken,
 			details: "no recipe file",
 		},
+		{
+			// OBS applies the prjconf lists before recipe errors
+			// (SLFO: excludebuild:rpmlint-mini-AGGR, an _aggregate).
+			name:    "excludebuild wins over no recipe",
+			files:   map[string]string{"_aggregate": "<aggregatelist/>"},
+			cfg:     &manifest.ProjectConfig{BuildFlags: []string{"excludebuild:p"}},
+			state:   storage.StateExcluded,
+			details: "package blacklist",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -361,4 +370,14 @@ func TestScheduledJobsAreResentForQueueRecovery(t *testing.T) {
 	if got := w.state("a").JobID; got != first.JobID {
 		t.Errorf("job ID changed on resend: %s -> %s", first.JobID, got)
 	}
+}
+
+func TestOnlybuildOfAFlavor(t *testing.T) {
+	w := newWorld(t, nil, func(w *world) {
+		w.prj.PublicConfig = &manifest.ProjectConfig{BuildFlags: []string{"onlybuild:p:mini"}}
+	})
+	w.addPackage("p", map[string]string{"p.spec": spec("p", nil), "_multibuild": "<multibuild><flavor>mini</flavor></multibuild>"})
+	w.run()
+	w.wantJobs("p:mini")
+	w.wantState("p", storage.StateExcluded, "package whitelist")
 }

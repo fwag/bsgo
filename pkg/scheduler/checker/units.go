@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -78,6 +79,9 @@ func (ps *pass) unitsOf(pkg *manifest.PackageManifest) ([]*unit, error) {
 	if v := ps.manifestVerdict(pkg); v != nil {
 		return ps.fixedUnit(pkg, v.state, v.details), nil
 	}
+	if v := ps.packageFlagExclusion(pkg.Package.Name); v != nil {
+		return ps.fixedUnit(pkg, v.state, v.details), nil
+	}
 	if pkg.Source.Git == "" || pkg.Source.Commit == "" {
 		return ps.fixedUnit(pkg, storage.StateBroken, "no pinned source commit"), nil
 	}
@@ -123,6 +127,10 @@ func (ps *pass) noteRetry(d time.Duration) {
 // BuildFlags exclusions.
 func (ps *pass) parseUnit(pkg *manifest.PackageManifest, ru recipe.Unit, files fetch.Files) *unit {
 	u := &unit{name: ru.Name, pkg: ru.Package, flavor: ru.Flavor, manifest: pkg, commit: pkg.Source.Commit}
+	if v := ps.flagExclusion(u.name, u.pkg); v != nil {
+		u.fixed = v
+		return u
+	}
 	file := ru.RecipeFile
 	if pinned := pkg.Source.Recipe; pinned != "" && ru.Flavor == "" {
 		if _, ok := files[pinned]; ok {
@@ -180,11 +188,37 @@ func (ps *pass) exclusion(u *unit) *verdict {
 	if info.ExclArch != nil && !hasArch(info.ExclArch, ps.prpa.Arch) || hasArch(info.BadArch, ps.prpa.Arch) {
 		return &verdict{storage.StateExcluded, ""}
 	}
-	if ps.excludeBuild[u.name] {
+	return nil
+}
+
+// flagExclusion applies the BuildFlags excludebuild:/onlybuild: lists to a
+// unit like BSSched/Checker.pm:checkpkgs: before any recipe error, matching
+// the unit name ("pkg:flavor") or its release name (the base package).
+func (ps *pass) flagExclusion(name, releaseName string) *verdict {
+	if ps.excludeBuild[name] || ps.excludeBuild[releaseName] {
 		return &verdict{storage.StateExcluded, "package blacklist"}
 	}
-	if ps.onlyBuild != nil && !ps.onlyBuild[u.name] {
+	if ps.onlyBuild != nil && !ps.onlyBuild[name] && !ps.onlyBuild[releaseName] {
 		return &verdict{storage.StateExcluded, "package whitelist"}
 	}
 	return nil
+}
+
+// packageFlagExclusion excludes a whole package before its sources are
+// fetched when no unit of it can pass the BuildFlags lists: the package is
+// blacklisted, or whitelisting is active and neither the package nor any of
+// its flavors ("pkg:flavor") is listed.
+func (ps *pass) packageFlagExclusion(pkg string) *verdict {
+	if ps.excludeBuild[pkg] {
+		return &verdict{storage.StateExcluded, "package blacklist"}
+	}
+	if ps.onlyBuild == nil || ps.onlyBuild[pkg] {
+		return nil
+	}
+	for name := range ps.onlyBuild {
+		if strings.HasPrefix(name, pkg+":") {
+			return nil
+		}
+	}
+	return &verdict{storage.StateExcluded, "package whitelist"}
 }
