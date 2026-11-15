@@ -5,7 +5,22 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func NewRootCommand(store storage.Store) *cobra.Command {
+// RootOption customizes NewRootCommand.
+type RootOption func(*rootConfig)
+
+type rootConfig struct{ buildRepo BuildRepoOpener }
+
+// WithBuildRepoOpener replaces the environment-driven S3/NATS connection of
+// "admin buildrepo" (used by tests).
+func WithBuildRepoOpener(o BuildRepoOpener) RootOption {
+	return func(c *rootConfig) { c.buildRepo = o }
+}
+
+func NewRootCommand(store storage.Store, options ...RootOption) *cobra.Command {
+	cfg := rootConfig{buildRepo: openBuildRepoFromEnv}
+	for _, o := range options {
+		o(&cfg)
+	}
 	var opts OutputOptions
 
 	rootCmd := &cobra.Command{
@@ -20,7 +35,7 @@ func NewRootCommand(store storage.Store) *cobra.Command {
 
 	rootCmd.AddCommand(newProjectCmd(store, &opts))
 	rootCmd.AddCommand(newPackageCmd(store, &opts))
-	rootCmd.AddCommand(newAdminCmd(store, &opts))
+	rootCmd.AddCommand(newAdminCmd(store, &opts, cfg.buildRepo))
 	rootCmd.AddCommand(newAuthCmd(&opts))
 	rootCmd.AddCommand(newWatchCmd())
 	rootCmd.AddCommand(newJobCmd(&opts))
