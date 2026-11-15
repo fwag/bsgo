@@ -120,6 +120,10 @@ func hermeticArgs(job *v1.BuildJob, configPath, rpmlistPath, specFile string) []
 		"--arch", bi.ArchPath,
 		"--jobs", strconv.Itoa(jobs),
 		"--statistics",
+		// bs_worker always passes this: mkbaselibs creates the -32bit/-64bit
+		// packages (e.g. glibc-devel-32bit from the i586 build), which
+		// ExportFilter then routes to the other architecture.
+		"--baselibs-internal",
 	}
 	if bi.Release != "" {
 		args = append(args, "--release", bi.Release)

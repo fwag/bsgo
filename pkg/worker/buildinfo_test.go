@@ -78,7 +78,7 @@ func TestHermeticArgs(t *testing.T) {
 			name:   "full",
 			mutate: func(*v1.BuildJob) {},
 			want: []string{
-				"--dist", "/c", "--rpmlist", "/r", "--arch", "x86_64:i686:i586:noarch", "--jobs", "6", "--statistics",
+				"--dist", "/c", "--rpmlist", "/r", "--arch", "x86_64:i686:i586:noarch", "--jobs", "6", "--statistics", "--baselibs-internal",
 				"--release", "1.2", "--disturl", "obs://build.example/Proj/repo/abc-pkg",
 				"--buildflavor=gcc13", "--obspackage=gcc", "/s/pkg.spec",
 			},
@@ -91,7 +91,7 @@ func TestHermeticArgs(t *testing.T) {
 				j.Resources.VCPUs = 3
 			},
 			want: []string{
-				"--dist", "/c", "--rpmlist", "/r", "--arch", "x86_64:i686:i586:noarch", "--jobs", "3", "--statistics", "/s/pkg.spec",
+				"--dist", "/c", "--rpmlist", "/r", "--arch", "x86_64:i686:i586:noarch", "--jobs", "3", "--statistics", "--baselibs-internal", "/s/pkg.spec",
 			},
 			without: []string{"--release", "--disturl", "--buildflavor=gcc13", "--obspackage=gcc"},
 		},
@@ -99,7 +99,7 @@ func TestHermeticArgs(t *testing.T) {
 			name:   "explicit jobs below granted vcpus win",
 			mutate: func(j *v1.BuildJob) { j.BuildInfo.Jobs = 4 },
 			want: []string{
-				"--dist", "/c", "--rpmlist", "/r", "--arch", "x86_64:i686:i586:noarch", "--jobs", "4", "--statistics",
+				"--dist", "/c", "--rpmlist", "/r", "--arch", "x86_64:i686:i586:noarch", "--jobs", "4", "--statistics", "--baselibs-internal",
 				"--release", "1.2", "--disturl", "obs://build.example/Proj/repo/abc-pkg",
 				"--buildflavor=gcc13", "--obspackage=gcc", "/s/pkg.spec",
 			},
@@ -108,7 +108,7 @@ func TestHermeticArgs(t *testing.T) {
 			name:   "explicit jobs capped to granted vcpus",
 			mutate: func(j *v1.BuildJob) { j.BuildInfo.Jobs = 12 },
 			want: []string{
-				"--dist", "/c", "--rpmlist", "/r", "--arch", "x86_64:i686:i586:noarch", "--jobs", "6", "--statistics",
+				"--dist", "/c", "--rpmlist", "/r", "--arch", "x86_64:i686:i586:noarch", "--jobs", "6", "--statistics", "--baselibs-internal",
 				"--release", "1.2", "--disturl", "obs://build.example/Proj/repo/abc-pkg",
 				"--buildflavor=gcc13", "--obspackage=gcc", "/s/pkg.spec",
 			},
