@@ -136,8 +136,19 @@ func (g *repo) exec(cmd *exec.Cmd, stdin string) ([]byte, error) {
 }
 
 func (g *repo) init(ctx context.Context) error {
-	_, err := g.exec(exec.CommandContext(ctx, "git", "init", "--quiet"), "")
+	_, err := g.exec(exec.CommandContext(ctx, "git", "init", "--quiet", "--object-format="+ObjectFormat(g.commit)), "")
 	return err
+}
+
+// ObjectFormat returns the git object format implied by a full commit id:
+// "sha256" for 64 hex digits (SHA-256 repositories such as src.opensuse.org
+// pool repos), "sha1" otherwise. A repository initialised with the wrong
+// format cannot fetch the commit at all.
+func ObjectFormat(commit string) string {
+	if len(commit) == 64 {
+		return "sha256"
+	}
+	return "sha1"
 }
 
 // fetch downloads exactly g.commit; the command fails when the server does

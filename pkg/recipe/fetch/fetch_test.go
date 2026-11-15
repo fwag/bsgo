@@ -233,3 +233,18 @@ func keys(m map[string][]byte) []string {
 	}
 	return k
 }
+
+func TestObjectFormat(t *testing.T) {
+	tests := []struct {
+		commit, want string
+	}{
+		{strings.Repeat("a", 64), "sha256"},
+		{strings.Repeat("b", 40), "sha1"},
+		{"HEAD", "sha1"},
+	}
+	for _, tt := range tests {
+		if got := fetch.ObjectFormat(tt.commit); got != tt.want {
+			t.Errorf("ObjectFormat(%q) = %q, want %q", tt.commit, got, tt.want)
+		}
+	}
+}

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openSUSE/bsgo/pkg/recipe/fetch"
+
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 )
 
@@ -121,7 +123,7 @@ func checkoutCommit(ctx context.Context, gitURL, ref, dir string, w io.Writer) (
 		return "", fmt.Errorf("refusing option-like git url or ref: %q %q", gitURL, ref)
 	}
 	steps := [][]string{
-		{"init", "-q"},
+		{"init", "-q", "--object-format=" + fetch.ObjectFormat(ref)},
 		{"remote", "add", "origin", gitURL},
 		{"fetch", "-q", "--depth", "1", "origin", ref},
 		{"checkout", "-q", "FETCH_HEAD"},
