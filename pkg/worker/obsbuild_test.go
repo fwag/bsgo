@@ -3,8 +3,8 @@ package worker
 import (
 	"bytes"
 	"context"
-	"strings"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
