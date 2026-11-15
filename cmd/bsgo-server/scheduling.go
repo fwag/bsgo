@@ -37,6 +37,7 @@ func startSchedulerAndDispatcher(ctx context.Context, cfg ServerConfig, nc *nats
 	subscribeWorkerHeartbeats(nc, disp)
 	subscribeDispatcherResults(nc, disp)
 	startDispatchLoop(ctx, disp, nc)
+	startOrphanReconciler(ctx, store, disp, nc)
 	if !cfg.Checker {
 		logf("SCHEDULER", "checker disabled; no jobs will be scheduled by this instance")
 		return

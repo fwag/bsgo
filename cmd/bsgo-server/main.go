@@ -214,6 +214,11 @@ func subscribeWorkerHeartbeats(nc *nats.Conn, disp *dispatcher.Dispatcher) {
 		var hb v1.WorkerHeartbeat
 		if err := json.Unmarshal(msg.Data, &hb); err == nil {
 			disp.Registry().UpdateHeartbeat(hb)
+			active := hb.ActiveJobIDs
+			if hb.ActiveJobID != "" {
+				active = append(active, hb.ActiveJobID)
+			}
+			disp.ObserveActiveJobs(hb.WorkerID, active)
 			workerMu.Lock()
 			if !knownWorkers[hb.WorkerID] {
 				knownWorkers[hb.WorkerID] = true

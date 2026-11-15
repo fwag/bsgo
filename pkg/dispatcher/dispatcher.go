@@ -19,7 +19,13 @@ type Dispatcher struct {
 	activeBuilds   map[string]string       // key: "prj:pkg:tgt:arch" -> jobID
 	dispatchedJobs map[string]*v1.BuildJob // key: jobID -> BuildJob
 	jobWorkers     map[string]string       // key: jobID -> workerID
-	abortHandler   func(jobID, reason string)
+	// running maps job IDs that workers report as active (heartbeats) to the
+	// worker. After a server restart it is the only record of builds that
+	// are still running, so their jobs are not dispatched a second time.
+	running      map[string]string
+	reportedAt   map[string]time.Time // workerID -> time of its last report
+	workerTTL    time.Duration
+	abortHandler func(jobID, reason string)
 }
 
 func NewDispatcher(pub Publisher, workerTTL time.Duration) *Dispatcher {
@@ -31,7 +37,43 @@ func NewDispatcher(pub Publisher, workerTTL time.Duration) *Dispatcher {
 		activeBuilds:   make(map[string]string),
 		dispatchedJobs: make(map[string]*v1.BuildJob),
 		jobWorkers:     make(map[string]string),
+		running:        make(map[string]string),
+		reportedAt:     make(map[string]time.Time),
+		workerTTL:      workerTTL,
 	}
+}
+
+// ObserveActiveJobs records the jobs a worker reports as active in its
+// heartbeat, replacing that worker's previous report.
+func (d *Dispatcher) ObserveActiveJobs(workerID string, jobIDs []string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for id, w := range d.running {
+		if w == workerID {
+			delete(d.running, id)
+		}
+	}
+	for _, id := range jobIDs {
+		d.running[id] = workerID
+	}
+	d.reportedAt[workerID] = time.Now()
+}
+
+// IsDispatched reports whether the job was dispatched by this dispatcher and
+// has not finished or been reaped.
+func (d *Dispatcher) IsDispatched(jobID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.dispatchedJobs[jobID]
+	return ok
+}
+
+// IsRunning reports whether a worker currently reports the job as active.
+func (d *Dispatcher) IsRunning(jobID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.running[jobID]
+	return ok && time.Since(d.reportedAt[w]) <= 2*d.workerTTL
 }
 
 func (d *Dispatcher) Registry() *WorkerRegistry {
@@ -93,6 +135,9 @@ func (d *Dispatcher) EnqueueJob(job *v1.BuildJob) {
 	// Idempotent per job ID: the checker re-emits scheduled jobs on every
 	// pass to rebuild the queue after a restart.
 	if _, dispatched := d.dispatchedJobs[job.JobID]; dispatched || d.queue.Contains(job.JobID) {
+		return
+	}
+	if _, running := d.running[job.JobID]; running {
 		return
 	}
 	buildKey := fmt.Sprintf("%s:%s:%s:%s", job.Project, job.Package, job.Target, job.Architecture)
