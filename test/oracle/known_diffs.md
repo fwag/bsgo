@@ -57,3 +57,28 @@ occurs in the fixtures.
   line.
 - `%global` and `%define` bodies are only expanded as described in Rpm.pm;
   `s/%/%%/` for parametric macro arguments only escapes the first `%`.
+
+# Known differences between recipe.Parse and Build::parse (spec recipes)
+
+Corpus: 458 SLFO 1.2 packages (503 specs, 50 `_multibuild`), expanded to 602
+units (plain packages plus `pkg:flavor` units), parsed with the SLFO 1.2
+prjconf (layered with the getconfig header, worker variant with Macros:
+blocks) for x86_64. Compared per unit: name, version, release, epoch, deps
+(ordered), subpacks, exclarch, badarch, buildtarget, buildconstraint, error.
+Result: 602 of 602 units identical, zero diffs.
+
+Intentional differences and unported parts (none occurs in the corpus):
+
+- `%(...)` and unknown-macro failures are not errors in Build::Rpm::parse for
+  specs (only for configs): Perl prints a warning and substitutes the text
+  `MACRO`. Go does the same and reports the warning in `Info.Warnings`.
+- BuildConflicts are emitted as `-name` like Perl (its `conflictdeps` switch
+  defaults to off); `Options.ConflictDeps` selects `!name`.
+- `# neededforbuild`, `%include` (include callback), `%description` capture,
+  `Requires(pre)` prereqs, remote-asset/createarchive directives and the
+  `configdependent` flag are not ported (not scheduler inputs for this
+  milestone).
+- `bs_srcserver:findfile` is only ported for spec recipes; kiwi, docker and
+  the other recipe types return `recipe.ErrUnsupported`.
+- Perl's `dep_qualifier_mismatch` is inverted in effect (a dependency
+  qualified with the target arch is dropped); the quirk is ported as is.

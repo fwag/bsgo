@@ -631,6 +631,8 @@ type PackageSource struct {
 	Git    string `yaml:"git"`
 	Branch string `yaml:"branch,omitempty"`
 	Commit string `yaml:"commit,omitempty"`
+	// Recipe is optional. When empty the recipe is auto-detected from the
+	// files at the pinned commit (see recipe.Expand and recipe.FindRecipe).
 	Recipe string `yaml:"recipe,omitempty"`
 }
 
