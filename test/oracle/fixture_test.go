@@ -28,7 +28,6 @@ import (
 const (
 	expanddeps       = "/usr/lib/build/expanddeps"
 	createrepomddeps = "/usr/lib/build/createrepomddeps"
-	slfoRepoURL      = "http://172.16.20.68:8088/"
 	zyppRepoDir      = "/var/cache/zypp/raw/download.opensuse.org-oss"
 )
 
@@ -118,13 +117,10 @@ func buildFixture() (*fixture, error) {
 }
 
 // resolveRepoDir picks the repository: $BSGO_ORACLE_REPO (directory or URL),
-// else the SLFO 1.1 repo if reachable, else the local zypp cache.
+// else the local zypp cache.
 func resolveRepoDir() (dir, label string, err error) {
 	if env := os.Getenv("BSGO_ORACLE_REPO"); env != "" {
 		return repoFromSpec(env)
-	}
-	if d, l, e := repoFromSpec(slfoRepoURL); e == nil {
-		return d, l, nil
 	}
 	if _, e := os.Stat(filepath.Join(zyppRepoDir, "repodata", "repomd.xml")); e == nil {
 		return zyppRepoDir, "zypp:" + zyppRepoDir, nil

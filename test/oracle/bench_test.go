@@ -68,7 +68,7 @@ func TestColdPoolBuild(t *testing.T) {
 	defer pp.Close()
 	t.Logf("pool from solv blob (%d bytes): %v", len(blob), time.Since(start))
 	start = time.Now()
-	if _, err := pp.GetBuild(parseConf(baseConf), nil, []string{"gcc", "make"}); err != nil {
+	if _, err := pp.GetBuild(parseConf(baseConf+"Prefer: cpp\n"), nil, []string{"gcc", "make"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Logf("first resolve on fresh pool: %v", time.Since(start))
