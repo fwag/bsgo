@@ -27,16 +27,23 @@ type NATS struct {
 	now    func() time.Time
 }
 
-// NewNATS creates the buckets if needed. leaseTTL is the lifetime of a lease
-// that is not renewed.
+// NewNATS creates the checker buckets if needed. leaseTTL is the lifetime of a
+// lease that is not renewed.
 func NewNATS(ctx context.Context, js jetstream.JetStream, leaseTTL time.Duration) (*NATS, error) {
-	dirty, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: dirtyBucket, History: 1})
+	return NewNATSBuckets(ctx, js, leaseTTL, dirtyBucket, leaseBucket)
+}
+
+// NewNATSBuckets is NewNATS with explicit bucket names, so that independent
+// components (for example the publisher) keep their own dirty marks and
+// leases.
+func NewNATSBuckets(ctx context.Context, js jetstream.JetStream, leaseTTL time.Duration, dirtyName, leaseName string) (*NATS, error) {
+	dirty, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: dirtyName, History: 1})
 	if err != nil {
-		return nil, fmt.Errorf("creating kv bucket %s: %w", dirtyBucket, err)
+		return nil, fmt.Errorf("creating kv bucket %s: %w", dirtyName, err)
 	}
-	leases, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: leaseBucket, History: 1, TTL: leaseTTL})
+	leases, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: leaseName, History: 1, TTL: leaseTTL})
 	if err != nil {
-		return nil, fmt.Errorf("creating kv bucket %s: %w", leaseBucket, err)
+		return nil, fmt.Errorf("creating kv bucket %s: %w", leaseName, err)
 	}
 	return &NATS{dirty: dirty, leases: leases, now: time.Now}, nil
 }
