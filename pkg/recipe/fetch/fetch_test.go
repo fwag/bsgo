@@ -248,3 +248,35 @@ func TestObjectFormat(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchNonTipCommitFromStrictServer(t *testing.T) {
+	// Like src.opensuse.org for a pinned commit that is no longer a branch
+	// tip: the server refuses to serve unadvertised objects ("not our ref").
+	bare, first, _ := fixtureRepo(t)
+	// Protocol v2 serves reachable objects regardless of these settings;
+	// v0 enforces them like the production server does.
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'protocol.version=0'")
+	git(t, bare, "config", "uploadpack.allowFilter", "true")
+	git(t, bare, "config", "uploadpack.allowAnySHA1InWant", "false")
+	git(t, bare, "config", "uploadpack.allowReachableSHA1InWant", "false")
+	git(t, bare, "config", "uploadpack.allowTipSHA1InWant", "false")
+	tests := []struct {
+		name    string
+		commit  string
+		wantErr bool
+	}{
+		{"reachable non-tip commit", first, false},
+		{"unknown commit", strings.Repeat("e", len(first)), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := (&fetch.Fetcher{}).Fetch(context.Background(), "file://"+bare, tt.commit)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && string(got["foo.spec"]) != "Name: foo\nVersion: 1\n" {
+				t.Errorf("got %q, want the pinned (first) commit", got["foo.spec"])
+			}
+		})
+	}
+}

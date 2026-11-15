@@ -115,9 +115,12 @@ func (g *repo) env() []string {
 	return append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1", "GIT_CONFIG_NOSYSTEM=1",
 		"GIT_ALLOW_PROTOCOL=file:git:http:https:ssh",
-		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_COUNT=4",
 		"GIT_CONFIG_KEY_0=remote.src.url", "GIT_CONFIG_VALUE_0="+g.url,
 		"GIT_CONFIG_KEY_1=remote.src.fetch", "GIT_CONFIG_VALUE_1="+g.commit+":"+commitRef,
+		// "branches" fetches only the branch heads (fetchReachable).
+		"GIT_CONFIG_KEY_2=remote.branches.url", "GIT_CONFIG_VALUE_2="+g.url,
+		"GIT_CONFIG_KEY_3=remote.branches.fetch", "GIT_CONFIG_VALUE_3=+refs/heads/*:refs/remotes/branches/*",
 	)
 }
 
@@ -156,8 +159,30 @@ func ObjectFormat(commit string) string {
 func (g *repo) fetch(ctx context.Context) error {
 	_, err := g.exec(exec.CommandContext(ctx, "git", "fetch", "--quiet", "--depth", "1", "--filter=blob:none", "--no-tags", "src"), "")
 	if err != nil {
+		if ferr := g.fetchReachable(ctx); ferr != nil {
+			return fmt.Errorf("%w; fetching the branches: %w", err, ferr)
+		}
+	}
+	return g.verify(ctx)
+}
+
+// fetchReachable handles servers that only serve advertised refs ("not our
+// ref" for a pinned commit that is no longer a branch tip): it fetches the
+// branch histories and points commitRef at exactly g.commit,
+// which must be reachable from one of them. There is no fallback to a tip.
+// g.commit is a validated full hex id, so it is safe as an argument.
+func (g *repo) fetchReachable(ctx context.Context) error {
+	// No blob filter: a server that refuses unadvertised commits also refuses
+	// the lazy blob fetches a partial clone would need later.
+	if _, err := g.exec(exec.CommandContext(ctx, "git", "fetch", "--quiet", "--no-tags", "branches"), ""); err != nil {
 		return err
 	}
+	_, err := g.exec(exec.CommandContext(ctx, "git", "update-ref", commitRef, g.commit), "")
+	return err
+}
+
+// verify checks that commitRef resolves to exactly g.commit.
+func (g *repo) verify(ctx context.Context) error {
 	out, err := g.exec(exec.CommandContext(ctx, "git", "rev-parse", "--verify", commitRef+"^{commit}"), "")
 	if err != nil {
 		return err
