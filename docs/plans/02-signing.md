@@ -69,7 +69,12 @@ with the master key — same trust model. `bs_signer` becomes the `signer`
 role (S3). The `sign` client's RPM header rewriting is replaced by `rpmsign`
 plus a helper that asks bsgo-signd to sign the digest (SD2).
 
-## 2. Decisions for the human (resolve before S1)
+## 2. Decisions
+
+**Decided 2026-11-15:** SD1 = (a) OpenPGP in Go inside `bsgo-signd`
+(ProtonMail/go-crypto); SD2 = (a) `rpmsign --addsign` with `bsgo-sign-helper`
+forwarding digests to bsgo-signd; SD3 = OBS defaults (RSA-4096, 800 days,
+autoextend on use).
 
 - **SD1. OpenPGP implementation.**
   - (a) Recommended: OpenPGP in Go inside `bsgo-signd` using
