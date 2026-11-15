@@ -203,3 +203,32 @@ func TestMemoryStoreUpsertPreservesBuildIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryStoreDoDRepo(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+	url := "https://mirror.example/repo/"
+
+	if _, err := store.GetDoDRepo(ctx, url); err != storage.ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+	invalid := []*storage.DoDRepo{
+		{URL: url, SolvKey: "k"},
+		{URL: url, RepomdChecksum: "c"},
+		{RepomdChecksum: "c", SolvKey: "k"},
+	}
+	for _, r := range invalid {
+		if err := store.SaveDoDRepo(ctx, r); err == nil {
+			t.Errorf("expected validation error for %+v", r)
+		}
+	}
+	for _, sum := range []string{"aa", "bb"} {
+		if err := store.SaveDoDRepo(ctx, &storage.DoDRepo{URL: url, RepomdChecksum: sum, SolvKey: "dod/" + sum}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.GetDoDRepo(ctx, url)
+	if err != nil || got.RepomdChecksum != "bb" || got.SolvKey != "dod/bb" || got.UpdatedAt.IsZero() {
+		t.Errorf("unexpected dod repo %+v (%v)", got, err)
+	}
+}

@@ -33,6 +33,13 @@ type Scheduler struct {
 	cfg         Config
 	dodIngestor *dod.ExternalRepoIngestor
 	dodFetcher  *dod.DoDFetcher
+	dodRepos    *dod.RepoCache
+}
+
+// SetRepoCache makes external repository metadata come from the ingested solv
+// blobs of rc instead of re-fetching primary.xml for every resolve.
+func (s *Scheduler) SetRepoCache(rc *dod.RepoCache) {
+	s.dodRepos = rc
 }
 
 func (s *Scheduler) SetDoD(ingestor *dod.ExternalRepoIngestor, fetcher *dod.DoDFetcher) {
@@ -192,7 +199,7 @@ func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger,
 func (s *Scheduler) ingestExternalRepos(ctx context.Context, deps []manifest.DependencySource) (map[string][]byte, []string) {
 	var externalURLs []string
 	rpmmdRepos := make(map[string][]byte)
-	if s.dodIngestor == nil {
+	if s.dodIngestor == nil && s.dodRepos == nil {
 		return rpmmdRepos, externalURLs
 	}
 	for _, dep := range deps {
@@ -200,6 +207,12 @@ func (s *Scheduler) ingestExternalRepos(ctx context.Context, deps []manifest.Dep
 			continue
 		}
 		externalURLs = append(externalURLs, dep.URL)
+		if s.dodRepos != nil {
+			if blob, err := s.dodRepos.Get(ctx, dep.URL); err == nil {
+				rpmmdRepos[dep.URL] = blob.Data
+			}
+			continue
+		}
 		if primaryData, err := s.dodIngestor.FetchPrimary(ctx, dep.URL); err == nil {
 			rpmmdRepos[dep.URL] = primaryData
 		}

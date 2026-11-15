@@ -35,6 +35,17 @@ type TargetSolv struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// DoDRepo points at the solv blob ingested from a remote rpm-md repository.
+// RepomdChecksum is the sha256 of the repomd.xml the blob was built from;
+// SolvKey is the S3 object holding the blob.
+type DoDRepo struct {
+	URL            string    `json:"url"`
+	Name           string    `json:"name"`
+	RepomdChecksum string    `json:"repomd_checksum"`
+	SolvKey        string    `json:"solv_key"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 // Build states persisted in package_build_state (OBS names).
 const (
 	StateScheduled    = "scheduled"
@@ -111,6 +122,9 @@ type Store interface {
 	GetTargetSolv(ctx context.Context, projectName, targetName, arch string) (*TargetSolv, error)
 	ListTargetSolvs(ctx context.Context, projectName string) ([]*TargetSolv, error)
 
+	SaveDoDRepo(ctx context.Context, repo *DoDRepo) error
+	GetDoDRepo(ctx context.Context, url string) (*DoDRepo, error)
+
 	UpsertBuildState(ctx context.Context, st *PackageBuildState) error
 	ListBuildStates(ctx context.Context, project string, filter BuildStateFilter) ([]*PackageBuildState, error)
 	CountBuildStates(ctx context.Context, project string, filter BuildStateFilter) (map[string]int, error)
@@ -123,6 +137,7 @@ type MemoryStore struct {
 	keys     map[string]map[string]*ProjectSigningKey // key: project -> flavor:type -> key
 	solvs    map[string]*TargetSolv                   // key: project:target:arch -> solv
 	states   map[string]*PackageBuildState            // key: project/repo/arch/package/flavor
+	dod      map[string]*DoDRepo                      // key: url
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -132,6 +147,7 @@ func NewMemoryStore() *MemoryStore {
 		keys:     make(map[string]map[string]*ProjectSigningKey),
 		solvs:    make(map[string]*TargetSolv),
 		states:   make(map[string]*PackageBuildState),
+		dod:      make(map[string]*DoDRepo),
 	}
 }
 
@@ -371,4 +387,27 @@ func (s *MemoryStore) CountBuildStates(ctx context.Context, project string, filt
 		counts[st.State]++
 	}
 	return counts, nil
+}
+
+func (s *MemoryStore) SaveDoDRepo(_ context.Context, repo *DoDRepo) error {
+	if repo.URL == "" || repo.RepomdChecksum == "" || repo.SolvKey == "" {
+		return fmt.Errorf("dod repo requires url, repomd checksum and solv key")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := *repo
+	cp.UpdatedAt = time.Now()
+	s.dod[repo.URL] = &cp
+	return nil
+}
+
+func (s *MemoryStore) GetDoDRepo(_ context.Context, url string) (*DoDRepo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	repo, ok := s.dod[url]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	cp := *repo
+	return &cp, nil
 }

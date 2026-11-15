@@ -143,6 +143,32 @@ func TestPostgresMigrationsAndStore(t *testing.T) {
 	}
 
 	verifyBuildStates(ctx, t, store, testPrjName)
+	verifyDoDRepo(ctx, t, store, fmt.Sprintf("https://mirror.example/%s/", testPrjName))
+}
+
+func verifyDoDRepo(ctx context.Context, t *testing.T, store *postgres.PostgresStore, url string) {
+	t.Helper()
+	if _, err := store.GetDoDRepo(ctx, url); err != storage.ErrNotFound {
+		t.Fatalf("expected ErrNotFound for unknown dod repo, got %v", err)
+	}
+	if err := store.SaveDoDRepo(ctx, &storage.DoDRepo{URL: url}); err == nil {
+		t.Fatal("expected validation error for incomplete dod repo")
+	}
+	first := &storage.DoDRepo{URL: url, Name: "mirror", RepomdChecksum: "aa", SolvKey: "dod/x/p1.solv"}
+	if err := store.SaveDoDRepo(ctx, first); err != nil {
+		t.Fatalf("failed to save dod repo: %v", err)
+	}
+	second := &storage.DoDRepo{URL: url, Name: "mirror", RepomdChecksum: "bb", SolvKey: "dod/x/p2.solv"}
+	if err := store.SaveDoDRepo(ctx, second); err != nil {
+		t.Fatalf("failed to upsert dod repo: %v", err)
+	}
+	got, err := store.GetDoDRepo(ctx, url)
+	if err != nil {
+		t.Fatalf("failed to get dod repo: %v", err)
+	}
+	if got.RepomdChecksum != "bb" || got.SolvKey != "dod/x/p2.solv" || got.Name != "mirror" || got.UpdatedAt.IsZero() {
+		t.Errorf("unexpected dod repo: %+v", got)
+	}
 }
 
 func verifyBuildStates(ctx context.Context, t *testing.T, store *postgres.PostgresStore, prj string) {

@@ -48,6 +48,8 @@ type ServerConfig struct {
 	TLSCert    string
 	TLSKey     string
 	ServerCA   string
+	// DoDRepomdTTL is how often an external repository's repomd.xml is re-checked.
+	DoDRepomdTTL time.Duration
 }
 
 func parseServerConfig() ServerConfig {
@@ -70,6 +72,7 @@ func parseServerConfig() ServerConfig {
 	flag.StringVar(&cfg.TLSCert, "signd-tls-cert", getEnv("SIGND_TLS_CERT", ""), "Client certificate for mTLS connection to bsgo-signd")
 	flag.StringVar(&cfg.TLSKey, "signd-tls-key", getEnv("SIGND_TLS_KEY", ""), "Client key for mTLS connection to bsgo-signd")
 	flag.StringVar(&cfg.ServerCA, "signd-server-ca", getEnv("SIGND_SERVER_CA", ""), "Server root CA certificate for verifying bsgo-signd")
+	flag.DurationVar(&cfg.DoDRepomdTTL, "dod-repomd-ttl", getEnvDuration("DOD_REPOMD_TTL", dod.DefaultRepomdTTL), "Interval between repomd.xml re-checks of external (DoD) repositories")
 	flag.Parse()
 
 	if subcmd != "" {
@@ -316,6 +319,7 @@ func startSchedulerAndDispatcher(ctx context.Context, cfg ServerConfig, nc *nats
 	dodIngestor := dod.NewExternalRepoIngestor(nil)
 	dodFetcher := dod.NewDoDFetcher(nil, &s3DoDAdapter{storage: s3Client})
 	sched.SetDoD(dodIngestor, dodFetcher)
+	sched.SetRepoCache(dod.NewRepoCache(nil, &s3DoDAdapter{storage: s3Client}, store, dod.RepoCacheConfig{TTL: cfg.DoDRepomdTTL}))
 
 	cascade := scheduler.NewCascadeEngine(store, solverPool, pub, gatekeeper)
 
@@ -790,4 +794,17 @@ func getEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+func getEnvDuration(key string, fallback time.Duration) time.Duration {
+	val := os.Getenv(key)
+	if val == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(val)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid duration in %s=%q, using %s: %v\n", key, val, fallback, err)
+		return fallback
+	}
+	return d
 }
