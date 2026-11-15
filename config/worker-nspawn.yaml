@@ -8,7 +8,7 @@ worker:
   id: "worker-nspawn-01"
   arch: "x86_64"
   work_dir: "/var/tmp/bsgo-worker"
-  state_dir: "/run/bsgo/worker"
+  state_dir: "/var/tmp/bsgo-worker/state"
   cache_dir: "/var/tmp/bsgo-worker/cache"
   # Capacity is detected at startup (cgroup-aware CPUs and memory, free disk of
   # work_dir). Uncomment to override; explicit values win over detection.
