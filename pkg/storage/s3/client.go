@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -336,6 +337,34 @@ func (s *S3Storage) ListObjects(ctx context.Context, prefix string) ([]S3ObjectI
 		}
 	}
 	return res, nil
+}
+
+// ReadObject returns the content of an object.
+func (s *S3Storage) ReadObject(ctx context.Context, s3Key string) ([]byte, error) {
+	rc, _, _, err := s.GetObject(ctx, s3Key)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, fmt.Errorf("failed reading s3://%s/%s: %w", s.bucket, s3Key, err)
+	}
+	return data, nil
+}
+
+// CopyObject copies an object inside the bucket without moving its data
+// through the caller.
+func (s *S3Storage) CopyObject(ctx context.Context, srcKey, dstKey string) error {
+	_, err := s.client.CopyObject(ctx, &awss3.CopyObjectInput{
+		Bucket:     aws.String(s.bucket),
+		Key:        aws.String(dstKey),
+		CopySource: aws.String(url.PathEscape(s.bucket + "/" + srcKey)),
+	})
+	if err != nil {
+		return fmt.Errorf("failed copying s3://%s/%s to %s: %w", s.bucket, srcKey, dstKey, err)
+	}
+	return nil
 }
 
 // DeleteObject deletes an object from S3 by its key.
