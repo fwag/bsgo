@@ -1,0 +1,29 @@
+<project name="SUSE:SLFO:1.2">
+  <title>SUSE Linux Framework One 1.2</title>
+  <description>Round-trip fixture _meta for the SLFO 1.2 prjconf (hand-written, repositories as used by the prjconf).</description>
+  <person userid="slfo-maintainer" role="maintainer"/>
+  <group groupid="slfo-team" role="maintainer"/>
+  <build>
+    <disable repository="helmcharts"/>
+  </build>
+  <repository name="standard">
+    <arch>x86_64</arch>
+    <arch>aarch64</arch>
+    <arch>ppc64le</arch>
+    <arch>s390x</arch>
+  </repository>
+  <repository name="images">
+    <path project="SUSE:SLFO:1.2" repository="standard"/>
+    <arch>x86_64</arch>
+    <arch>aarch64</arch>
+  </repository>
+  <repository name="containerfile">
+    <path project="SUSE:SLFO:1.2" repository="standard"/>
+    <arch>x86_64</arch>
+    <arch>aarch64</arch>
+  </repository>
+  <repository name="helmcharts">
+    <path project="SUSE:SLFO:1.2" repository="standard"/>
+    <arch>x86_64</arch>
+  </repository>
+</project>
