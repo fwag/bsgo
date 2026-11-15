@@ -31,7 +31,27 @@ func (f fixedSource) Snapshot(_ context.Context, _ string, flt storage.BuildStat
 			rows = append(rows, e)
 		}
 	}
-	return watchSnapshot{Counts: counts, Rows: rows}, nil
+	return watchSnapshot{Counts: counts, Summaries: f.summaries(flt), Rows: rows}, nil
+}
+
+func (f fixedSource) summaries(flt storage.BuildStateFilter) []RepoArchSummary {
+	byKey := map[[2]string]map[string]int{}
+	for _, e := range f.rows {
+		if (flt.Repo != "" && flt.Repo != e.Repo) || (flt.Arch != "" && flt.Arch != e.Arch) {
+			continue
+		}
+		k := [2]string{e.Repo, e.Arch}
+		if byKey[k] == nil {
+			byKey[k] = map[string]int{}
+		}
+		byKey[k][e.State]++
+	}
+	out := []RepoArchSummary{}
+	for k, counts := range byKey {
+		out = append(out, RepoArchSummary{Repo: k[0], Arch: k[1], Counts: counts})
+	}
+	sortSummaries(out)
+	return out
 }
 
 func checkGolden(t *testing.T, name, got string) {

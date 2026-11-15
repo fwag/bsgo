@@ -15,7 +15,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const watchLong = `Watch the build state of one project.
+func watchLong() string {
+	return `Watch the build state of one project.
 
 The data comes from the control-plane database (table package_build_state),
 polled every --interval, so one row is one package unit (package[:flavor]) in
@@ -26,8 +27,13 @@ Interactive keys (TUI):
   b  building (default)   s  scheduled   f  failed   u  unresolvable
   k  blocked              a  all states  m  architecture matrix
   /  search by package substring (Enter keeps it, Esc clears it)
+  ?  legend of the state letters
   Up/Down  select         Enter or l  logs of the selected job (Esc closes)
   q  quit
+
+State letters (as in osc results): ` + stateLegend() + `.
+The header shows the counts per repository and architecture with these letters;
+the worker fleet panel lists every active job of each worker.
 
 Non-interactive:
   --once            print the current snapshot of --state (default building)
@@ -36,7 +42,8 @@ Non-interactive:
   --history <pkg>   earlier jobs of that package, newest first, read from the
                     JOB_STATUS stream (needs NATS; at most --limit jobs)
 
-Valid values for --state: ` + watchAllStates + ", %s" + `.`
+Valid values for --state: ` + watchAllStates + ", " + strings.Join(storage.ValidBuildStates, ", ") + `.`
+}
 
 const watchExample = `  bsgo watch SUSE:SLFO:1.2
   bsgo watch SUSE:SLFO:1.2 --repo standard --arch x86_64 --interval 5s
@@ -57,12 +64,14 @@ type watchParams struct {
 
 // WatchResult is the machine contract of `bsgo watch --once --json`.
 type WatchResult struct {
-	Project  string              `json:"project"`
-	Repo     string              `json:"repo,omitempty"`
-	Arch     string              `json:"arch,omitempty"`
-	State    string              `json:"state"`
-	Counts   map[string]int      `json:"counts"`
-	Packages []PackageStateEntry `json:"packages"`
+	Project string         `json:"project"`
+	Repo    string         `json:"repo,omitempty"`
+	Arch    string         `json:"arch,omitempty"`
+	State   string         `json:"state"`
+	Counts  map[string]int `json:"counts"`
+	// Repositories has one entry per repo/arch with its state counts.
+	Repositories []RepoArchSummary   `json:"repositories"`
+	Packages     []PackageStateEntry `json:"packages"`
 }
 
 // WatchHistoryResult is the machine contract of `bsgo watch --history --json`.
@@ -83,7 +92,7 @@ func newWatchCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "watch <project>",
 		Short:   "Watch the build state of a project (live TUI, --once snapshot, --history)",
-		Long:    fmt.Sprintf(watchLong, strings.Join(storage.ValidBuildStates, ", ")),
+		Long:    watchLong(),
 		Example: watchExample,
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -159,7 +168,11 @@ func runWatchOnce(ctx context.Context, w io.Writer, src stateSource, p watchPara
 	if res.Counts == nil {
 		res.Counts = map[string]int{}
 	}
-	human := fmt.Sprintf("%s: %s\n%s", p.Project, formatCounts(snap.Counts), formatEntriesTable(rows))
+	res.Repositories = snap.Summaries
+	if res.Repositories == nil {
+		res.Repositories = []RepoArchSummary{}
+	}
+	human := fmt.Sprintf("%s: %s\n%s%s", p.Project, formatCounts(snap.Counts), formatSummaryLines(snap.Summaries), formatEntriesTable(rows))
 	return Render(w, human, res, fmt.Sprintf("%d", len(rows)), opts)
 }
 

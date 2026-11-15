@@ -6,6 +6,16 @@
     "failed": 1,
     "unresolvable": 1
   },
+  "repositories": [
+    {
+      "repo": "standard",
+      "arch": "aarch64",
+      "counts": {
+        "failed": 1,
+        "unresolvable": 1
+      }
+    }
+  ],
   "packages": [
     {
       "package": "bash",

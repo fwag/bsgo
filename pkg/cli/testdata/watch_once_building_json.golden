@@ -7,6 +7,24 @@
     "scheduled": 1,
     "unresolvable": 1
   },
+  "repositories": [
+    {
+      "repo": "standard",
+      "arch": "aarch64",
+      "counts": {
+        "failed": 1,
+        "unresolvable": 1
+      }
+    },
+    {
+      "repo": "standard",
+      "arch": "x86_64",
+      "counts": {
+        "building": 3,
+        "scheduled": 1
+      }
+    }
+  ],
   "packages": [
     {
       "package": "glibc",

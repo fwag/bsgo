@@ -16,11 +16,23 @@ import (
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
+// RepoArchSummary is the per repository and architecture line of the header,
+// like the right column of `osc results`: state counts of every package unit.
+type RepoArchSummary struct {
+	Repo string `json:"repo"`
+	Arch string `json:"arch"`
+	// RepoState is the state of the repository itself (published, blocked,
+	// ...). The backend does not report it yet, so it is empty.
+	RepoState string         `json:"repo_state,omitempty"`
+	Counts    map[string]int `json:"counts"`
+}
+
 // watchSnapshot is the current state of a project: per-state counts (ignoring
-// the state filter) and the rows matching the filter.
+// the state filter), the per repo/arch summaries and the rows matching the filter.
 type watchSnapshot struct {
-	Counts map[string]int
-	Rows   []PackageStateEntry
+	Counts    map[string]int
+	Summaries []RepoArchSummary
+	Rows      []PackageStateEntry
 }
 
 // stateSource reads the authoritative build state table.
@@ -41,6 +53,10 @@ func (s storeStateSource) Snapshot(ctx context.Context, project string, filter s
 	if err != nil {
 		return watchSnapshot{}, fmt.Errorf("failed counting build states: %w", err)
 	}
+	summaries, err := s.summaries(ctx, project, countFilter)
+	if err != nil {
+		return watchSnapshot{}, err
+	}
 	states, err := s.store.ListBuildStates(ctx, project, filter)
 	if err != nil {
 		return watchSnapshot{}, fmt.Errorf("failed listing build states: %w", err)
@@ -50,7 +66,32 @@ func (s storeStateSource) Snapshot(ctx context.Context, project string, filter s
 	for _, st := range states {
 		rows = append(rows, stateEntry(st, now))
 	}
-	return watchSnapshot{Counts: counts, Rows: rows}, nil
+	return watchSnapshot{Counts: counts, Summaries: summaries, Rows: rows}, nil
+}
+
+// summaries counts the states of every repo/arch the project builds for,
+// honouring the repo and arch of filter.
+func (s storeStateSource) summaries(ctx context.Context, project string, filter storage.BuildStateFilter) ([]RepoArchSummary, error) {
+	prj, err := s.store.GetProject(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("failed loading project %s: %w", project, err)
+	}
+	out := []RepoArchSummary{}
+	for repo, target := range prj.Targets {
+		for _, arch := range target.Architectures {
+			f := storage.BuildStateFilter{Repo: repo, Arch: arch}
+			if (filter.Repo != "" && filter.Repo != repo) || (filter.Arch != "" && filter.Arch != arch) {
+				continue
+			}
+			counts, err := s.store.CountBuildStates(ctx, project, f)
+			if err != nil {
+				return nil, fmt.Errorf("failed counting build states of %s/%s: %w", repo, arch, err)
+			}
+			out = append(out, RepoArchSummary{Repo: repo, Arch: arch, Counts: counts})
+		}
+	}
+	sortSummaries(out)
+	return out, nil
 }
 
 // validateWatchProject fails unless project exists; the error lists the

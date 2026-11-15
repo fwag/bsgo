@@ -15,6 +15,12 @@ import (
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
+// watchMatrixColumns are always shown in the matrix; other states follow once present.
+var watchMatrixColumns = []string{
+	storage.StateSucceeded, storage.StateBuilding, storage.StateScheduled,
+	storage.StateFailed, storage.StateUnresolvable, storage.StateBlocked,
+}
+
 var (
 	watchHeaderStyle = lipgloss.NewStyle().
 				Bold(true).
@@ -33,15 +39,18 @@ var (
 )
 
 const (
-	watchFooter   = "[b]uilding [s]cheduled [f]ailed [u]nresolvable bloc[k]ed [a]ll  [/] search  [Enter/l] logs  [m] matrix  [q] quit"
-	watchMaxLogs  = 200
-	watchFetchTTL = 10 * time.Second
+	watchFooter     = "[b]uilding [s]cheduled [f]ailed [u]nresolvable bloc[k]ed [a]ll  [/] search  [Enter/l] logs  [m] matrix  [?] legend  [q] quit"
+	watchMaxLogs    = 200
+	watchMaxSummary = 6
+	watchFetchTTL   = 10 * time.Second
 )
 
 type (
 	snapshotMsg struct {
 		snap watchSnapshot
-		err  error
+		// active are the building rows, for the worker fleet panel.
+		active []PackageStateEntry
+		err    error
 	}
 	watchTickMsg      time.Time
 	watchNudgeMsg     struct{}
@@ -86,7 +95,10 @@ type watchModel struct {
 	searching bool
 	err       string
 	note      string
+	showHelp  bool
 	workers   map[string]v1.WorkerHeartbeat
+	summaries []RepoArchSummary
+	active    map[string]PackageStateEntry
 
 	logJob   string
 	logLines []string
@@ -101,6 +113,7 @@ func newWatchModel(ctx context.Context, src stateSource, logs logSource, p watch
 		width:   110,
 		height:  30,
 		workers: make(map[string]v1.WorkerHeartbeat),
+		active:  make(map[string]PackageStateEntry),
 	}
 }
 
@@ -122,9 +135,24 @@ func (m *watchModel) fetch() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, watchFetchTTL)
 		defer cancel()
-		snap, err := m.src.Snapshot(ctx, m.project, filter)
-		return snapshotMsg{snap: snap, err: err}
+		snap, active, err := snapshotWithActive(ctx, m.src, m.project, filter)
+		return snapshotMsg{snap: snap, active: active, err: err}
 	}
+}
+
+// snapshotWithActive returns the snapshot of filter and the building rows. When
+// the filter shows another state the building rows need a second query.
+func snapshotWithActive(ctx context.Context, src stateSource, project string, filter storage.BuildStateFilter) (watchSnapshot, []PackageStateEntry, error) {
+	snap, err := src.Snapshot(ctx, project, filter)
+	if err != nil {
+		return snap, nil, err
+	}
+	if filter.State == "" || filter.State == storage.StateBuilding {
+		return snap, filterEntries(snap.Rows, storage.StateBuilding, ""), nil
+	}
+	filter.State = storage.StateBuilding
+	building, err := src.Snapshot(ctx, project, filter)
+	return snap, building.Rows, err
 }
 
 func (m *watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -156,6 +184,11 @@ func (m *watchModel) applySnapshot(msg snapshotMsg) {
 	m.err = ""
 	m.view.Rows = msg.snap.Rows
 	m.view.Counts = msg.snap.Counts
+	m.summaries = msg.snap.Summaries
+	m.active = make(map[string]PackageStateEntry, len(msg.active))
+	for _, e := range msg.active {
+		m.active[e.JobID] = e
+	}
 	m.clampCursor()
 }
 
@@ -213,6 +246,8 @@ func (m *watchModel) handleListKey(key string) tea.Cmd {
 	switch key {
 	case "/":
 		m.searching = true
+	case "?":
+		m.showHelp = !m.showHelp
 	case "up", "ctrl+p":
 		m.cursor = max(0, m.cursor-1)
 	case "down", "ctrl+n":
@@ -274,6 +309,10 @@ func (m *watchModel) View() string {
 	} else {
 		s.WriteString(m.renderList())
 	}
+	s.WriteString("\n" + m.renderFleet())
+	if m.showHelp {
+		s.WriteString("\n" + subtleStyle.Render("  Legend: "+stateLegend()) + "\n")
+	}
 	if m.logJob != "" {
 		s.WriteString("\n" + m.renderLogs())
 	}
@@ -286,15 +325,56 @@ func (m *watchModel) renderHeader() string {
 	if m.repo != "" || m.arch != "" {
 		scope += fmt.Sprintf(" (%s/%s)", dashIfEmpty(m.repo), dashIfEmpty(m.arch))
 	}
-	parts := make([]string, 0, len(watchCountOrder))
-	for _, st := range watchCountOrder {
+	states := orderedStates(m.view.Counts, watchCountOrder, true)
+	parts := make([]string, 0, len(states))
+	for _, st := range states {
 		label := fmt.Sprintf("%s %d", st, m.view.Counts[st])
 		if st == m.view.State && !m.view.Matrix {
 			label = "[" + label + "]"
 		}
 		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color(watchStateColors[st])).Render(label))
 	}
-	return watchHeaderStyle.Render(" bsgo watch ") + " " + scope + "\n" + strings.Join(parts, "  ")
+	head := watchHeaderStyle.Render(" bsgo watch ") + " " + scope + "\n" + strings.Join(parts, "  ")
+	return head + "\n" + subtleStyle.Render(m.summaryBlock())
+}
+
+// summaryBlock lists the repo/arch summaries, at most watchMaxSummary lines.
+func (m *watchModel) summaryBlock() string {
+	lines := make([]string, 0, len(m.summaries))
+	for _, s := range m.summaries {
+		lines = append(lines, formatSummaryLine(s))
+	}
+	if len(lines) > watchMaxSummary {
+		lines = append(lines[:watchMaxSummary-1], fmt.Sprintf("... %d more repositories", len(lines)-watchMaxSummary+1))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderFleet lists every worker with all of its active jobs.
+func (m *watchModel) renderFleet() string {
+	fleet := buildFleet(m.workers, m.active, time.Now())
+	var lines []string
+	for _, w := range fleet {
+		lines = append(lines, fmt.Sprintf("  %s %s %s", w.ID, w.Arch, w.Status))
+		for _, j := range w.Jobs {
+			lines = append(lines, "    "+formatFleetJob(j))
+		}
+	}
+	if len(lines) == 0 {
+		return subtleStyle.Render("  Worker fleet: no workers heartbeating") + "\n"
+	}
+	if limit := max(4, m.height/4); len(lines) > limit {
+		lines = append(lines[:limit-1], fmt.Sprintf("    ... %d more lines", len(lines)-limit+1))
+	}
+	title := fmt.Sprintf("  Worker fleet (%d)", len(fleet))
+	return titleStyle.MarginBottom(0).Render(title) + "\n" + strings.Join(lines, "\n") + "\n"
+}
+
+func formatFleetJob(j fleetJob) string {
+	if j.Name == "" {
+		return shortJobID(j.JobID)
+	}
+	return fmt.Sprintf("%s %s %s %s", shortJobID(j.JobID), j.Name, j.RepoArch, j.Elapsed)
 }
 
 func (m *watchModel) renderList() string {
@@ -313,7 +393,7 @@ func (m *watchModel) renderList() string {
 		if i == m.cursor {
 			prefix = watchCursorStyle.Render("▶ ")
 		}
-		state := lipgloss.NewStyle().Foreground(lipgloss.Color(watchStateColors[e.State])).Render(fmt.Sprintf("%-13s", e.State))
+		state := lipgloss.NewStyle().Foreground(lipgloss.Color(watchStateColors[e.State])).Render(fmt.Sprintf("%s %-11s", stateToken(e.State), e.State))
 		fmt.Fprintf(&sb, "%s%-34s %-22s %s %-9s %-9s %s\n", prefix, truncate(entryName(e), 34),
 			truncate(e.Repo+"/"+e.Arch, 22), state, elapsedCell(e), dashIfEmpty(shortJobID(e.JobID)), dashIfEmpty(e.Worker))
 	}
@@ -328,8 +408,7 @@ func (m *watchModel) renderMatrix() string {
 	if len(rows) == 0 {
 		return subtleStyle.Render("  No data.") + "\n"
 	}
-	cols := []string{storage.StateSucceeded, storage.StateBuilding, storage.StateScheduled,
-		storage.StateFailed, storage.StateUnresolvable, storage.StateBlocked}
+	cols := orderedStates(m.view.Counts, watchMatrixColumns, true)
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "  %-10s %7s", "ARCH", "TOTAL")
 	for _, c := range cols {

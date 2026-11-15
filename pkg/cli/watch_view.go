@@ -176,13 +176,181 @@ func shortJobID(id string) string {
 	return id
 }
 
+// stateLetters maps build states to the letter codes of OBS (osc results).
+// States are data: any state not listed here is shown as stateUnknownLetter,
+// so states the backend starts emitting later appear without a code change.
+var stateLetters = map[string]string{
+	"succeeded":    ".",
+	"disabled":     " ",
+	"unresolvable": "U",
+	"failed":       "F",
+	"broken":       "B",
+	"blocked":      "b",
+	"building":     "%",
+	"finished":     "f",
+	"scheduled":    "s",
+	"locked":       "L",
+	"excluded":     "x",
+	"dispatching":  "d",
+	"signing":      "S",
+}
+
+const stateUnknownLetter = "?"
+
+// stateLegendOrder is the order of the legend.
+var stateLegendOrder = []string{
+	"succeeded", "disabled", "unresolvable", "failed", "broken", "blocked",
+	"building", "finished", "scheduled", "locked", "excluded", "dispatching", "signing",
+}
+
+// stateLetter is the OBS letter code of a state.
+func stateLetter(state string) string {
+	if l, ok := stateLetters[state]; ok {
+		return l
+	}
+	return stateUnknownLetter
+}
+
+// stateToken is the letter as printed in summaries: the space of disabled is
+// shown as an underscore so that it stays visible.
+func stateToken(state string) string {
+	if l := stateLetter(state); l != " " {
+		return l
+	}
+	return "_"
+}
+
+// stateLegend explains the letter codes on one line.
+func stateLegend() string {
+	parts := make([]string, 0, len(stateLegendOrder)+1)
+	for _, s := range stateLegendOrder {
+		parts = append(parts, stateToken(s)+"="+s)
+	}
+	parts = append(parts, stateUnknownLetter+"=no state or unknown")
+	return strings.Join(parts, " ")
+}
+
+// orderedStates lists the states of counts: the usual ones first (even when
+// zero if includeZero), then any other state sorted by name.
+func orderedStates(counts map[string]int, known []string, includeZero bool) []string {
+	var out []string
+	seen := make(map[string]bool)
+	for _, s := range known {
+		seen[s] = true
+		if includeZero || counts[s] > 0 {
+			out = append(out, s)
+		}
+	}
+	var extra []string
+	for s, n := range counts {
+		if !seen[s] && n > 0 {
+			extra = append(extra, s)
+		}
+	}
+	sort.Strings(extra)
+	return append(out, extra...)
+}
+
 // formatCounts lists the per-state counts on one plain line.
 func formatCounts(counts map[string]int) string {
-	parts := make([]string, 0, len(watchCountOrder))
-	for _, s := range watchCountOrder {
+	states := orderedStates(counts, watchCountOrder, true)
+	parts := make([]string, 0, len(states))
+	for _, s := range states {
 		parts = append(parts, fmt.Sprintf("%s=%d", s, counts[s]))
 	}
 	return strings.Join(parts, " ")
+}
+
+func sortSummaries(list []RepoArchSummary) {
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Repo != list[j].Repo {
+			return list[i].Repo < list[j].Repo
+		}
+		return list[i].Arch < list[j].Arch
+	})
+}
+
+// formatSummaryLine renders "<repo> <arch>: <letter><count> ..." like the
+// right column of osc results; a known repository state follows in brackets.
+func formatSummaryLine(s RepoArchSummary) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s %s", s.Repo, s.Arch)
+	if s.RepoState != "" {
+		fmt.Fprintf(&sb, " [%s]", s.RepoState)
+	}
+	sb.WriteString(":")
+	for _, st := range orderedStates(s.Counts, stateLegendOrder, false) {
+		fmt.Fprintf(&sb, " %s%d", stateToken(st), s.Counts[st])
+	}
+	return sb.String()
+}
+
+// formatSummaryLines renders one line per repo/arch, each newline terminated.
+func formatSummaryLines(list []RepoArchSummary) string {
+	var sb strings.Builder
+	for _, s := range list {
+		sb.WriteString(formatSummaryLine(s) + "\n")
+	}
+	return sb.String()
+}
+
+// fleetJob is one active job of a worker.
+type fleetJob struct {
+	JobID    string
+	Name     string // package[:flavor], empty when the job is not in the state table
+	RepoArch string
+	Elapsed  string
+}
+
+// fleetWorker is one worker with all of its active jobs.
+type fleetWorker struct {
+	ID, Arch, Status string
+	Jobs             []fleetJob
+}
+
+// workerStaleAfter is how long after its last heartbeat a worker is dropped.
+const workerStaleAfter = 60 * time.Second
+
+// buildFleet lists the live workers sorted by id with every active job. active
+// maps job ids to their state table entry for names and elapsed time.
+func buildFleet(heartbeats map[string]v1.WorkerHeartbeat, active map[string]PackageStateEntry, now time.Time) []fleetWorker {
+	out := make([]fleetWorker, 0, len(heartbeats))
+	for id, hb := range heartbeats {
+		if hb.TimestampUnix > 0 && now.Sub(time.Unix(hb.TimestampUnix, 0)) > workerStaleAfter {
+			continue
+		}
+		w := fleetWorker{ID: id, Arch: hb.Architecture, Status: hb.Status}
+		jobs := append([]string(nil), hb.ActiveJobIDs...)
+		if hb.ActiveJobID != "" && !containsString(jobs, hb.ActiveJobID) {
+			jobs = append(jobs, hb.ActiveJobID)
+		}
+		sort.Strings(jobs)
+		for _, j := range jobs {
+			w.Jobs = append(w.Jobs, fleetJobFor(j, active))
+		}
+		out = append(out, w)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func fleetJobFor(jobID string, active map[string]PackageStateEntry) fleetJob {
+	j := fleetJob{JobID: jobID}
+	if e, ok := active[jobID]; ok {
+		j.Name = entryName(e)
+		j.RepoArch = e.Repo + "/" + e.Arch
+		j.Elapsed = formatElapsed(e.BuildingSeconds)
+	}
+	return j
+}
+
+func containsString(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 func elapsedCell(e PackageStateEntry) string {

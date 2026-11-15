@@ -4,9 +4,12 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
+	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
 type fakeLogs struct {
@@ -112,5 +115,73 @@ func TestWatchModelCursorAndSnapshotError(t *testing.T) {
 	m.applySnapshot(snapshotMsg{err: context.DeadlineExceeded})
 	if !strings.Contains(m.View(), "error:") || len(m.rows()) != 3 {
 		t.Error("an error must be shown and the last good rows kept")
+	}
+}
+
+func TestWatchModelFleetSummaryAndLegend(t *testing.T) {
+	m := newTestWatchModel(nil)
+	m.applySnapshot(snapshotMsg{
+		snap: watchSnapshot{
+			Counts:    map[string]int{"building": 3, "quarantined": 2},
+			Summaries: []RepoArchSummary{{Repo: "standard", Arch: "x86_64", Counts: map[string]int{"building": 3, "succeeded": 9}}},
+			Rows:      sampleEntries(),
+		},
+		active: []PackageStateEntry{sampleEntries()[1]},
+	})
+	m.Update(watchHeartbeatMsg(v1.WorkerHeartbeat{WorkerID: "worker-7", Architecture: "x86_64", Status: "BUSY",
+		ActiveJobIDs: []string{"job-glibc-5678", "job-unknown"}}))
+	out := m.View()
+	for _, want := range []string{"standard x86_64: .9 %3", "quarantined 2", "Worker fleet (1)", "job-glib glibc standard/x86_64 1h01m", "job-unkn"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("view lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Legend:") {
+		t.Error("legend must be hidden by default")
+	}
+	send(m, "?")
+	if !strings.Contains(m.View(), "Legend: .=succeeded") {
+		t.Errorf("legend not shown:\n%s", m.View())
+	}
+}
+
+func TestStoreStateSourceSummaries(t *testing.T) {
+	store := storage.NewMemoryStore()
+	ctx := context.Background()
+	prj := &manifest.ProjectManifest{SchemaVersion: "v1", Project: manifest.ProjectInfo{Name: "p"},
+		Targets: map[string]manifest.BuildTarget{
+			"standard": {Architectures: []string{"x86_64", "aarch64"}},
+			"images":   {Architectures: []string{"x86_64"}},
+		}}
+	if err := store.CreateProject(ctx, prj); err != nil {
+		t.Fatal(err)
+	}
+	err := store.UpsertBuildStates(ctx, []*storage.PackageBuildState{
+		{Project: "p", Repo: "standard", Arch: "x86_64", Package: "a", State: storage.StateBuilding},
+		{Project: "p", Repo: "standard", Arch: "x86_64", Package: "b", State: storage.StateSucceeded},
+		{Project: "p", Repo: "images", Arch: "x86_64", Package: "a", State: storage.StateFailed},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := storeStateSource{store: store, now: time.Now}
+	snap, err := src.Snapshot(ctx, "p", storage.BuildStateFilter{State: storage.StateBuilding})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, s := range snap.Summaries {
+		lines = append(lines, formatSummaryLine(s))
+	}
+	want := "images x86_64: F1|standard aarch64:|standard x86_64: .1 %1"
+	if got := strings.Join(lines, "|"); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if len(snap.Rows) != 1 || snap.Counts["succeeded"] != 1 {
+		t.Errorf("rows must be narrowed by state, counts not: %+v", snap)
+	}
+	snap, err = src.Snapshot(ctx, "p", storage.BuildStateFilter{Repo: "images"})
+	if err != nil || len(snap.Summaries) != 1 {
+		t.Errorf("repo filter must narrow summaries: %+v, %v", snap.Summaries, err)
 	}
 }
