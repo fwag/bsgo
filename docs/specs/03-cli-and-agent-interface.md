@@ -31,7 +31,10 @@ bsgo
 ├── project
 │   ├── list                            List all accessible projects
 │   ├── show <project>                  Show targets, repositories, and metadata
-│   └── convert-obs                     Convert an OBS _meta + prjconf into project.yaml (offline)
+│   ├── convert-obs                     Convert an OBS _meta + prjconf into project.yaml (offline)
+│   ├── import-obs-git                  Import an OBS project kept in a git superproject (offline)
+│   ├── apply <dir>                     Upsert project.yaml and all package manifests of a directory
+│   └── dependency remove <project>     Remove a named dependency (e.g. the Bootstrap Dependency)
 ├── package
 │   ├── list <project>                  List packages within a project
 │   ├── show <project/package>          Inspect manifest, git source, and shard path
@@ -96,6 +99,38 @@ Example:
 bsgo project convert-obs --meta SUSE_SLFO_1.2.meta.xml --prjconf SUSE_SLFO_1.2.prjconf \
   --out project.yaml --json | jq '.report.raw_by_reason'
 ```
+
+### 3.2 Offline Import from a Git Superproject (`bsgo project import-obs-git`)
+
+```bash
+bsgo project import-obs-git --repo <git dir> --ref <branch|commit> --out <dir> [--meta <_meta>]
+        [--prjconf-path _config] [--gitea-base <url>] [--default-branch <b>]
+        [--bootstrap-url <url> --bootstrap-name <name> --bootstrap-targets <t>...]
+        [--verify-arch <arch>...] [--dry-run] [--force] [--no-verify] [--json]
+```
+
+Reads a superproject such as `products/SLFO` with git plumbing only (`rev-parse`, `ls-tree`, `show`; submodule directories may be empty) and writes `<out>/project.yaml` (same code path and round-trip gate as `convert-obs`) and one `<out>/packages/xx/<pkg>.yaml` per mode-160000 tree entry (`xx` per ADR 0001).
+
+- Package manifests hold the git URL from `.gitmodules` (relative URLs resolve against `--gitea-base`, else the `origin` remote of `--repo`, with git semantics), the `.gitmodules` branch (or `--default-branch`, else unset), and the full pinned commit id. They contain no `recipe` (auto-detected) and no `resources` (nothing in the source defines them); `build.enabled` is true. Per-package exclusions stay in the project's `build_flags` (`excludebuild:`).
+- `--bootstrap-url`, `--bootstrap-name` and `--bootstrap-targets` append a `url` dependency with that `name` after the project's own path entries on each listed target (Bootstrap Dependency). There is no default target.
+- Packages in `.gitmodules` but not in the tree, or the reverse, are skipped with a diagnostic on stderr and listed in the JSON report (`packages.missing_in_tree`, `packages.missing_in_gitmodules`, `packages.skipped`).
+- `--json` prints one document `{"out","dry_run","project","verified","report","packages"}`; `project.yaml` is not overwritten without `--force`.
+
+### 3.3 Applying a Project Directory (`bsgo project apply`)
+
+```bash
+bsgo project apply <dir> [--dry-run] [--json]
+```
+
+Upserts `<dir>/project.yaml` and every `packages/**/*.yaml`. Each package must sit at its shard path. All files are tried; failures are listed (`failures[]` with `file` and `error`) and the exit code is non-zero if any occurred. `--dry-run` only validates.
+
+### 3.4 Removing a Dependency (`bsgo project dependency remove`)
+
+```bash
+bsgo project dependency remove <project> --target <target> --name <name> [--yes] [--dry-run] [--json]
+```
+
+Removes the dependency with that `name` from one target of the stored project (used to drop the Bootstrap Dependency). Requires `--yes` unless `--dry-run`. Fails if the project, target or name does not exist.
 
 ---
 

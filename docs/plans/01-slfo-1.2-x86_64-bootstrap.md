@@ -526,16 +526,24 @@ Tasks:
 1. Reset state: purge the `bsgo.status` stream, truncate
    `package_build_state`, empty the `bins/SUSE:SLFO:1.2/` prefix, and remove
    stale `/var/tmp/bsgo-worker/jobs/*` (and `cache/s3_repos`).
-2. Re-import SUSE:SLFO:1.2 with the fixed converter. Keep the HTTP server on
+2. Re-import SUSE:SLFO:1.2 with the Go importer. Keep the HTTP server on
    `~/Devel/packages/1.1/standard` running.
+   ```
+   bsgo project import-obs-git --repo ~/Devel/packages/SLFO --ref origin/slfo-1.2 \
+     --meta <SUSE_SLFO_1.2.meta.xml> --out /tmp/slfo12-import \
+     --bootstrap-url http://<host>:8088/ --bootstrap-name SUSE:SLFO:1.1/standard \
+     --bootstrap-targets standard --json
+   bsgo project apply /tmp/slfo12-import --json
+   ```
 3. `bsgo project status SUSE:SLFO:1.2 --arch x86_64 --state unresolvable
    --json` before any build. Expected: a small residual (packages that are
    genuinely new in 1.2 and whose providers are not built yet show as
    `blocked`, not `unresolvable`). Triage the remainder by `details`.
 4. Let the checker run. Watch `succeeded` grow monotonically and confirm no
    package builds twice without a meta change.
-5. When `scheduled + building + blocked == 0`: remove the 1.1 path element,
-   then let `rebuild: transitive` converge (the second pass rebuilds
+5. When `scheduled + building + blocked == 0`: remove the 1.1 path element
+   (`bsgo project dependency remove SUSE:SLFO:1.2 --target standard
+   --name SUSE:SLFO:1.1/standard --yes`), then let `rebuild: transitive` converge (the second pass rebuilds
    everything that built against 1.1 binaries).
 6. Done criteria: all non-excluded x86_64 packages are `succeeded`, or
    `failed` with a log reason that also fails in OBS for SLFO:1.2. The
