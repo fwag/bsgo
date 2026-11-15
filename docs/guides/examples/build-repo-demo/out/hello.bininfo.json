@@ -1,0 +1,52 @@
+[
+  {
+    "name": "hello",
+    "version": "2.12",
+    "release": "3.1",
+    "arch": "x86_64",
+    "sourcerpm": "hello-2.12-3.1.src.rpm",
+    "filename": "hello-2.12-3.1.x86_64.rpm",
+    "sha256": "996a68f3fa4a6d276df6f122f90e61e7386743bd66f713038a3231e955eb4efe",
+    "size": 6209,
+    "provides": [
+      {
+        "name": "hello",
+        "op": "=",
+        "evr": "2.12-3.1"
+      },
+      {
+        "name": "hello(x86-64)",
+        "op": "=",
+        "evr": "2.12-3.1"
+      }
+    ],
+    "requires": [
+      {
+        "name": "libgreet.so.1()(64bit)"
+      },
+      {
+        "name": "rpmlib(CompressedFileNames)",
+        "op": "\u003c=",
+        "evr": "3.0.4-1"
+      },
+      {
+        "name": "rpmlib(FileDigests)",
+        "op": "\u003c=",
+        "evr": "4.6.0-1"
+      },
+      {
+        "name": "rpmlib(PayloadFilesHavePrefix)",
+        "op": "\u003c=",
+        "evr": "4.0-1"
+      },
+      {
+        "name": "rpmlib(PayloadIsZstd)",
+        "op": "\u003c=",
+        "evr": "5.4.18-1"
+      }
+    ],
+    "files": [
+      "/usr/bin/hello"
+    ]
+  }
+]

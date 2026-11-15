@@ -1,0 +1,109 @@
+[
+  {
+    "name": "libgreet-devel",
+    "version": "1.0",
+    "release": "1.1",
+    "arch": "x86_64",
+    "sourcerpm": "libgreet-1.0-1.1.src.rpm",
+    "filename": "libgreet-devel-1.0-1.1.x86_64.rpm",
+    "sha256": "1fd814f5ff46ca2925335ddd771bad9352dd7d733256d3a68ca2c0747f43dafe",
+    "size": 6546,
+    "provides": [
+      {
+        "name": "libgreet-devel",
+        "op": "=",
+        "evr": "1.0-1.1"
+      },
+      {
+        "name": "libgreet-devel(x86-64)",
+        "op": "=",
+        "evr": "1.0-1.1"
+      },
+      {
+        "name": "pkgconfig(greet)",
+        "op": "=",
+        "evr": "1.0"
+      }
+    ],
+    "requires": [
+      {
+        "name": "/usr/bin/pkg-config"
+      },
+      {
+        "name": "libgreet1",
+        "op": "=",
+        "evr": "1.0"
+      },
+      {
+        "name": "rpmlib(CompressedFileNames)",
+        "op": "\u003c=",
+        "evr": "3.0.4-1"
+      },
+      {
+        "name": "rpmlib(FileDigests)",
+        "op": "\u003c=",
+        "evr": "4.6.0-1"
+      },
+      {
+        "name": "rpmlib(PayloadFilesHavePrefix)",
+        "op": "\u003c=",
+        "evr": "4.0-1"
+      },
+      {
+        "name": "rpmlib(PayloadIsZstd)",
+        "op": "\u003c=",
+        "evr": "5.4.18-1"
+      }
+    ],
+    "files": [
+      "/usr/bin/greet-config"
+    ]
+  },
+  {
+    "name": "libgreet1",
+    "version": "1.0",
+    "release": "1.1",
+    "arch": "x86_64",
+    "sourcerpm": "libgreet-1.0-1.1.src.rpm",
+    "filename": "libgreet1-1.0-1.1.x86_64.rpm",
+    "sha256": "20e0d58582f6fefeb6595edf9eb53cfac13d46e815797cad40c182ef0aeb68f0",
+    "size": 6236,
+    "provides": [
+      {
+        "name": "libgreet.so.1()(64bit)"
+      },
+      {
+        "name": "libgreet1",
+        "op": "=",
+        "evr": "1.0-1.1"
+      },
+      {
+        "name": "libgreet1(x86-64)",
+        "op": "=",
+        "evr": "1.0-1.1"
+      }
+    ],
+    "requires": [
+      {
+        "name": "rpmlib(CompressedFileNames)",
+        "op": "\u003c=",
+        "evr": "3.0.4-1"
+      },
+      {
+        "name": "rpmlib(FileDigests)",
+        "op": "\u003c=",
+        "evr": "4.6.0-1"
+      },
+      {
+        "name": "rpmlib(PayloadFilesHavePrefix)",
+        "op": "\u003c=",
+        "evr": "4.0-1"
+      },
+      {
+        "name": "rpmlib(PayloadIsZstd)",
+        "op": "\u003c=",
+        "evr": "5.4.18-1"
+      }
+    ]
+  }
+]

@@ -1,0 +1,64 @@
+repo_add_solv took 0 ms
+repo size: 3 solvables
+repo memory used: 0 K incore, 0 K idarray
+pool contains 221 strings, 9 rels, string size is 4010
+repo contains 1 repodata sections:
+
+repodata 1 has 9 keys, 3 schemata
+  solvable:name (type repokey:type:id size 0 storage 1)
+  solvable:arch (type repokey:type:id size 0 storage 1)
+  solvable:evr (type repokey:type:id size 0 storage 1)
+  solvable:provides (type repokey:type:idarray size 11 storage 1)
+  solvable:requires (type repokey:type:idarray size 7 storage 1)
+  repository:solvables (type repokey:type:flexarray size 1 storage 2)
+  bsgo:unit (type repokey:type:str size 0 storage 2)
+  solvable:filelist (type repokey:type:dirstrarray size 21 storage 3)
+  solvable:checksum (type repokey:type:sha256 size 96 storage 3)
+  localpool has 6 directories
+
+
+repo 1 contains 3 solvables
+repo start: 2 end: 5
+
+solvable 1 (2):
+solvable:name: hello
+solvable:arch: x86_64
+solvable:evr: 2.12-3.1
+solvable:provides:
+  hello = 2.12-3.1
+  hello(x86-64) = 2.12-3.1
+solvable:requires:
+  solvable:prereqmarker
+  libgreet.so.1()(64bit)
+bsgo:unit: hello
+solvable:filelist:
+  /usr/bin/hello
+solvable:checksum: 996a68f3fa4a6d276df6f122f90e61e7386743bd66f713038a3231e955eb4efe (sha256)
+
+solvable 2 (3):
+solvable:name: libgreet-devel
+solvable:arch: x86_64
+solvable:evr: 1.0-1.1
+solvable:provides:
+  libgreet-devel = 1.0-1.1
+  libgreet-devel(x86-64) = 1.0-1.1
+  pkgconfig(greet) = 1.0
+solvable:requires:
+  solvable:prereqmarker
+  /usr/bin/pkg-config
+  libgreet1 = 1.0
+bsgo:unit: libgreet
+solvable:filelist:
+  /usr/bin/greet-config
+solvable:checksum: 1fd814f5ff46ca2925335ddd771bad9352dd7d733256d3a68ca2c0747f43dafe (sha256)
+
+solvable 3 (4):
+solvable:name: libgreet1
+solvable:arch: x86_64
+solvable:evr: 1.0-1.1
+solvable:provides:
+  libgreet.so.1()(64bit)
+  libgreet1 = 1.0-1.1
+  libgreet1(x86-64) = 1.0-1.1
+bsgo:unit: libgreet
+solvable:checksum: 20e0d58582f6fefeb6595edf9eb53cfac13d46e815797cad40c182ef0aeb68f0 (sha256)
