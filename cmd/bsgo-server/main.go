@@ -349,6 +349,8 @@ func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nat
 			case <-reaperTicker.C:
 				reaped := disp.ReapStaleJobs(time.Now())
 				for _, rj := range reaped {
+					// The job is back in the queue with the same ID: REQUEUED
+					// returns its build state to scheduled (not failed).
 					fmt.Printf("[%s] [WATCHDOG] Re-queued stale/interrupted job %s (%s/%s) due to worker failure/restart\n",
 						time.Now().Format("15:04:05"), rj.JobID, rj.Project, rj.Package)
 
@@ -357,7 +359,7 @@ func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nat
 						"project":      rj.Project,
 						"package":      rj.Package,
 						"target":       rj.Target,
-						"phase":        "ABORTED",
+						"phase":        "REQUEUED",
 						"reason":       "WORKER_LEASE_EXPIRED",
 						"architecture": rj.Architecture,
 					})

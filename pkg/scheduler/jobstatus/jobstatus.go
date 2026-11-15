@@ -82,7 +82,7 @@ func (h *Handler) Handle(ctx context.Context, data []byte) error {
 	if err := h.Store.UpsertBuildState(ctx, row); err != nil {
 		return fmt.Errorf("store build state of %s/%s: %w", p, m.Package, err)
 	}
-	if row.State == storage.StateBuilding {
+	if row.State == storage.StateBuilding || row.State == storage.StateScheduled {
 		return nil
 	}
 	return h.Dirty.JobFinished(ctx, p)
@@ -90,7 +90,7 @@ func (h *Handler) Handle(ctx context.Context, data []byte) error {
 
 func relevant(phase string) bool {
 	switch phase {
-	case "BUILDING", "SUCCEEDED", "FAILED", "ABORTED":
+	case "BUILDING", "SUCCEEDED", "FAILED", "ABORTED", "REQUEUED":
 		return true
 	}
 	return false
@@ -103,6 +103,11 @@ func (h *Handler) nextRow(ctx context.Context, m *Message, p buildrepo.Prpa, pkg
 	switch m.Phase {
 	case "BUILDING":
 		row.State = storage.StateBuilding
+	case "REQUEUED":
+		// The dispatcher put the job back into its queue after losing the
+		// worker (OBS reschedules on worker loss); it is not a build failure.
+		row.State = storage.StateScheduled
+		row.Details = "requeued: " + m.Reason
 	case "SUCCEEDED":
 		row.State, row.Meta, row.SourceCommit = storage.StateSucceeded, m.Meta, m.SourceCommit
 		fin := indexer.Finished{Prpa: p, Unit: m.Package, Artifacts: m.Artifacts}

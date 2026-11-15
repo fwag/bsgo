@@ -362,7 +362,9 @@ rebuild request in PostgreSQL that the checker consumes when it schedules the
 unit. `bsgo.status` messages of phase `BUILDING`, `SUCCEEDED`, `FAILED` and
 `ABORTED` update the unit's build state; a `SUCCEEDED` message first integrates
 the reported artifacts (`bininfo.json` plus RPMs, verified by sha256) into the
-build repository.
+build repository. `REQUEUED` (published by the dispatcher watchdog with
+`reason: WORKER_LEASE_EXPIRED` when it puts a job of a lost worker back into its
+queue) returns the unit to `scheduled`; worker loss is not a build failure.
 
 #### Publisher coordination
 Publisher replicas use two further KV buckets with the same key encoding and
