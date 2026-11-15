@@ -192,7 +192,7 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 	res, execErr := w.sandbox.Execute(jobCtx, job, natsLog)
 
 	phase, exitCode := determineJobOutcome(jobCtx, execErr, res)
-	w.publishStatusUpdate(job, phase, exitCode, res)
+	w.publishStatusUpdate(job, phase, exitCode, res, execErr)
 
 	w.mu.Lock()
 	if phase == "SUCCEEDED" && res != nil {
@@ -319,15 +319,19 @@ func determineJobOutcome(jobCtx context.Context, execErr error, res *ExecutionRe
 	return "SUCCEEDED", 0
 }
 
-func (w *WorkerDaemon) publishStatusUpdate(job *v1.BuildJob, phase string, exitCode int, res *ExecutionResult) {
+func (w *WorkerDaemon) publishStatusUpdate(job *v1.BuildJob, phase string, exitCode int, res *ExecutionResult, execErr error) {
 	status := map[string]any{
 		"job_id":       job.JobID,
 		"project":      job.Project,
 		"package":      job.Package,
+		"target":       job.Target,
 		"architecture": job.Architecture,
 		"worker_id":    w.cfg.WorkerID,
 		"phase":        phase,
 		"exit_code":    exitCode,
+	}
+	if execErr != nil {
+		status["reason"] = execErr.Error()
 	}
 	if res != nil {
 		status["artifacts"] = res.Artifacts

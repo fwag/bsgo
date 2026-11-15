@@ -526,13 +526,10 @@ func (s *ProcessSandbox) ResolveJobRepositories(ctx context.Context, job *v1.Bui
 	}
 	args := s.attachJobRepositories(ctx, job.Repositories, jobID, attachedRepos, w)
 
-	arch := job.Architecture
-	if arch == "" {
-		arch = "x86_64"
-	}
-	target := job.Target
-	if target == "" {
-		target = "standard"
+	target, arch, err := jobTargetArch(job)
+	if err != nil {
+		fmt.Fprintf(w, "cannot attach local repositories: %v\n", err)
+		return args
 	}
 
 	// In cloud-native operation with S3 configured, remote projects must come from S3.
@@ -694,13 +691,9 @@ func (s *ProcessSandbox) collectKVMArtifacts(ctx context.Context, buildRoot, job
 	pkgDir := filepath.Join(jobDir, "packages")
 	_ = os.MkdirAll(pkgDir, 0750)
 
-	target := job.Target
-	if target == "" {
-		target = "standard"
-	}
-	arch := job.Architecture
-	if arch == "" {
-		arch = "x86_64"
+	target, arch, err := jobTargetArch(job)
+	if err != nil {
+		return &ExecutionResult{ExitCode: 1}, err
 	}
 
 	localRepo := filepath.Join(s.WorkDir, "repos", job.Project, target, arch)
@@ -881,13 +874,9 @@ func (s *ProcessSandbox) collectRPMArtifacts(ctx context.Context, rpmTopDir, job
 	pattern := filepath.Join(rpmTopDir, "RPMS", "*", "*.rpm")
 	artifacts := collectRPMsFromPattern(pattern, pkgDir, job.Project, job.Package, "built real RPM artifact", w)
 
-	target := job.Target
-	if target == "" {
-		target = "standard"
-	}
-	arch := job.Architecture
-	if arch == "" {
-		arch = "x86_64"
+	target, arch, err := jobTargetArch(job)
+	if err != nil {
+		return &ExecutionResult{ExitCode: 1}, err
 	}
 
 	if err := s.uploadAndPublishArtifacts(ctx, job, pkgDir, target, arch, artifacts, w); err != nil {
@@ -1030,13 +1019,9 @@ func (s *ProcessSandbox) collectJobArtifacts(ctx context.Context, jobDir string,
 	pkgDir := filepath.Join(jobDir, "packages")
 	_ = os.MkdirAll(pkgDir, 0750)
 
-	target := job.Target
-	if target == "" {
-		target = "standard"
-	}
-	arch := job.Architecture
-	if arch == "" {
-		arch = "x86_64"
+	target, arch, err := jobTargetArch(job)
+	if err != nil {
+		return &ExecutionResult{ExitCode: 1}, err
 	}
 
 	var artifacts []v1.ChrootRPM
@@ -1075,4 +1060,19 @@ func (s *ProcessSandbox) Cleanup(_ context.Context) error {
 func checkFileExists(path string) bool {
 	_, err := os.Stat(path)
 	return !os.IsNotExist(err)
+}
+
+// jobTargetArch returns the job's target and architecture. Both are mandatory:
+// there are no implicit defaults.
+func jobTargetArch(job *v1.BuildJob) (target, arch string, err error) {
+	if job == nil {
+		return "", "", fmt.Errorf("job is nil")
+	}
+	if job.Target == "" {
+		return "", "", fmt.Errorf("job %s has no target", job.JobID)
+	}
+	if job.Architecture == "" {
+		return "", "", fmt.Errorf("job %s has no architecture", job.JobID)
+	}
+	return job.Target, job.Architecture, nil
 }

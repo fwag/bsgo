@@ -189,16 +189,6 @@ static Id select_provider(Pool *pool, Queue *plist, int num_prefers, const char 
         }
     }
 
-    // 4. Common standard library provider heuristics
-    for (int i = 0; i < plist->count; i++) {
-        Solvable *s = pool->solvables + plist->elements[i];
-        const char *sname = pool_id2str(pool, s->name);
-        if (sname && (strcmp(sname, "glibc") == 0 || strcmp(sname, "bash") == 0 ||
-                      strcmp(sname, "coreutils") == 0 || strcmp(sname, "filesystem") == 0)) {
-            return plist->elements[i];
-        }
-    }
-
     *ambiguous = 1;
     return 0;
 }

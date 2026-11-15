@@ -35,6 +35,10 @@ func main() {
 	flag.Parse()
 
 	cfg := resolveWorkerConfig(configFile, workerID, arch, natsURL, s3Bucket, workDir, diskDir)
+	if cfg.Architecture == "" {
+		fmt.Fprintln(os.Stderr, "Worker architecture is required: set --arch or worker.arch in the config file")
+		os.Exit(1)
+	}
 
 	nc, err := nats.Connect(cfg.NatsURL)
 	if err != nil {
@@ -80,13 +84,12 @@ func main() {
 
 func resolveWorkerConfig(configFile, flagID, flagArch, flagNats, flagBucket, flagWork, flagDisk string) worker.WorkerConfig {
 	cfg := worker.WorkerConfig{
-		WorkerID:     "worker-local-01",
-		Architecture: "x86_64",
-		NatsURL:      "nats://localhost:4222",
-		S3Endpoint:   "http://localhost:3900",
-		S3Bucket:     "bsgo-artifacts",
-		WorkDir:      "/tmp/bsgo-worker",
-		SandboxMode:  "rpmbuild",
+		WorkerID:    "worker-local-01",
+		NatsURL:     "nats://localhost:4222",
+		S3Endpoint:  "http://localhost:3900",
+		S3Bucket:    "bsgo-artifacts",
+		WorkDir:     "/tmp/bsgo-worker",
+		SandboxMode: "rpmbuild",
 		Hardware: v1.WorkerHardware{
 			TotalVCPUs:      8,
 			TotalMemoryMB:   16384,

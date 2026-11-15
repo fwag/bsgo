@@ -243,7 +243,7 @@ func (m *DashboardModel) handleTrigger(trig v1.BuildTrigger) {
 
 	arch := trig.Architecture
 	if arch == "" {
-		arch = "x86_64"
+		arch = "unknown"
 	}
 	m.Jobs = append(m.Jobs, v1.BuildJob{
 		JobID:        trig.TriggerID,
@@ -267,7 +267,7 @@ func (m *DashboardModel) listenNATS(ctx context.Context, p *tea.Program) {
 		if err := json.Unmarshal(msg.Data, &trig); err == nil {
 			arch := trig.Architecture
 			if arch == "" {
-				arch = "x86_64"
+				arch = "unknown"
 			}
 			statusMsg := map[string]any{
 				"job_id":       trig.TriggerID,
@@ -358,7 +358,7 @@ func (m *DashboardModel) handleStatusUpdate(st map[string]any) {
 	projectName, _ := st["project"].(string)
 	arch, _ := st["architecture"].(string)
 	if arch == "" {
-		arch = "x86_64"
+		arch = "unknown"
 	}
 
 	for i, j := range m.Jobs {
@@ -650,7 +650,7 @@ func (m *DashboardModel) ComputeMatrixRows() []ArchMatrixRow {
 		}
 		arch := j.Architecture
 		if arch == "" {
-			arch = "x86_64"
+			arch = "unknown"
 		}
 		row, exists := stats[arch]
 		if !exists {
@@ -768,7 +768,7 @@ func (m *DashboardModel) getDistinctArches() []string {
 	for _, j := range m.Jobs {
 		a := j.Architecture
 		if a == "" {
-			a = "x86_64"
+			a = "unknown"
 		}
 		if !seen[a] {
 			seen[a] = true

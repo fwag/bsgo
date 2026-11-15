@@ -212,27 +212,27 @@ func (c *CascadeEngine) evaluateTargetPackages(ctx context.Context, prjName, tar
 	return triggers, nil
 }
 
-func (c *CascadeEngine) resolveFromTargetSolv(ctx context.Context, event *v1.PublicationEvent, req solv.ExpansionRequest) (*solv.ExpansionResult, bool) {
+func (c *CascadeEngine) resolveFromTargetSolv(ctx context.Context, event *v1.PublicationEvent, req solv.ExpansionRequest) *solv.ExpansionResult {
 	if c.store == nil {
-		return nil, false
+		return nil
 	}
 	solvRec, err := c.store.GetTargetSolv(ctx, event.Project, event.Target, event.Architecture)
 	if err != nil || solvRec == nil || len(solvRec.SolvBlob) == 0 {
-		return nil, false
+		return nil
 	}
 
 	pool, err := solv.NewPool(event.Architecture)
 	if err != nil {
-		return nil, true
+		return nil
 	}
 	defer pool.Close()
 
 	repoName := fmt.Sprintf("%s:%s", event.Project, event.Target)
 	if _, err := pool.LoadRepoFromMemory(repoName, solvRec.SolvBlob); err != nil {
-		return nil, true
+		return nil
 	}
 	res, _ := pool.Resolve(req)
-	return res, true
+	return res
 }
 
 func (c *CascadeEngine) checkPackageCascade(ctx context.Context, prjName, targetName string, targetCfg manifest.BuildTarget, pkg *manifest.PackageManifest, event *v1.PublicationEvent) (*v1.BuildTrigger, error) {
@@ -245,12 +245,12 @@ func (c *CascadeEngine) checkPackageCascade(ctx context.Context, prjName, target
 		Architecture:  event.Architecture,
 	}
 
-	res, hasSolvCache := c.resolveFromTargetSolv(ctx, event, req)
+	res := c.resolveFromTargetSolv(ctx, event, req)
 	if res == nil && c.solver != nil {
 		res, _ = c.solver.Resolve(ctx, req)
 	}
 
-	if !checkDependencyMatch(res, prjName, event.Project, event.Package, reqs, hasSolvCache) {
+	if !checkDependencyMatch(res, event.Package) {
 		return nil, nil
 	}
 
@@ -278,24 +278,19 @@ func (c *CascadeEngine) checkPackageCascade(ctx context.Context, prjName, target
 	return trig, nil
 }
 
-func checkDependencyMatch(res *solv.ExpansionResult, prjName, eventPrj, eventPkg string, reqs []string, hasSolvCache bool) bool {
-	if res != nil && len(res.Packages) > 0 {
-		for _, p := range res.Packages {
-			if p.Name == eventPkg || strings.HasPrefix(p.Name, eventPkg) {
-				return true
-			}
-		}
+// checkDependencyMatch reports whether the resolved build environment contains
+// the published package by exact name. Without a resolution result nothing is
+// triggered: guessing from requirement names caused unrelated rebuilds.
+func checkDependencyMatch(res *solv.ExpansionResult, eventPkg string) bool {
+	if res == nil {
 		return false
 	}
-	for _, r := range reqs {
-		if r == eventPkg || strings.HasPrefix(r, eventPkg) {
+	for _, p := range res.Packages {
+		if p.Name == eventPkg {
 			return true
 		}
 	}
-	if hasSolvCache {
-		return false
-	}
-	return prjName != eventPrj
+	return false
 }
 
 func (c *CascadeEngine) isBlockedByDependencies(blockMode, prjName string, res *solv.ExpansionResult, event *v1.PublicationEvent) bool {

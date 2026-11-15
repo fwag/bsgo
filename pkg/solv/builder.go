@@ -50,7 +50,7 @@ func ParseRPMFilename(filename string) PackageSpec {
 // MergeAndDumpSolv merges new package specifications into an existing .solv binary blob (or creates a new one).
 func MergeAndDumpSolv(existingBlob []byte, arch, repoName string, packages []PackageSpec) ([]byte, error) {
 	if arch == "" {
-		arch = "x86_64"
+		return nil, fmt.Errorf("architecture is required to build a solv cache")
 	}
 	if repoName == "" {
 		repoName = "repo"
