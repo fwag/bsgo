@@ -25,6 +25,50 @@ test oracles unless a decision below says otherwise).
 encryption, HSM hook) is a sound base. What is wrong is the signature
 *formats* and the missing pipeline stage.
 
+## 1a. How legacy OBS does it (source-verified)
+
+Components: `bs_signer` (backend daemon), `bs_publish`, `bs_srcserver`, and the
+external obs-sign package: `sign` (client) + `signd` (daemon holding the
+instance's master gpg key). `BSConfig::sign` points at the `sign` client.
+
+- **Keys** (`BSSrcServer/Signkey.pm:createkey`, `bs_srcserver:createkey`):
+  `sign -P <tmpfile> -g rsa@4096 800 "<project> OBS Project" <project>@<obsname>`.
+  Defaults `rsa@4096`, 800 days. Result: `_pubkey` (armored public key) and
+  `_signkey` (the project private key **encrypted to signd's master key**),
+  both stored as versioned project meta files in the source server. signd
+  never stores project keys; it decrypts `_signkey` per request (`-P`).
+  `extendkey` = `sign -x <days>`, `getsignkey ... autoextend=1` extends
+  automatically when a key is about to expire.
+- **Inheritance** (`bs_srcserver:2662`, `getsignkey`): walk up the namespace
+  (`a:b:c` → `a:b` → `a`) to the first project with a `_signkey`; that project
+  is also the RPM `%vendor obs://<obsname>/<signproject>`. No key anywhere →
+  the instance default key (`sign -p`, or `BSConfig::keyfile`).
+- **Sign flavors**: prjconf `BuildFlags: signflavor:<name>` selects a named
+  key, allowed values from `BSConfig::sign_flavor` (SLFO uses
+  `signflavor:2023-05-10` and `2025-01-22` for ppc64le/s390x).
+- **RPM signing** (`bs_signer:signjob`): after a successful build the job
+  status goes `signing` (`BSSched/BuildJob.pm`); bs_signer fetches the key
+  (`getsignkey`), then for every signable file: rpm/drpm →
+  `sign --delsign -r` then `sign -r [-T buildtime] -h sha256 -P <signkey>`.
+  The `sign` client rewrites the RPM signature header itself and only sends
+  the digest to signd. With `-S .checksums` it records the new checksums.
+  Also signed: `.sha256/.sha512` (`-d`), iso, pkg.tar.*, AppImage, appx
+  (with an SSL cert from the key), helm, apk, and `_slsa_provenance.json`
+  (DSSE, `signslsaprovenance`) — provenance last, because its subject
+  digests change when the RPMs get signed. Then the job is `finished` and the
+  scheduler integrates the signed binaries.
+- **Repository metadata** (`bs_publish:883`): `sign -d -4 repodata/repomd.xml`
+  writes the armored detached `repomd.xml.asc`; `repomd.xml.key` = the
+  project public key; the generated `.repo` file has
+  `gpgkey=<url>repodata/repomd.xml.key`.
+
+Mapping to bsgo: `bsgo-signd` already plays signd's role (master key, HSM
+hook, network ACL). OBS stores the encrypted project keys in the source
+server; bsgo stores them in `project_signing_keys` (Postgres), also encrypted
+with the master key — same trust model. `bs_signer` becomes the `signer`
+role (S3). The `sign` client's RPM header rewriting is replaced by `rpmsign`
+plus a helper that asks bsgo-signd to sign the digest (SD2).
+
 ## 2. Decisions for the human (resolve before S1)
 
 - **SD1. OpenPGP implementation.**
@@ -45,9 +89,10 @@ encryption, HSM hook) is a sound base. What is wrong is the signature
     header-only vs header+payload) — the format is rpm's, not ours.
   - (b) Alternative: write the RPM signature header in Go. More code, every
     rpm format change becomes our bug. Not recommended.
-- **SD3. Key algorithm and lifetime.** Recommended: RSA-4096 OpenPGP v4 keys
-  (what SUSE/openSUSE ship and every rpm/zypper accepts; EdDSA support in rpm
-  4.20+ only), 2-year expiry, extend via CLI. Existing RSA-2048 raw keys are
+- **SD3. Key algorithm and lifetime.** Recommended: OBS defaults, RSA-4096
+  OpenPGP v4 keys with 800 days expiry (`Signkey.pm`), automatic extension on
+  use like `getsignkey autoextend=1`, manual extend via CLI. EdDSA only later
+  (rpm 4.20+). Existing RSA-2048 raw keys are
   migrated by generating new OpenPGP keys (no published consumers exist yet).
 
 ## 3. Target design
