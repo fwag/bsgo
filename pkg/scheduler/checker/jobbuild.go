@@ -53,7 +53,7 @@ func (ps *pass) jobSpec(u *unit, meta, explain, attempt string, c storage.BuildC
 		Config:    ps.workerText,
 		Bdeps:     bdeps,
 		Archpath:  ps.archpath(),
-		Release:   ps.release(c.CI, c.B),
+		Release:   ps.release(recipeType(u.recipeFile), c.CI, c.B),
 		CICnt:     c.CI, BCnt: c.B,
 		DistURL:      "bsgo://" + ps.prpa.Project + "/" + ps.prpa.Repo + "/" + u.commit + "-" + u.name,
 		Meta:         meta,

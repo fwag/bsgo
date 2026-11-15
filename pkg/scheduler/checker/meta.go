@@ -130,8 +130,18 @@ func (ps *pass) jobID(u *unit, attempt string) string {
 }
 
 // release substitutes the counters into the Release directive.
-func (ps *pass) release(ci, b int) string {
+// release computes the release of a build like BSSched/BuildJob.pm: the
+// first field of the Release: directive, unless a later "<buildtype>:"
+// field overrides it (SLFO: "Release: <CI_CNT>.<B_CNT> spec:160000.<CI_CNT>.<B_CNT>").
+func (ps *pass) release(buildType string, ci, b int) string {
 	tmpl := ps.sched.Release
+	if len(ps.sched.ReleaseList) > 1 {
+		for _, f := range ps.sched.ReleaseList[1:] {
+			if v, ok := strings.CutPrefix(f, buildType+":"); ok {
+				tmpl = v
+			}
+		}
+	}
 	if tmpl == "" {
 		tmpl = "<CI_CNT>.<B_CNT>"
 	}
