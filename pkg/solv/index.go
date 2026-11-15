@@ -32,6 +32,24 @@ const (
 // stores the RPM file sha256 as SOLVABLE_CHECKSUM. Source RPMs are skipped.
 // The result is deterministic for a given set of infos.
 func BuildSolv(arch string, infos []bininfo.BinInfo) ([]byte, error) {
+	units := make([]UnitBinary, len(infos))
+	for i, b := range infos {
+		units[i] = UnitBinary{BinInfo: b}
+	}
+	return BuildUnitSolv(arch, units)
+}
+
+// UnitBinary is a binary together with the package unit ("pkg" or
+// "pkg:flavor") that produced it.
+type UnitBinary struct {
+	Unit string
+	bininfo.BinInfo
+}
+
+// BuildUnitSolv is BuildSolv for binaries that carry their unit, so that
+// UpdateSolv can later replace the binaries of one unit. It is the full
+// rebuild (repair) path.
+func BuildUnitSolv(arch string, bins []UnitBinary) ([]byte, error) {
 	if arch == "" {
 		return nil, fmt.Errorf("architecture is required to build a solv index")
 	}
@@ -41,8 +59,69 @@ func BuildSolv(arch string, infos []bininfo.BinInfo) ([]byte, error) {
 	}
 	defer pool.Close()
 	repo := pool.CreateRepo("bininfo")
+	if err := repo.addSorted(bins); err != nil {
+		return nil, err
+	}
+	return repo.finishAndDump()
+}
 
-	sorted := append([]bininfo.BinInfo(nil), infos...)
+// UpdateSolv replaces the binaries of unit in the solv blob current (nil or
+// empty for an empty repository) with add and returns the new blob. Only the
+// replaced unit is touched, so the cost does not depend on how many other
+// units the repository holds. The unit of every solvable is stored in the
+// string attribute "bsgo:unit" (a custom libsolv key, see c_bridge.c); the
+// unit's solvables are removed with repo_free_solvable and the new ones are
+// appended, so the result has the same provides and requires per package as
+// BuildUnitSolv over the resulting binary set, but not necessarily the same
+// solvable order.
+func UpdateSolv(arch string, current []byte, unit string, add []bininfo.BinInfo) ([]byte, error) {
+	if arch == "" {
+		return nil, fmt.Errorf("architecture is required to update a solv index")
+	}
+	if unit == "" {
+		return nil, fmt.Errorf("unit is required to update a solv index")
+	}
+	pool, err := NewPool(arch)
+	if err != nil {
+		return nil, err
+	}
+	defer pool.Close()
+	repo, err := loadOrCreate(pool, current)
+	if err != nil {
+		return nil, err
+	}
+	cUnit := C.CString(unit)
+	defer C.free(unsafe.Pointer(cUnit))
+	pool.mu.Lock()
+	C.bsgo_repo_remove_unit(repo.ptr, cUnit)
+	pool.mu.Unlock()
+	bins := make([]UnitBinary, len(add))
+	for i, b := range add {
+		bins[i] = UnitBinary{Unit: unit, BinInfo: b}
+	}
+	if err := repo.addSorted(bins); err != nil {
+		return nil, err
+	}
+	return repo.finishAndDump()
+}
+
+func loadOrCreate(pool *Pool, current []byte) (*Repo, error) {
+	if len(current) == 0 {
+		return pool.CreateRepo("bininfo"), nil
+	}
+	return pool.LoadRepoFromMemory("bininfo", current)
+}
+
+func (r *Repo) finishAndDump() ([]byte, error) {
+	r.pool.mu.Lock()
+	C.bsgo_repo_finish(r.ptr)
+	r.pool.mu.Unlock()
+	return r.DumpMemory()
+}
+
+// addSorted adds the binary packages of bins in a canonical order.
+func (r *Repo) addSorted(bins []UnitBinary) error {
+	sorted := append([]UnitBinary(nil), bins...)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		a, b := sorted[i], sorted[j]
 		if a.Name != b.Name {
@@ -56,21 +135,18 @@ func BuildSolv(arch string, infos []bininfo.BinInfo) ([]byte, error) {
 		}
 		return a.Filename < b.Filename
 	})
-	for _, info := range sorted {
-		if info.Arch == "src" || info.Arch == "nosrc" {
+	for _, b := range sorted {
+		if b.Arch == "src" || b.Arch == "nosrc" {
 			continue
 		}
-		if err := repo.addBinInfo(info); err != nil {
-			return nil, fmt.Errorf("indexing %s: %w", info.Filename, err)
+		if err := r.addBinInfo(b.Unit, b.BinInfo); err != nil {
+			return fmt.Errorf("indexing %s: %w", b.Filename, err)
 		}
 	}
-	pool.mu.Lock()
-	C.bsgo_repo_finish(repo.ptr)
-	pool.mu.Unlock()
-	return repo.DumpMemory()
+	return nil
 }
 
-func (r *Repo) addBinInfo(info bininfo.BinInfo) error {
+func (r *Repo) addBinInfo(unit string, info bininfo.BinInfo) error {
 	if info.Name == "" || info.Version == "" || info.Arch == "" {
 		return fmt.Errorf("incomplete package identity %q", info.Name)
 	}
@@ -89,6 +165,14 @@ func (r *Repo) addBinInfo(info bininfo.BinInfo) error {
 		return fmt.Errorf("cannot add solvable")
 	}
 
+	if unit != "" {
+		cUnit := C.CString(unit)
+		rc := C.bsgo_solvable_set_unit(r.ptr, sid, cUnit)
+		C.free(unsafe.Pointer(cUnit))
+		if rc != 0 {
+			return fmt.Errorf("cannot set unit")
+		}
+	}
 	self := bininfo.Dep{Name: info.Name, Op: "=", EVR: info.EVR()}
 	if err := r.addDeps(sid, addProvides, append([]bininfo.Dep{self}, info.Provides...)); err != nil {
 		return err
@@ -147,6 +231,25 @@ func (r *Repo) addDeps(sid C.Id, kind int, deps []bininfo.Dep) error {
 		}
 	}
 	return nil
+}
+
+// AllRequires returns every requirement of every package in the pool as
+// sorted "package: dependency" lines, for comparing indexes.
+func (p *Pool) AllRequires() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := C.bsgo_all_requires(p.ptr)
+	if out == nil {
+		return nil
+	}
+	defer C.free(unsafe.Pointer(out))
+	text := strings.TrimSuffix(C.GoString(out), "\n")
+	if text == "" {
+		return nil
+	}
+	lines := strings.Split(text, "\n")
+	sort.Strings(lines)
+	return lines
 }
 
 // AllProvides returns every provide of every package in the pool, including

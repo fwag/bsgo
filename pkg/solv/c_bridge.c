@@ -166,6 +166,38 @@ int bsgo_solvable_set_sha256(Repo *repo, Id sid, const char *hex) {
     return 0;
 }
 
+/* The unit that produced a solvable is kept in a string attribute under the
+ * custom key "bsgo:unit". libsolv writes unknown keys of the string type
+ * unchanged and reads them back by name. */
+static Id unit_key(Pool *pool, int create) {
+    return pool_str2id(pool, "bsgo:unit", create);
+}
+
+int bsgo_solvable_set_unit(Repo *repo, Id sid, const char *unit) {
+    if (!repo || sid <= 0 || !unit) return -1;
+    Repodata *data = repo_last_repodata(repo);
+    if (!data) return -1;
+    repodata_set_str(data, sid, unit_key(repo->pool, 1), unit);
+    return 0;
+}
+
+int bsgo_repo_remove_unit(Repo *repo, const char *unit) {
+    if (!repo || !unit) return -1;
+    Id key = unit_key(repo->pool, 0);
+    if (!key) return 0;
+    int removed = 0;
+    Id p;
+    Solvable *s;
+    FOR_REPO_SOLVABLES(repo, p, s) {
+        const char *u = solvable_lookup_str(s, key);
+        if (u && strcmp(u, unit) == 0) {
+            repo_free_solvable(repo, p, 0);
+            removed++;
+        }
+    }
+    return removed;
+}
+
 int bsgo_repo_finish(Repo *repo) {
     if (!repo) return -1;
     repo_internalize(repo);
@@ -323,6 +355,29 @@ const char *bsgo_dep2str(Pool *pool, Id dep) {
 
 const char *bsgo_id2str(Pool *pool, Id id) {
     return pool_id2str(pool, id);
+}
+
+/* All requires of every solvable, one "name: dep" per line; prerequisite
+ * markers are dropped. */
+char *bsgo_all_requires(Pool *pool) {
+    char *buf = NULL;
+    size_t size = 0;
+    FILE *fp = open_memstream(&buf, &size);
+    if (!fp) return NULL;
+    for (Id p = 2; p < pool->nsolvables; p++) {
+        Solvable *s = pool->solvables + p;
+        if (!s->repo) continue;
+        Queue q;
+        queue_init(&q);
+        solvable_lookup_deparray(s, SOLVABLE_REQUIRES, &q, 0);
+        for (int i = 0; i < q.count; i++) {
+            if (q.elements[i] == SOLVABLE_PREREQMARKER) continue;
+            fprintf(fp, "%s: %s\n", pool_id2str(pool, s->name), pool_dep2str(pool, q.elements[i]));
+        }
+        queue_free(&q);
+    }
+    fclose(fp);
+    return buf;
 }
 
 /* All provides of every solvable plus the file list entries libsolv keeps in

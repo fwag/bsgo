@@ -48,7 +48,10 @@ int bsgo_solvable_add_dep(Repo *repo, Id sid, int kind, const char *dep, int pre
 int bsgo_solvable_set_sha256(Repo *repo, Id sid, const char *hex);
 int bsgo_solvable_add_file(Repo *repo, Id sid, const char *path);
 int bsgo_repo_finish(Repo *repo);
+int bsgo_solvable_set_unit(Repo *repo, Id sid, const char *unit);
+int bsgo_repo_remove_unit(Repo *repo, const char *unit);
 char *bsgo_all_provides(Pool *pool);
+char *bsgo_all_requires(Pool *pool);
 
 Id bsgo_str2dep(Pool *pool, const char *s);
 int bsgo_pool_prepare(Pool *pool);
