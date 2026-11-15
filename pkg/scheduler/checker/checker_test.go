@@ -294,3 +294,33 @@ func TestSourcesUnavailableIsBlockedWithRetry(t *testing.T) {
 		t.Errorf("state %+v", st)
 	}
 }
+
+func TestRebuildPolicyLocalIgnoresDependencyChanges(t *testing.T) {
+	tests := []struct {
+		policy   string
+		wantJobs []string
+	}{
+		{"local", nil},
+		{"transitive", []string{"app"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.policy, func(t *testing.T) {
+			w := newWorld(t, nil, func(w *world) {
+				tgt := w.prj.Targets[testRepo]
+				tgt.Flags.Rebuild = tc.policy
+				w.prj.Targets[testRepo] = tgt
+			})
+			w.pkg("lib", nil)
+			w.pkg("app", []string{"lib"})
+			w.run()
+			w.finish(w.wantJobs("lib")[0], binary("lib", "1"))
+			w.run()
+			w.finish(w.wantJobs("app")[0], binary("app", "1"))
+
+			w.entries["lib"][0].SHA256 = sha("a-new-lib-build")
+			w.publishIndex()
+			w.run()
+			w.wantJobs(tc.wantJobs...)
+		})
+	}
+}
