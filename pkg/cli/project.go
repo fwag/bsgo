@@ -23,6 +23,7 @@ func newProjectCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
 	cmd.AddCommand(newProjectShowCmd(store, opts))
 	cmd.AddCommand(newProjectAddCmd(store, opts))
 	cmd.AddCommand(newProjectStatusCmd(store, opts))
+	cmd.AddCommand(newProjectConvertOBSCmd(opts))
 	return cmd
 }
 
