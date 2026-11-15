@@ -303,7 +303,7 @@ func (p *Pool) loadLegacyRepos(repos map[string][]byte) error {
 		if done {
 			continue
 		}
-		if _, err := p.LoadRepoFromRPMMD(n, repos[n]); err != nil {
+		if err := p.loadBlob(RepoBlob{Name: n, Data: repos[n]}); err != nil {
 			return err
 		}
 		p.mu.Lock()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/openSUSE/bsgo/pkg/bininfo"
 	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
@@ -209,15 +210,11 @@ func TestCascadeEngineWithTargetSolvCache(t *testing.T) {
 	_ = store.UpsertPackage(ctx, "Shells", pkgCurl)
 
 	// Pre-populate target solv cache in PostgreSQL/Memory store for Base:System:standard:x86_64
-	solvSpecs := []solv.PackageSpec{
-		{
-			Name:     "readline",
-			EVR:      "8.3.6-1",
-			Arch:     "x86_64",
-			Provides: []string{"readline = 8.3.6-1", "libreadline.so.8()(64bit)"},
-		},
-	}
-	solvBlob, err := solv.MergeAndDumpSolv(nil, "x86_64", "Base:System:standard", solvSpecs)
+	solvBlob, err := solv.BuildSolv("x86_64", []bininfo.BinInfo{{
+		Name: "readline", Version: "8.3.6", Release: "1", Arch: "x86_64",
+		Filename: "readline-8.3.6-1.x86_64.rpm",
+		Provides: []bininfo.Dep{{Name: "libreadline.so.8()(64bit)"}},
+	}})
 	if err != nil {
 		t.Fatalf("failed creating solv blob: %v", err)
 	}

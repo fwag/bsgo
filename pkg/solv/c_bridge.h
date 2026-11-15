@@ -37,6 +37,17 @@ int bsgo_add_package(Repo *repo, const char *name, const char *evr, const char *
                      int num_provides, const char **provides,
                      int num_requires, const char **requires);
 
+/* Dependency kinds for bsgo_solvable_add_dep. */
+enum {
+    BSGO_DEP_PROVIDES = 0, BSGO_DEP_REQUIRES, BSGO_DEP_CONFLICTS, BSGO_DEP_OBSOLETES,
+    BSGO_DEP_RECOMMENDS, BSGO_DEP_SUGGESTS, BSGO_DEP_SUPPLEMENTS, BSGO_DEP_ENHANCES
+};
+
+Id bsgo_repo_add_solvable(Repo *repo, const char *name, const char *evr, const char *arch);
+int bsgo_solvable_add_dep(Repo *repo, Id sid, int kind, const char *dep, int pre);
+int bsgo_solvable_set_sha256(Repo *repo, Id sid, const char *hex);
+int bsgo_repo_finish(Repo *repo);
+
 Id bsgo_str2dep(Pool *pool, const char *s);
 int bsgo_pool_prepare(Pool *pool);
 int bsgo_whatprovides(Pool *pool, Id dep, Id **out);

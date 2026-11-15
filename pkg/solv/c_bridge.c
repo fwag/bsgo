@@ -5,6 +5,7 @@
 #include <solv/evr.h>
 #include <solv/pool_parserpmrichdep.h>
 #include <solv/testcase.h>
+#include <solv/repodata.h>
 
 Pool *bsgo_pool_create(const char *arch) {
     Pool *pool = pool_create();
@@ -108,6 +109,53 @@ int bsgo_add_package(Repo *repo, const char *name, const char *evr, const char *
     return 0;
 }
 
+
+Id bsgo_repo_add_solvable(Repo *repo, const char *name, const char *evr, const char *arch) {
+    if (!repo || !name || !evr || !arch) return 0;
+    Pool *pool = repo->pool;
+    Id sid = repo_add_solvable(repo);
+    Solvable *s = pool->solvables + sid;
+    s->name = pool_str2id(pool, name, 1);
+    s->evr = pool_str2id(pool, evr, 1);
+    s->arch = pool_str2id(pool, arch, 1);
+    return sid;
+}
+
+int bsgo_solvable_add_dep(Repo *repo, Id sid, int kind, const char *dep, int pre) {
+    if (!repo || sid <= 0 || !dep) return -1;
+    Pool *pool = repo->pool;
+    Id id = bsgo_str2dep(pool, dep);
+    if (!id) return -1;
+    Solvable *s = pool->solvables + sid;
+    switch (kind) {
+    case BSGO_DEP_PROVIDES:    s->provides = repo_addid_dep(repo, s->provides, id, 0); break;
+    case BSGO_DEP_REQUIRES:
+        s->requires = repo_addid_dep(repo, s->requires, id, pre ? -SOLVABLE_PREREQMARKER : SOLVABLE_PREREQMARKER);
+        break;
+    case BSGO_DEP_CONFLICTS:   s->conflicts = repo_addid_dep(repo, s->conflicts, id, 0); break;
+    case BSGO_DEP_OBSOLETES:   s->obsoletes = repo_addid_dep(repo, s->obsoletes, id, 0); break;
+    case BSGO_DEP_RECOMMENDS:  s->recommends = repo_addid_dep(repo, s->recommends, id, 0); break;
+    case BSGO_DEP_SUGGESTS:    s->suggests = repo_addid_dep(repo, s->suggests, id, 0); break;
+    case BSGO_DEP_SUPPLEMENTS: s->supplements = repo_addid_dep(repo, s->supplements, id, 0); break;
+    case BSGO_DEP_ENHANCES:    s->enhances = repo_addid_dep(repo, s->enhances, id, 0); break;
+    default: return -1;
+    }
+    return 0;
+}
+
+int bsgo_solvable_set_sha256(Repo *repo, Id sid, const char *hex) {
+    if (!repo || sid <= 0 || !hex) return -1;
+    Repodata *data = repo_last_repodata(repo);
+    if (!data) return -1;
+    repodata_set_checksum(data, sid, SOLVABLE_CHECKSUM, REPOKEY_TYPE_SHA256, hex);
+    return 0;
+}
+
+int bsgo_repo_finish(Repo *repo) {
+    if (!repo) return -1;
+    repo_internalize(repo);
+    return 0;
+}
 
 Id bsgo_str2dep(Pool *pool, const char *s) {
     if (!s || !*s) return 0;
