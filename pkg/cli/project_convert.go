@@ -117,12 +117,10 @@ func runConvertOBS(cmd *cobra.Command, f *convertOBSFlags, opts *OutputOptions) 
 }
 
 func readConvertInputs(f *convertOBSFlags) (*obsimport.Meta, string, error) {
-	// #nosec G304 -- CLI argument naming the OBS _meta file to convert
 	metaXML, err := os.ReadFile(filepath.Clean(f.meta))
 	if err != nil {
 		return nil, "", fmt.Errorf("read --meta: %w", err)
 	}
-	// #nosec G304 -- CLI argument naming the OBS prjconf file to convert
 	conf, err := os.ReadFile(filepath.Clean(f.prjconf))
 	if err != nil {
 		return nil, "", fmt.Errorf("read --prjconf: %w", err)

@@ -15,57 +15,84 @@ import (
 // conflictsBefore returns, for every event, the earlier events it conflicts
 // with: both touch the same directive or macro and at least one writes it.
 func conflictsBefore(evs []*event) [][]int {
-	writers := map[string][]int{}
-	readers := map[string][]int{}
-	var barrier, dynamic, defWriters []int
-	adj := make([][]int, len(evs))
-	mark := make([]int, len(evs))
+	x := &conflictIndex{
+		writers: map[string][]int{}, readers: map[string][]int{},
+		adj: make([][]int, len(evs)), mark: make([]int, len(evs)),
+	}
 	for j, e := range evs {
-		stamp := j + 1
-		add := func(list []int) {
-			for _, i := range list {
-				if mark[i] != stamp {
-					mark[i] = stamp
-					adj[j] = append(adj[j], i)
-				}
-			}
-		}
-		for _, k := range e.writes {
-			add(writers[k])
-			add(readers[k])
-			if k == "*" {
-				for i := 0; i < j; i++ {
-					add([]int{i})
-				}
-			}
-			if strings.HasPrefix(k, "m:") {
-				add(dynamic)
-			}
-		}
-		for _, k := range e.reads {
-			add(writers[k])
-			if k == "*" {
-				add(defWriters)
-			}
-		}
-		add(barrier)
-		for _, k := range e.writes {
-			writers[k] = append(writers[k], j)
-			if k == "*" {
-				barrier = append(barrier, j)
-			}
-			if strings.HasPrefix(k, "m:") {
-				defWriters = append(defWriters, j)
-			}
-		}
-		for _, k := range e.reads {
-			readers[k] = append(readers[k], j)
-			if k == "*" {
-				dynamic = append(dynamic, j)
-			}
+		x.collect(j, e)
+		x.record(j, e)
+	}
+	return x.adj
+}
+
+// conflictIndex accumulates, in source order, who wrote and read which key.
+// The key "*" is special: a write to it is a barrier that conflicts with every
+// other statement, and a read of it (dynamic macros) conflicts with every
+// macro definition.
+type conflictIndex struct {
+	writers, readers map[string][]int
+	barrier          []int
+	dynamic          []int
+	defWriters       []int
+	adj              [][]int
+	mark             []int
+}
+
+func isMacroKey(k string) bool { return strings.HasPrefix(k, "m:") }
+
+// add records the conflicts of event j with the given earlier events once.
+func (x *conflictIndex) add(j int, earlier []int) {
+	for _, i := range earlier {
+		if x.mark[i] != j+1 {
+			x.mark[i] = j + 1
+			x.adj[j] = append(x.adj[j], i)
 		}
 	}
-	return adj
+}
+
+func (x *conflictIndex) collect(j int, e *event) {
+	for _, k := range e.writes {
+		x.add(j, x.writers[k])
+		x.add(j, x.readers[k])
+		if k == "*" {
+			x.addAllBefore(j)
+		}
+		if isMacroKey(k) {
+			x.add(j, x.dynamic)
+		}
+	}
+	for _, k := range e.reads {
+		x.add(j, x.writers[k])
+		if k == "*" {
+			x.add(j, x.defWriters)
+		}
+	}
+	x.add(j, x.barrier)
+}
+
+func (x *conflictIndex) addAllBefore(j int) {
+	for i := 0; i < j; i++ {
+		x.add(j, []int{i})
+	}
+}
+
+func (x *conflictIndex) record(j int, e *event) {
+	for _, k := range e.writes {
+		x.writers[k] = append(x.writers[k], j)
+		if k == "*" {
+			x.barrier = append(x.barrier, j)
+		}
+		if isMacroKey(k) {
+			x.defWriters = append(x.defWriters, j)
+		}
+	}
+	for _, k := range e.reads {
+		x.readers[k] = append(x.readers[k], j)
+		if k == "*" {
+			x.dynamic = append(x.dynamic, j)
+		}
+	}
 }
 
 // inverted reports whether the fixed render order would place the earlier
