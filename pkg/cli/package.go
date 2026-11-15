@@ -254,7 +254,7 @@ func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Comma
 				"subject":    subject,
 			}
 
-			publishPackageTrigger(ctx, natsURL, subject, trigger, jobID, projectName, pkgName)
+			publishPackageTrigger(ctx, natsURL, subject, trigger)
 
 			var sb strings.Builder
 			sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")).Render("✔ Build triggered successfully!") + "\n\n")
@@ -273,7 +273,7 @@ func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Comma
 	return cmd
 }
 
-func publishPackageTrigger(ctx context.Context, natsURL, subject string, trigger *v1.BuildTrigger, jobID, project, pkg string) {
+func publishPackageTrigger(ctx context.Context, natsURL, subject string, trigger *v1.BuildTrigger) {
 	nc, js, err := natsqueue.ConnectJetStream(natsURL)
 	if err != nil {
 		return
@@ -285,14 +285,5 @@ func publishPackageTrigger(ctx context.Context, natsURL, subject string, trigger
 	tData, _ := json.Marshal(trigger)
 	_, _ = js.Publish(ctx, subject, tData)
 
-	statusMsg := map[string]any{
-		"job_id":       jobID,
-		"project":      project,
-		"package":      pkg,
-		"phase":        "PENDING",
-		"architecture": "x86_64",
-	}
-	sData, _ := json.Marshal(statusMsg)
-	_, _ = js.Publish(ctx, natsqueue.SubjectJobStatus, sData)
 	_ = nc.Flush()
 }

@@ -99,3 +99,71 @@ func TestMemoryStore(t *testing.T) {
 		t.Errorf("expected 1 target solv, got %d", len(solvs))
 	}
 }
+
+func TestMemoryStoreBuildStates(t *testing.T) {
+	ctx := context.Background()
+	store := storage.NewMemoryStore()
+	prj := "home:test"
+
+	valid := []storage.PackageBuildState{
+		{Project: prj, Repo: "standard", Arch: "x86_64", Package: "a", State: storage.StateScheduled},
+		{Project: prj, Repo: "standard", Arch: "x86_64", Package: "b", State: storage.StateUnresolvable, Details: "no provider"},
+		{Project: prj, Repo: "standard", Arch: "aarch64", Package: "a", State: storage.StateSucceeded},
+		{Project: prj, Repo: "standard", Arch: "x86_64", Package: "c", Flavor: "f", State: storage.StateBlocked},
+		{Project: "other", Repo: "standard", Arch: "x86_64", Package: "a", State: storage.StateFailed},
+	}
+	for i := range valid {
+		if err := store.UpsertBuildState(ctx, &valid[i]); err != nil {
+			t.Fatalf("upsert %d failed: %v", i, err)
+		}
+	}
+	// Later state overwrites earlier one for the same key.
+	if err := store.UpsertBuildState(ctx, &storage.PackageBuildState{
+		Project: prj, Repo: "standard", Arch: "x86_64", Package: "a", State: storage.StateSucceeded,
+	}); err != nil {
+		t.Fatalf("re-upsert failed: %v", err)
+	}
+
+	invalid := []storage.PackageBuildState{
+		{Project: prj, Repo: "", Arch: "x86_64", Package: "a", State: storage.StateFailed},
+		{Project: prj, Repo: "standard", Arch: "", Package: "a", State: storage.StateFailed},
+		{Project: prj, Repo: "standard", Arch: "x86_64", Package: "a", State: "bogus"},
+	}
+	for i := range invalid {
+		if err := store.UpsertBuildState(ctx, &invalid[i]); err == nil {
+			t.Errorf("expected error for invalid row %d", i)
+		}
+	}
+
+	tests := []struct {
+		name      string
+		filter    storage.BuildStateFilter
+		wantRows  int
+		wantCount map[string]int
+	}{
+		{"all", storage.BuildStateFilter{}, 4, map[string]int{"succeeded": 2, "unresolvable": 1, "blocked": 1}},
+		{"arch", storage.BuildStateFilter{Arch: "x86_64"}, 3, map[string]int{"succeeded": 1, "unresolvable": 1, "blocked": 1}},
+		{"state", storage.BuildStateFilter{State: storage.StateUnresolvable}, 1, map[string]int{"unresolvable": 1}},
+		{"repo-miss", storage.BuildStateFilter{Repo: "nope"}, 0, map[string]int{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			list, err := store.ListBuildStates(ctx, prj, tc.filter)
+			if err != nil || len(list) != tc.wantRows {
+				t.Fatalf("expected %d rows, got %d (err %v)", tc.wantRows, len(list), err)
+			}
+			counts, err := store.CountBuildStates(ctx, prj, tc.filter)
+			if err != nil {
+				t.Fatalf("count failed: %v", err)
+			}
+			if len(counts) != len(tc.wantCount) {
+				t.Fatalf("expected counts %v, got %v", tc.wantCount, counts)
+			}
+			for k, v := range tc.wantCount {
+				if counts[k] != v {
+					t.Errorf("count[%s] = %d, want %d", k, counts[k], v)
+				}
+			}
+		})
+	}
+}

@@ -65,6 +65,18 @@ func NewScheduler(store storage.Store, solver Solver, publisher JobPublisher, cf
 	}
 }
 
+// TargetArchError reports a failure scoped to one build target and architecture
+// so that callers can record the state for the exact (repo, arch).
+type TargetArchError struct {
+	Target string
+	Arch   string
+	Err    error
+}
+
+func (e *TargetArchError) Error() string { return e.Err.Error() }
+
+func (e *TargetArchError) Unwrap() error { return e.Err }
+
 func (s *Scheduler) ProcessTrigger(ctx context.Context, trigger *v1.BuildTrigger) ([]*v1.BuildJob, error) {
 	prj, err := s.store.GetProject(ctx, trigger.Project)
 	if err != nil {
@@ -160,7 +172,7 @@ func (s *Scheduler) processTarget(ctx context.Context, trigger *v1.BuildTrigger,
 		archEffectiveCfg := ResolveTargetConfig(ctx, s.store, prj, targetName, arch)
 		job, err := s.buildJobForArch(ctx, trigger, targetName, arch, pkg, targetCfg, archEffectiveCfg, jobID)
 		if err != nil {
-			return nil, err
+			return nil, &TargetArchError{Target: targetName, Arch: arch, Err: err}
 		}
 
 		data, err := json.Marshal(job)
@@ -236,8 +248,6 @@ func (s *Scheduler) buildJobForArch(ctx context.Context, trigger *v1.BuildTrigge
 		preferList = make([]string, len(effectiveCfg.Prefer))
 		copy(preferList, effectiveCfg.Prefer)
 	}
-	// Ensure common standard providers for core capabilities to prevent choice errors
-	preferList = append(preferList, "filesystem", "glibc", "bash", "coreutils", "util-linux", "tar", "gzip", "system-user-root", "shadow")
 
 	var ignores []string
 	var fileProvides map[string][]string

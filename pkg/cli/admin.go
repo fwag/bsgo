@@ -260,16 +260,6 @@ func processSingleTrigger(ctx context.Context, store storage.Store, project, pkg
 		tData, _ := json.Marshal(trigger)
 		_, _ = js.Publish(ctx, subject, tData)
 
-		statusMsg := map[string]any{
-			"job_id":       trigger.TriggerID,
-			"project":      project,
-			"package":      pkgName,
-			"phase":        "PENDING",
-			"priority":     trigger.NormalizedPriority(),
-			"architecture": flags.arch,
-		}
-		sData, _ := json.Marshal(statusMsg)
-		_, _ = js.Publish(ctx, natsqueue.SubjectJobStatus, sData)
 		_ = nc.Flush()
 	}
 

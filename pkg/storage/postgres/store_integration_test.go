@@ -141,4 +141,52 @@ func TestPostgresMigrationsAndStore(t *testing.T) {
 	if len(solvs) != 1 {
 		t.Errorf("expected 1 target solv, got %d", len(solvs))
 	}
+
+	verifyBuildStates(ctx, t, store, testPrjName)
+}
+
+func verifyBuildStates(ctx context.Context, t *testing.T, store *postgres.PostgresStore, prj string) {
+	t.Helper()
+	rows := []storage.PackageBuildState{
+		{Project: prj, Repo: "standard", Arch: "x86_64", Package: "a", State: storage.StateScheduled},
+		{Project: prj, Repo: "standard", Arch: "x86_64", Package: "b", State: storage.StateUnresolvable, Details: "nothing provides foo"},
+		{Project: prj, Repo: "standard", Arch: "aarch64", Package: "a", State: storage.StateSucceeded},
+		{Project: prj, Repo: "standard", Arch: "x86_64", Package: "c", Flavor: "py311", State: storage.StateBlocked},
+	}
+	for i := range rows {
+		if err := store.UpsertBuildState(ctx, &rows[i]); err != nil {
+			t.Fatalf("failed to upsert build state: %v", err)
+		}
+	}
+	// A later state replaces the earlier one for the same key.
+	if err := store.UpsertBuildState(ctx, &storage.PackageBuildState{
+		Project: prj, Repo: "standard", Arch: "x86_64", Package: "a", State: storage.StateSucceeded, JobID: "j1",
+	}); err != nil {
+		t.Fatalf("failed to re-upsert build state: %v", err)
+	}
+	if err := store.UpsertBuildState(ctx, &storage.PackageBuildState{
+		Project: prj, Repo: "standard", Arch: "x86_64", Package: "z", State: "bogus",
+	}); err == nil {
+		t.Errorf("expected error for invalid state")
+	}
+
+	counts, err := store.CountBuildStates(ctx, prj, storage.BuildStateFilter{})
+	if err != nil {
+		t.Fatalf("failed to count build states: %v", err)
+	}
+	if counts[storage.StateSucceeded] != 2 || counts[storage.StateUnresolvable] != 1 || counts[storage.StateBlocked] != 1 || counts[storage.StateScheduled] != 0 {
+		t.Errorf("unexpected counts: %v", counts)
+	}
+
+	list, err := store.ListBuildStates(ctx, prj, storage.BuildStateFilter{Arch: "x86_64", State: storage.StateUnresolvable})
+	if err != nil {
+		t.Fatalf("failed to list build states: %v", err)
+	}
+	if len(list) != 1 || list[0].Package != "b" || list[0].Details != "nothing provides foo" {
+		t.Errorf("unexpected filtered list: %+v", list)
+	}
+	all, err := store.ListBuildStates(ctx, prj, storage.BuildStateFilter{Repo: "standard"})
+	if err != nil || len(all) != 4 {
+		t.Errorf("expected 4 rows, got %d (err %v)", len(all), err)
+	}
 }

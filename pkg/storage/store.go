@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +35,64 @@ type TargetSolv struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// Build states persisted in package_build_state (OBS names).
+const (
+	StateScheduled    = "scheduled"
+	StateBuilding     = "building"
+	StateSucceeded    = "succeeded"
+	StateFailed       = "failed"
+	StateUnresolvable = "unresolvable"
+	StateBlocked      = "blocked"
+	StateBroken       = "broken"
+	StateExcluded     = "excluded"
+	StateDisabled     = "disabled"
+)
+
+// ValidBuildStates lists every state accepted by the package_build_state table.
+var ValidBuildStates = []string{
+	StateScheduled, StateBuilding, StateSucceeded, StateFailed, StateUnresolvable,
+	StateBlocked, StateBroken, StateExcluded, StateDisabled,
+}
+
+// IsValidBuildState reports whether state is a known build state.
+func IsValidBuildState(state string) bool {
+	for _, s := range ValidBuildStates {
+		if s == state {
+			return true
+		}
+	}
+	return false
+}
+
+// PackageBuildState is the build state of one package/flavor in one (project, repo, arch).
+type PackageBuildState struct {
+	Project   string    `json:"project"`
+	Repo      string    `json:"repo"`
+	Arch      string    `json:"arch"`
+	Package   string    `json:"package"`
+	Flavor    string    `json:"flavor,omitempty"`
+	State     string    `json:"state"`
+	Details   string    `json:"details,omitempty"`
+	SrcMD5    string    `json:"srcmd5,omitempty"`
+	Meta      string    `json:"meta,omitempty"`
+	Bcnt      int       `json:"bcnt,omitempty"`
+	JobID     string    `json:"job_id,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// BuildStateFilter narrows ListBuildStates; empty fields match everything.
+type BuildStateFilter struct {
+	Repo  string
+	Arch  string
+	State string
+}
+
+func (f BuildStateFilter) Matches(st *PackageBuildState) bool {
+	return (f.Repo == "" || f.Repo == st.Repo) &&
+		(f.Arch == "" || f.Arch == st.Arch) &&
+		(f.State == "" || f.State == st.State)
+}
+
 type Store interface {
 	CreateProject(ctx context.Context, prj *manifest.ProjectManifest) error
 	UpsertProject(ctx context.Context, prj *manifest.ProjectManifest) error
@@ -50,6 +110,10 @@ type Store interface {
 	SaveTargetSolv(ctx context.Context, solv *TargetSolv) error
 	GetTargetSolv(ctx context.Context, projectName, targetName, arch string) (*TargetSolv, error)
 	ListTargetSolvs(ctx context.Context, projectName string) ([]*TargetSolv, error)
+
+	UpsertBuildState(ctx context.Context, st *PackageBuildState) error
+	ListBuildStates(ctx context.Context, project string, filter BuildStateFilter) ([]*PackageBuildState, error)
+	CountBuildStates(ctx context.Context, project string, filter BuildStateFilter) (map[string]int, error)
 }
 
 type MemoryStore struct {
@@ -58,6 +122,7 @@ type MemoryStore struct {
 	packages map[string]map[string]*manifest.PackageManifest
 	keys     map[string]map[string]*ProjectSigningKey // key: project -> flavor:type -> key
 	solvs    map[string]*TargetSolv                   // key: project:target:arch -> solv
+	states   map[string]*PackageBuildState            // key: project/repo/arch/package/flavor
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -66,6 +131,7 @@ func NewMemoryStore() *MemoryStore {
 		packages: make(map[string]map[string]*manifest.PackageManifest),
 		keys:     make(map[string]map[string]*ProjectSigningKey),
 		solvs:    make(map[string]*TargetSolv),
+		states:   make(map[string]*PackageBuildState),
 	}
 }
 
@@ -240,4 +306,51 @@ func (s *MemoryStore) ListTargetSolvs(_ context.Context, projectName string) ([]
 		}
 	}
 	return list, nil
+}
+
+func buildStateKey(st *PackageBuildState) string {
+	return strings.Join([]string{st.Project, st.Repo, st.Arch, st.Package, st.Flavor}, "\x00")
+}
+
+func (s *MemoryStore) UpsertBuildState(_ context.Context, st *PackageBuildState) error {
+	if st.Project == "" || st.Repo == "" || st.Arch == "" || st.Package == "" {
+		return fmt.Errorf("build state requires project, repo, arch and package")
+	}
+	if !IsValidBuildState(st.State) {
+		return fmt.Errorf("invalid build state %q", st.State)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cp := *st
+	cp.UpdatedAt = time.Now()
+	s.states[buildStateKey(&cp)] = &cp
+	return nil
+}
+
+func (s *MemoryStore) ListBuildStates(_ context.Context, project string, filter BuildStateFilter) ([]*PackageBuildState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	list := []*PackageBuildState{}
+	for _, st := range s.states {
+		if st.Project == project && filter.Matches(st) {
+			cp := *st
+			list = append(list, &cp)
+		}
+	}
+	sort.Slice(list, func(i, j int) bool { return buildStateKey(list[i]) < buildStateKey(list[j]) })
+	return list, nil
+}
+
+func (s *MemoryStore) CountBuildStates(ctx context.Context, project string, filter BuildStateFilter) (map[string]int, error) {
+	list, err := s.ListBuildStates(ctx, project, filter)
+	if err != nil {
+		return nil, err
+	}
+	counts := make(map[string]int)
+	for _, st := range list {
+		counts[st.State]++
+	}
+	return counts, nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -295,10 +296,10 @@ func startSchedulerAndDispatcher(ctx context.Context, cfg ServerConfig, nc *nats
 	}), 30*time.Second)
 
 	gatekeeper := scheduler.NewMemoryGatekeeper()
-	reconcileGatekeeperFromHistory(ctx, js, gatekeeper)
+	loadGatekeeperFromStore(ctx, store, gatekeeper)
 
 	subscribeWorkerHeartbeats(nc, disp)
-	subscribeJobStatus(nc, gatekeeper, disp)
+	subscribeJobStatus(ctx, nc, store, gatekeeper, disp)
 
 	solverPool := solv.NewMultiArchPool(2)
 	pub := scheduler.NewNatsPublisher(func(pCtx context.Context, subject string, data []byte) error {
@@ -321,21 +322,6 @@ func startSchedulerAndDispatcher(ctx context.Context, cfg ServerConfig, nc *nats
 	subscribeTriggers(ctx, nc, sched, disp, store)
 	subscribePublicationEvents(ctx, nc, cascade)
 	startDispatchLoop(ctx, disp, nc)
-
-	go func() {
-		time.Sleep(1 * time.Second)
-		prjs, err := store.ListProjects(ctx)
-		if err == nil {
-			for _, p := range prjs {
-				ev := v1.NewPublicationEvent(p.Project.Name, "standard", "x86_64", "", nil, "")
-				trigs, _ := cascade.ProcessPublicationEvent(ctx, ev)
-				if len(trigs) > 0 {
-					fmt.Printf("[%s] [CASCADE] Evaluated %d unresolvable packages on startup for %s\n",
-						time.Now().Format("15:04:05"), len(trigs), p.Project.Name)
-				}
-			}
-		}
-	}()
 }
 
 func subscribeWorkerHeartbeats(nc *nats.Conn, disp *dispatcher.Dispatcher) {
@@ -357,7 +343,7 @@ func subscribeWorkerHeartbeats(nc *nats.Conn, disp *dispatcher.Dispatcher) {
 	})
 }
 
-func subscribeJobStatus(nc *nats.Conn, gk *scheduler.MemoryGatekeeper, disp *dispatcher.Dispatcher) {
+func subscribeJobStatus(ctx context.Context, nc *nats.Conn, store storage.Store, gk *scheduler.MemoryGatekeeper, disp *dispatcher.Dispatcher) {
 	_, _ = nc.Subscribe("bsgo.status", func(msg *nats.Msg) {
 		var st map[string]any
 		if err := json.Unmarshal(msg.Data, &st); err != nil {
@@ -374,6 +360,7 @@ func subscribeJobStatus(nc *nats.Conn, gk *scheduler.MemoryGatekeeper, disp *dis
 				time.Now().Format("15:04:05"), jobID, pkgName, phase)
 		}
 
+		recordBuildState(ctx, store, msg.Data)
 		updateGatekeeperStatus(gk, prjName, pkgName, phase)
 		if (phase == "SUCCEEDED" || phase == "FAILED" || phase == "ABORTED") && prjName != "" {
 			exitCode := 0
@@ -503,56 +490,6 @@ func (c *DiskS3Client) DeleteObject(_ context.Context, s3Key string) error {
 	return nil
 }
 
-func reconcileGatekeeperFromHistory(ctx context.Context, js jetstream.JetStream, gk *scheduler.MemoryGatekeeper) {
-	if js == nil || gk == nil {
-		return
-	}
-	ctxTimeout, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	str, err := js.Stream(ctxTimeout, natsqueue.StreamJobStatus)
-	if err != nil {
-		return
-	}
-	info, err := str.Info(ctxTimeout)
-	if err != nil || info.State.Msgs == 0 {
-		return
-	}
-
-	cons, err := js.OrderedConsumer(ctxTimeout, natsqueue.StreamJobStatus, jetstream.OrderedConsumerConfig{
-		DeliverPolicy: jetstream.DeliverAllPolicy,
-	})
-	if err != nil {
-		return
-	}
-	it, err := cons.Messages()
-	if err != nil {
-		return
-	}
-	defer it.Stop()
-
-	total := int(info.State.Msgs)
-	count := 0
-	for i := 0; i < total; i++ {
-		msg, err := it.Next()
-		if err != nil {
-			break
-		}
-		var st map[string]any
-		if err := json.Unmarshal(msg.Data(), &st); err == nil {
-			prj, _ := st["project"].(string)
-			pkg, _ := st["package"].(string)
-			phase, _ := st["phase"].(string)
-			updateGatekeeperStatus(gk, prj, pkg, phase)
-			count++
-		}
-	}
-	if count > 0 {
-		fmt.Printf("[%s] [GATEKEEPER] Reconciled %d historical job statuses from stream\n",
-			time.Now().Format("15:04:05"), count)
-	}
-}
-
 func updateGatekeeperStatus(gk *scheduler.MemoryGatekeeper, prjName, pkgName, phase string) {
 	if gk == nil || prjName == "" || pkgName == "" {
 		return
@@ -614,19 +551,40 @@ func subscribeTriggers(ctx context.Context, nc *nats.Conn, sched *scheduler.Sche
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] [SCHEDULER] Trigger processing failed for %s/%s: %v\n",
 				time.Now().Format("15:04:05"), trig.Project, trig.Package, err)
-			statusMsg, _ := json.Marshal(map[string]any{
-				"job_id":  trig.TriggerID,
-				"project": trig.Project,
-				"package": trig.Package,
-				"phase":   "UNRESOLVABLE",
-				"reason":  err.Error(),
-			})
-			_ = nc.Publish("bsgo.status", statusMsg)
+			publishUnresolvable(nc, &trig, err)
 			return
 		}
 
 		enqueueDispatchedJobs(nc, disp, jobs)
 	})
+}
+
+// publishUnresolvable announces a scheduling failure. Target and architecture
+// come from the failing (target, arch) pair when known, else from the trigger.
+func publishUnresolvable(nc *nats.Conn, trig *v1.BuildTrigger, cause error) {
+	target, arch := trig.Target, trig.Architecture
+	var scoped *scheduler.TargetArchError
+	if errors.As(cause, &scoped) {
+		target, arch = scoped.Target, scoped.Arch
+	}
+	statusMsg, err := json.Marshal(map[string]any{
+		"job_id":       trig.TriggerID,
+		"project":      trig.Project,
+		"package":      trig.Package,
+		"target":       target,
+		"architecture": arch,
+		"phase":        "UNRESOLVABLE",
+		"reason":       cause.Error(),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] [SCHEDULER] Failed to encode status for %s/%s: %v\n",
+			time.Now().Format("15:04:05"), trig.Project, trig.Package, err)
+		return
+	}
+	if err := nc.Publish("bsgo.status", statusMsg); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] [SCHEDULER] Failed to publish status for %s/%s: %v\n",
+			time.Now().Format("15:04:05"), trig.Project, trig.Package, err)
+	}
 }
 
 func enqueueDispatchedJobs(nc *nats.Conn, disp *dispatcher.Dispatcher, jobs []*v1.BuildJob) {
@@ -639,6 +597,7 @@ func enqueueDispatchedJobs(nc *nats.Conn, disp *dispatcher.Dispatcher, jobs []*v
 			"job_id":       j.JobID,
 			"project":      j.Project,
 			"package":      j.Package,
+			"target":       j.Target,
 			"phase":        "PENDING",
 			"architecture": j.Architecture,
 		})
@@ -667,6 +626,7 @@ func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nat
 						"job_id":       rj.JobID,
 						"project":      rj.Project,
 						"package":      rj.Package,
+						"target":       rj.Target,
 						"phase":        "ABORTED",
 						"reason":       "WORKER_LEASE_EXPIRED",
 						"architecture": rj.Architecture,
@@ -683,6 +643,7 @@ func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nat
 						"job_id":       dispatchedJob.JobID,
 						"project":      dispatchedJob.Project,
 						"package":      dispatchedJob.Package,
+						"target":       dispatchedJob.Target,
 						"phase":        "BUILDING",
 						"worker_id":    assignedWorker,
 						"architecture": dispatchedJob.Architecture,

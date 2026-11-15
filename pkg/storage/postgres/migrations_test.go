@@ -23,8 +23,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 		t.Fatalf("failed to collect migrations: %v", err)
 	}
 
-	if len(migrations) != 4 {
-		t.Fatalf("expected 4 migrations, got %d", len(migrations))
+	if len(migrations) != 5 {
+		t.Fatalf("expected 5 migrations, got %d", len(migrations))
 	}
 
 	if migrations[0].Version != 1 {
@@ -38,6 +38,10 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if migrations[3].Version != 4 {
 		t.Errorf("expected migration 3 version 4, got %d", migrations[3].Version)
+	}
+
+	if migrations[4].Version != 5 {
+		t.Errorf("expected migration 4 version 5, got %d", migrations[4].Version)
 	}
 
 	// Verify each migration contains expected statements
