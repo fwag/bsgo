@@ -1,0 +1,35 @@
+# bsgo Worker Daemon - systemd-nspawn Isolation Configuration
+# Uses obs-build --vm-type nspawn: systemd-nspawn with --private-network, so the
+# build has no network access and BuildInfo (hermetic) jobs are accepted without
+# sandbox.allow_unisolated_chroot. Requires systemd-nspawn in PATH (the worker
+# refuses to start otherwise) and root privileges (see build-sudo).
+
+worker:
+  id: "worker-nspawn-01"
+  arch: "x86_64"
+  work_dir: "/var/tmp/bsgo-worker"
+  state_dir: "/run/bsgo/worker"
+  cache_dir: "/var/tmp/bsgo-worker/cache"
+  # Capacity is detected at startup (cgroup-aware CPUs and memory, free disk of
+  # work_dir). Uncomment to override; explicit values win over detection.
+  # total_vcpus: 4
+  # total_memory_mb: 16384
+  # disk_gb: 100
+  # Host reserve subtracted from detected values (defaults: 1024 MB, 0 vCPUs).
+  # reserve_memory_mb: 1024
+  # reserve_vcpus: 0
+
+nats:
+  url: "nats://localhost:4222"
+
+storage:
+  s3_endpoint: "http://127.0.0.1:3900"
+  s3_bucket: "bsgo-artifacts"
+  s3_region: "garage"
+  access_key: "${AWS_ACCESS_KEY_ID}"
+  secret_key: "${AWS_SECRET_ACCESS_KEY}"
+
+# Sandbox Execution Engine
+sandbox:
+  mode: "nspawn"
+  obs_build_bin: "/home/ta/Devel/bsgo/bin/build-sudo"
