@@ -3,6 +3,7 @@ package checker
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"github.com/openSUSE/bsgo/pkg/solv"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,7 +43,9 @@ func (ps *pass) meta(u *unit) string {
 		if ps.inCycle(u, p.Name) || (policy == "direct" && !u.deps[p.Name]) {
 			continue
 		}
-		ids = append(ids, p.SHA256)
+		if id, ok := ps.depIdentity(u, p); ok {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
@@ -56,6 +59,41 @@ func (ps *pass) meta(u *unit) string {
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// depIdentity is the meta contribution of one build dependency, following
+// BSSched/BuildJob/Package.pm:
+//   - binaries the unit produces itself never count (BSSolv::gen_meta drops
+//     the package's own subpacks), otherwise every build would retrigger the
+//     next one through its own, freshly built binaries;
+//   - a binary built in this prpa counts with the meta of its producer's last
+//     successful build (OBS appends the dependency's .meta for local
+//     binaries), so a rebuild with identical inputs but different
+//     timestamps does not cascade;
+//   - any other binary (path repositories, Bootstrap Dependency) counts with
+//     its sha256.
+func (ps *pass) depIdentity(u *unit, p solv.ResolvedPackage) (string, bool) {
+	prod := ps.prod[p.Name]
+	if prod == u {
+		return "", false
+	}
+	if prod != nil && ps.isOwnBinary(prod, p.Name) {
+		if st := ps.states[unitKey(prod.pkg, prod.flavor)]; st != nil && st.BuiltMeta != "" {
+			return "local " + p.Name + " " + st.BuiltMeta, true
+		}
+	}
+	return p.SHA256, true
+}
+
+// isOwnBinary reports whether name is a binary of prod in the own build
+// repository (as opposed to a same-named binary further down the path).
+func (ps *pass) isOwnBinary(prod *unit, name string) bool {
+	for _, n := range ps.own[prod.name] {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedMembers(g *group) []*unit {

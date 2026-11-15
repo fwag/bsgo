@@ -207,19 +207,37 @@ func TestMetaUnchangedNoRebuildChangedRebuild(t *testing.T) {
 	w.wantJobs() // same sources, same dependency binaries: nothing to do
 	w.wantState("app", storage.StateSucceeded, "")
 
-	// lib was rebuilt with identical sources: new binary identity.
-	w.pkg("lib", nil) // same content, same commit
-	libRow := w.state("lib")
-	rebuild := *libRow
-	rebuild.JobID = "rebuilt"
+	// lib's binaries get a new identity (e.g. a forced rebuild with new
+	// timestamps) while lib's own inputs are unchanged: OBS identifies local
+	// dependencies by their producer's meta, so app must not rebuild.
 	w.bins["lib"][0].SHA256 = sha("a-new-build")
 	w.publishIndex()
+	w.run()
+	w.wantJobs()
+	w.wantState("app", storage.StateSucceeded, "")
+
+	// lib's sources change: lib rebuilds, its meta changes, app follows.
+	w.addPackage("lib", map[string]string{"lib.spec": spec("lib", nil) + "# changed\n"})
+	w.run()
+	w.finish(w.wantJobs("lib")[0], binary("lib", "2"))
 	w.run()
 	jobs := w.wantJobs("app")
 	if jobs[0].Explain != "meta change" {
 		t.Errorf("explain %q, want meta change", jobs[0].Explain)
 	}
 	w.wantState("app", storage.StateScheduled, "meta change")
+}
+
+func TestOwnBinariesDoNotRetrigger(t *testing.T) {
+	// self builds with its own previous binary (like gcc or libcap-ng whose
+	// build environment pulls in their own subpackages from the repository).
+	w := newWorld(t, []bininfo.BinInfo{binary("self", "0")})
+	w.pkg("self", []string{"self"})
+	w.run()
+	w.finish(w.wantJobs("self")[0], binary("self", "1"))
+	w.run()
+	w.wantJobs() // its own fresh binary replaced the bootstrap one: no rebuild
+	w.wantState("self", storage.StateSucceeded, "")
 }
 
 func TestSourceChangeSchedulesAndCancelsInFlight(t *testing.T) {
@@ -317,8 +335,10 @@ func TestRebuildPolicyLocalIgnoresDependencyChanges(t *testing.T) {
 			w.run()
 			w.finish(w.wantJobs("app")[0], binary("app", "1"))
 
-			w.bins["lib"][0].SHA256 = sha("a-new-lib-build")
-			w.publishIndex()
+			// lib's sources change and lib rebuilds: a real dependency change.
+			w.addPackage("lib", map[string]string{"lib.spec": spec("lib", nil) + "# changed\n"})
+			w.run()
+			w.finish(w.wantJobs("lib")[0], binary("lib", "2"))
 			w.run()
 			w.wantJobs(tc.wantJobs...)
 		})
