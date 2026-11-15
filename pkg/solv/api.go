@@ -36,6 +36,10 @@ type ResolvedPackage struct {
 	// SHA256 is the sha256 of the RPM file as recorded in the repository
 	// metadata. It is empty when the repository carries no sha256 checksum.
 	SHA256 string
+	// Location is the package location of rpm-md repositories (the href of
+	// primary.xml, relative to the repository base URL); empty for repositories
+	// without that information.
+	Location string
 	// Repo is the index of the repository (path position, 0 = highest priority).
 	Repo int
 	// Why records the first reason the package was selected.
@@ -241,12 +245,13 @@ func (e *expander) result() *ExpansionResult {
 	for i, s := range order {
 		info := e.pool.solvInfo(s)
 		res.Packages[i] = ResolvedPackage{
-			Name:   info.name,
-			EVR:    info.evr,
-			Arch:   info.arch,
-			SHA256: info.checksum,
-			Repo:   info.repo,
-			Why:    e.why[s],
+			Name:     info.name,
+			EVR:      info.evr,
+			Arch:     info.arch,
+			SHA256:   info.checksum,
+			Location: info.location,
+			Repo:     info.repo,
+			Why:      e.why[s],
 		}
 	}
 	return res

@@ -47,6 +47,7 @@ const (
 type solvInfo struct {
 	name, evr, arch string
 	checksum        string
+	location        string
 	repo            int
 }
 
@@ -183,6 +184,9 @@ func (p *Pool) solvInfo(s solvID) *solvInfo {
 		i.repo = int(ci.repo)
 		if ci.sha256 != 0 {
 			i.checksum = C.GoString(ci.checksum)
+		}
+		if ci.location != nil {
+			i.location = C.GoString(ci.location)
 		}
 	}
 	p.cache.info[s] = i

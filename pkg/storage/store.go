@@ -77,18 +77,21 @@ func IsValidBuildState(state string) bool {
 
 // PackageBuildState is the build state of one package/flavor in one (project, repo, arch).
 type PackageBuildState struct {
-	Project      string    `json:"project"`
-	Repo         string    `json:"repo"`
-	Arch         string    `json:"arch"`
-	Package      string    `json:"package"`
-	Flavor       string    `json:"flavor,omitempty"`
-	State        string    `json:"state"`
-	Details      string    `json:"details,omitempty"`
-	SourceCommit string    `json:"source_commit,omitempty"`
-	Meta         string    `json:"meta,omitempty"`
-	Bcnt         int       `json:"bcnt,omitempty"`
-	JobID        string    `json:"job_id,omitempty"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	Project      string `json:"project"`
+	Repo         string `json:"repo"`
+	Arch         string `json:"arch"`
+	Package      string `json:"package"`
+	Flavor       string `json:"flavor,omitempty"`
+	State        string `json:"state"`
+	Details      string `json:"details,omitempty"`
+	SourceCommit string `json:"source_commit,omitempty"`
+	Meta         string `json:"meta,omitempty"`
+	// BuiltMeta is the meta of the last succeeded build. The store maintains
+	// it: a transition to succeeded copies Meta into it.
+	BuiltMeta string    `json:"built_meta,omitempty"`
+	Bcnt      int       `json:"bcnt,omitempty"`
+	JobID     string    `json:"job_id,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // BuildStateFilter narrows ListBuildStates; empty fields match everything.
@@ -102,6 +105,61 @@ func (f BuildStateFilter) Matches(st *PackageBuildState) bool {
 	return (f.Repo == "" || f.Repo == st.Repo) &&
 		(f.Arch == "" || f.Arch == st.Arch) &&
 		(f.State == "" || f.State == st.State)
+}
+
+// UnitRef names a package unit: a package and an optional multibuild flavor.
+type UnitRef struct {
+	Package string `json:"package"`
+	Flavor  string `json:"flavor,omitempty"`
+}
+
+// CounterKey identifies one build for NextBuildCounters.
+type CounterKey struct {
+	Project      string
+	Repo         string
+	Arch         string
+	Package      string
+	Flavor       string
+	SourceCommit string
+	Meta         string
+}
+
+// BuildCounters are the release counters of one build.
+type BuildCounters struct {
+	// CI is CI_CNT: the number of distinct source commits seen for the unit in
+	// the project, counted in order of first use.
+	CI int
+	// B is B_CNT: the number of builds of this source commit in this
+	// (project, repo, arch), counted from 1.
+	B int
+}
+
+// ForcedRebuild asks the checker to rebuild a unit.
+type ForcedRebuild struct {
+	Project     string    `json:"project"`
+	Repo        string    `json:"repo,omitempty"`
+	Arch        string    `json:"arch,omitempty"`
+	Package     string    `json:"package"`
+	Flavor      string    `json:"flavor,omitempty"`
+	RequestedAt time.Time `json:"requested_at"`
+}
+
+// Applies reports whether the request covers a unit of (repo, arch).
+func (f ForcedRebuild) Applies(repo, arch string, u UnitRef) bool {
+	return f.Package == u.Package && f.Flavor == u.Flavor &&
+		(f.Repo == "" || f.Repo == repo) && (f.Arch == "" || f.Arch == arch)
+}
+
+// BuildRepoIndex points at the current build repository index of one
+// (project, repo, arch): a libsolv blob and the entries it was built from.
+type BuildRepoIndex struct {
+	Project     string    `json:"project"`
+	Repo        string    `json:"repo"`
+	Arch        string    `json:"arch"`
+	ContentHash string    `json:"content_hash"`
+	SolvKey     string    `json:"solv_key"`
+	EntriesKey  string    `json:"entries_key"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type Store interface {
@@ -128,6 +186,28 @@ type Store interface {
 	UpsertBuildState(ctx context.Context, st *PackageBuildState) error
 	ListBuildStates(ctx context.Context, project string, filter BuildStateFilter) ([]*PackageBuildState, error)
 	CountBuildStates(ctx context.Context, project string, filter BuildStateFilter) (map[string]int, error)
+	// GetBuildState returns one row or ErrNotFound.
+	GetBuildState(ctx context.Context, project, repo, arch, pkg, flavor string) (*PackageBuildState, error)
+	// UpsertBuildStates writes all rows in one transaction.
+	UpsertBuildStates(ctx context.Context, states []*PackageBuildState) error
+
+	// NextBuildCounters returns the CI_CNT and B_CNT of the build identified by
+	// key, allocating them on first use. It is idempotent per key.
+	NextBuildCounters(ctx context.Context, key CounterKey) (BuildCounters, error)
+
+	// RequestForcedRebuild records that a unit must be rebuilt regardless of
+	// its meta. An empty repo or arch matches every repository or architecture.
+	RequestForcedRebuild(ctx context.Context, req ForcedRebuild) error
+	// ListForcedRebuilds returns the pending requests of a project.
+	ListForcedRebuilds(ctx context.Context, project string) ([]ForcedRebuild, error)
+	// ClearForcedRebuilds removes the requests that cover the given units of
+	// one (project, repo, arch).
+	ClearForcedRebuilds(ctx context.Context, project, repo, arch string, units []UnitRef) error
+
+	// SaveBuildRepoIndex points a (project, repo, arch) at its current index.
+	SaveBuildRepoIndex(ctx context.Context, idx *BuildRepoIndex) error
+	// GetBuildRepoIndex returns ErrNotFound when nothing was indexed yet.
+	GetBuildRepoIndex(ctx context.Context, project, repo, arch string) (*BuildRepoIndex, error)
 }
 
 type MemoryStore struct {
@@ -138,6 +218,9 @@ type MemoryStore struct {
 	solvs    map[string]*TargetSolv                   // key: project:target:arch -> solv
 	states   map[string]*PackageBuildState            // key: project/repo/arch/package/flavor
 	dod      map[string]*DoDRepo                      // key: url
+	counters map[CounterKey]BuildCounters
+	forced   []ForcedRebuild
+	indexes  map[string]*BuildRepoIndex // key: project/repo/arch
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -148,6 +231,8 @@ func NewMemoryStore() *MemoryStore {
 		solvs:    make(map[string]*TargetSolv),
 		states:   make(map[string]*PackageBuildState),
 		dod:      make(map[string]*DoDRepo),
+		counters: make(map[CounterKey]BuildCounters),
+		indexes:  make(map[string]*BuildRepoIndex),
 	}
 }
 
@@ -328,22 +413,48 @@ func buildStateKey(st *PackageBuildState) string {
 	return strings.Join([]string{st.Project, st.Repo, st.Arch, st.Package, st.Flavor}, "\x00")
 }
 
-func (s *MemoryStore) UpsertBuildState(_ context.Context, st *PackageBuildState) error {
+// ValidateBuildState checks the invariants every store enforces on a row.
+func ValidateBuildState(st *PackageBuildState) error {
 	if st.Project == "" || st.Repo == "" || st.Arch == "" || st.Package == "" {
 		return fmt.Errorf("build state requires project, repo, arch and package")
 	}
 	if !IsValidBuildState(st.State) {
 		return fmt.Errorf("invalid build state %q", st.State)
 	}
+	return nil
+}
+
+func (s *MemoryStore) UpsertBuildState(_ context.Context, st *PackageBuildState) error {
+	if err := ValidateBuildState(st); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.upsertLocked(st)
+	return nil
+}
 
+func (s *MemoryStore) upsertLocked(st *PackageBuildState) {
 	cp := *st
 	cp.UpdatedAt = time.Now()
 	if prev, ok := s.states[buildStateKey(&cp)]; ok {
 		preserveBuildIdentity(&cp, prev)
 	}
 	s.states[buildStateKey(&cp)] = &cp
+}
+
+// UpsertBuildStates implements Store. It validates every row before writing any.
+func (s *MemoryStore) UpsertBuildStates(_ context.Context, states []*PackageBuildState) error {
+	for _, st := range states {
+		if err := ValidateBuildState(st); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, st := range states {
+		s.upsertLocked(st)
+	}
 	return nil
 }
 
@@ -359,6 +470,10 @@ func preserveBuildIdentity(next, prev *PackageBuildState) {
 	}
 	if next.Bcnt < prev.Bcnt {
 		next.Bcnt = prev.Bcnt
+	}
+	next.BuiltMeta = prev.BuiltMeta
+	if next.State == StateSucceeded {
+		next.BuiltMeta = next.Meta
 	}
 }
 

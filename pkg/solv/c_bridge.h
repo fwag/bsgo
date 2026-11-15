@@ -21,6 +21,7 @@ typedef struct {
     const char *evr;
     const char *arch;
     const char *checksum;
+    const char *location;
     int repo;
     int sha256;
 } BsgoSolvInfo;
