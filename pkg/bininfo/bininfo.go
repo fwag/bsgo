@@ -52,6 +52,17 @@ type BinInfo struct {
 	Suggests    []Dep  `json:"suggests,omitempty"`
 	Supplements []Dep  `json:"supplements,omitempty"`
 	Enhances    []Dep  `json:"enhances,omitempty"`
+	// Files are the packaged paths that rpm-md primary.xml lists (see
+	// IsPrimaryFile); they become file provides in the index.
+	Files []string `json:"files,omitempty"`
+}
+
+// IsPrimaryFile reports whether path is one of the "primary" files that
+// createrepo_c puts in primary.xml and libsolv indexes with
+// RPM_ADD_FILTERED_FILELIST: anything containing "bin/", anything below /etc/
+// and /usr/lib/sendmail.
+func IsPrimaryFile(path string) bool {
+	return strings.Contains(path, "bin/") || strings.HasPrefix(path, "/etc/") || path == "/usr/lib/sendmail"
 }
 
 // EVR returns [epoch:]version-release. A missing or zero epoch is omitted,

@@ -46,7 +46,9 @@ enum {
 Id bsgo_repo_add_solvable(Repo *repo, const char *name, const char *evr, const char *arch);
 int bsgo_solvable_add_dep(Repo *repo, Id sid, int kind, const char *dep, int pre);
 int bsgo_solvable_set_sha256(Repo *repo, Id sid, const char *hex);
+int bsgo_solvable_add_file(Repo *repo, Id sid, const char *path);
 int bsgo_repo_finish(Repo *repo);
+char *bsgo_all_provides(Pool *pool);
 
 Id bsgo_str2dep(Pool *pool, const char *s);
 int bsgo_pool_prepare(Pool *pool);

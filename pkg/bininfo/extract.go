@@ -35,7 +35,8 @@ const queryFormat = `%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t%{SOURC
 	`[M\t%{RECOMMENDNAME}\t%{RECOMMENDFLAGS}\t%{RECOMMENDVERSION}\n]` +
 	`[G\t%{SUGGESTNAME}\t%{SUGGESTFLAGS}\t%{SUGGESTVERSION}\n]` +
 	`[S\t%{SUPPLEMENTNAME}\t%{SUPPLEMENTFLAGS}\t%{SUPPLEMENTVERSION}\n]` +
-	`[E\t%{ENHANCENAME}\t%{ENHANCEFLAGS}\t%{ENHANCEVERSION}\n]`
+	`[E\t%{ENHANCENAME}\t%{ENHANCEFLAGS}\t%{ENHANCEVERSION}\n]` +
+	`[F\t%{FILENAMES}\n]`
 
 // Extract reads the header of the RPM at path using "rpm -qp". The package
 // does not need to be installed and its signature is not checked here (the
@@ -117,6 +118,12 @@ func parseQuery(out string) (BinInfo, error) {
 		"S": &info.Supplements, "E": &info.Enhances,
 	}
 	for _, line := range lines[1:] {
+		if path, ok := strings.CutPrefix(line, "F\t"); ok {
+			if IsPrimaryFile(path) {
+				info.Files = append(info.Files, path)
+			}
+			continue
+		}
 		kind, dep, err := parseDepLine(line)
 		if err != nil {
 			return BinInfo{}, err

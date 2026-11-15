@@ -6,6 +6,7 @@
 #include <solv/pool_parserpmrichdep.h>
 #include <solv/testcase.h>
 #include <solv/repodata.h>
+#include <solv/dataiterator.h>
 
 Pool *bsgo_pool_create(const char *arch) {
     Pool *pool = pool_create();
@@ -140,6 +141,20 @@ int bsgo_solvable_add_dep(Repo *repo, Id sid, int kind, const char *dep, int pre
     case BSGO_DEP_ENHANCES:    s->enhances = repo_addid_dep(repo, s->enhances, id, 0); break;
     default: return -1;
     }
+    return 0;
+}
+
+/* Files are kept in the repodata file list, exactly where libsolv's rpm-md
+ * parser keeps the <file> entries of primary.xml. */
+int bsgo_solvable_add_file(Repo *repo, Id sid, const char *path) {
+    if (!repo || sid <= 0 || !path || *path != '/') return -1;
+    const char *slash = strrchr(path, '/');
+    char *dir = strndup(path, slash == path ? 1 : (size_t)(slash - path));
+    if (!dir) return -1;
+    Repodata *data = repo_last_repodata(repo);
+    Id dirid = repodata_str2dir(data, dir, 1);
+    repodata_add_dirstr(data, sid, SOLVABLE_FILELIST, dirid, slash + 1);
+    free(dir);
     return 0;
 }
 
@@ -298,4 +313,33 @@ const char *bsgo_dep2str(Pool *pool, Id dep) {
 
 const char *bsgo_id2str(Pool *pool, Id id) {
     return pool_id2str(pool, id);
+}
+
+/* All provides of every solvable plus the file list entries libsolv keeps in
+ * repodata, one "name: dep" per line. */
+char *bsgo_all_provides(Pool *pool) {
+    char *buf = NULL;
+    size_t size = 0;
+    FILE *fp = open_memstream(&buf, &size);
+    if (!fp) return NULL;
+    for (Id p = 2; p < pool->nsolvables; p++) {
+        Solvable *s = pool->solvables + p;
+        if (!s->repo) continue;
+        Queue q;
+        queue_init(&q);
+        solvable_lookup_deparray(s, SOLVABLE_PROVIDES, &q, 0);
+        for (int i = 0; i < q.count; i++) {
+            if (q.elements[i] == SOLVABLE_FILEMARKER) continue;
+            fprintf(fp, "%s: %s\n", pool_id2str(pool, s->name), pool_dep2str(pool, q.elements[i]));
+        }
+        queue_free(&q);
+        Dataiterator di;
+        dataiterator_init(&di, pool, s->repo, p, SOLVABLE_FILELIST, NULL, 0);
+        while (dataiterator_step(&di)) {
+            fprintf(fp, "%s: %s\n", pool_id2str(pool, s->name), repodata_dir2str(di.data, di.kv.id, di.kv.str));
+        }
+        dataiterator_free(&di);
+    }
+    fclose(fp);
+    return buf;
 }

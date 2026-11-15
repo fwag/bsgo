@@ -93,6 +93,17 @@ func (r *Repo) addBinInfo(info bininfo.BinInfo) error {
 	if err := r.addDeps(sid, addProvides, append([]bininfo.Dep{self}, info.Provides...)); err != nil {
 		return err
 	}
+	for _, f := range info.Files {
+		if !bininfo.IsPrimaryFile(f) {
+			continue
+		}
+		cf := C.CString(f)
+		rc := C.bsgo_solvable_add_file(r.ptr, sid, cf)
+		C.free(unsafe.Pointer(cf))
+		if rc != 0 {
+			return fmt.Errorf("cannot add file %q", f)
+		}
+	}
 	groups := []struct {
 		kind int
 		deps []bininfo.Dep
@@ -136,4 +147,20 @@ func (r *Repo) addDeps(sid C.Id, kind int, deps []bininfo.Dep) error {
 		}
 	}
 	return nil
+}
+
+// AllProvides returns every provide of every package in the pool, including
+// file provides, as sorted "package: dependency" lines. It exists to compare
+// indexes built from different sources.
+func (p *Pool) AllProvides() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := C.bsgo_all_provides(p.ptr)
+	if out == nil {
+		return nil
+	}
+	defer C.free(unsafe.Pointer(out))
+	lines := strings.Split(strings.TrimSuffix(C.GoString(out), "\n"), "\n")
+	sort.Strings(lines)
+	return lines
 }
