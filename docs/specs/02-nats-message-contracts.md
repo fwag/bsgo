@@ -23,8 +23,9 @@ bsgo.
 │       └── job                        [Core NATS] Direct job assignment from Dispatcher
 ├── logs.
 │   └── <job_id>                       [Core NATS] Live log line streaming
-└── publish.
-    └── <type>.<project>.<target>.<arch> [JetStream: PUBLISH] Repodata / OCI publication requests
+└── events.
+    ├── repo.changed                   [Core NATS] Build repository of a prpa changed (indexer -> checker, publisher)
+    └── published                      [Core NATS] A prpa was published (publisher)
 ```
 
 ---
@@ -36,7 +37,6 @@ bsgo.
 | **`TRIGGERS`** | `bsgo.triggers.>` | `Limits` | File | — | 7 Days | Immutable log of all inbound build trigger requests. |
 | **`JOBS_PENDING`** | `bsgo.jobs.pending` | `WorkQueue` | File | 60s | 14 Days | Schedulers publish resolved jobs. Dispatcher consumes and assigns to workers. |
 | **`JOB_STATUS`** | `bsgo.status` | `Limits` | File | — | 30 Days | Durable audit trail of job state transitions (`RUNNING`, `FAILED`, `SUCCEEDED`). |
-| **`PUBLISH`** | `bsgo.publish.>` | `WorkQueue` | File | 300s | 3 Days | Serialized publication requests consumed by `bsgo-publisher`. |
 
 *Note: `bsgo.workers.heartbeat`, `bsgo.logs.*`, and `bsgo.jobs.*.control` do NOT use JetStream streams; they operate on standard Core NATS to eliminate storage and I/O overhead.*
 
@@ -303,31 +303,14 @@ list holds the binaries plus `bininfo.json`, `_slsa_provenance.json`,
 the real object key. The worker does not emit a publication request for
 BuildInfo jobs; the indexer integrates the binaries from this message.
 
-### 3.7. Publication Request: `bsgo.publish.<type>.<project>.<target>.<arch>`
-Emitted by the Dispatcher or Scheduler when a build finishes with new artifacts.
-
-```protobuf
-syntax = "proto3";
-package bsgo.v1;
-
-enum RepoType {
-  REPO_TYPE_UNSPECIFIED = 0;
-  REPO_TYPE_RPM = 1;
-  REPO_TYPE_OCI = 2;
-}
-
-message PublishRequest {
-  string request_id = 1;      // UUID
-  string project = 2;
-  string target = 3;
-  string architecture = 4;
-  RepoType repo_type = 5;
-  string trigger_job_id = 6;
-  repeated string new_s3_keys = 7;
-  repeated string deleted_s3_keys = 8;
-  int64 timestamp_unix = 9;
-}
-```
+### 3.7. Publication (no request message)
+There is no publication request and no `PUBLISH` stream. The former
+`bsgo.publish.>` request, which workers emitted with the list of new RPMs, is
+removed: publishing is driven by the build repository index, not by workers.
+The publisher reacts to the repo-changed event (3.8) and publishes the current
+binary set of the prpa (see 3.9, "Publisher coordination"). After a publish it
+emits `bsgo.events.published` (Core NATS, JSON `PublicationEvent`).
+Deployments that still have a `PUBLISH` stream can delete it.
 
 ### 3.8. Repo Changed Event: `bsgo.events.repo.changed`
 Emitted by the indexer after it replaced the binaries of a unit in the build
@@ -358,3 +341,22 @@ unit. `bsgo.status` messages of phase `BUILDING`, `SUCCEEDED`, `FAILED` and
 `ABORTED` update the unit's build state; a `SUCCEEDED` message first integrates
 the reported artifacts (`bininfo.json` plus RPMs, verified by sha256) into the
 build repository.
+
+#### Publisher coordination
+Publisher replicas use two further KV buckets with the same key encoding and
+semantics as the checker buckets, so that publishing and checking never share
+marks or leases.
+
+| Bucket | Content | Lifetime |
+|--------|---------|----------|
+| `bsgo-publisher-dirty` | Same value as `bsgo-checker-dirty`. Written by the repo-changed event (3.8) and once per replica at startup for every target with `flags.publish`. | Until a publish consumed it. |
+| `bsgo-publisher-leases` | Owner id of the replica that publishes the prpa (key `<prpa>`). | Bucket TTL (30 s), renewed every 10 s while the publish runs. |
+
+A replica publishes a dirty prpa after the debounce interval
+(`--publisher-debounce`, default 10 s) and only while it holds the lease, so two
+replicas never publish the same prpa concurrently. A failed publish keeps the
+mark and is retried. A publish reads the current binaries from the build
+repository index, writes only to the published prefix `repos/<project>/<repo>/<arch>/`
+(debug packages to `repos/<project>/<repo>/debug/<arch>/` when `flags.debuginfo`
+is set) and ends with the upload of `repodata/repomd.xml`; objects of binaries
+that are no longer published are deleted after that upload.

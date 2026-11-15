@@ -44,7 +44,7 @@ It replaces twenty years of legacy Perl daemons, proprietary CPIO version contro
 - **Fine-Grained Token ACLs**: Resource-scoped Personal Access Tokens (`<action>:<resource>[:<id>]`) strictly contain the blast radius of autonomous AI agents (e.g. `project:write:home:ai-agent`).
 
 ### 7. Zero-Download Incremental Repodata Publishing
-- **Metadata-Only S3 Sync**: `bsgo-publisher` downloads only existing `repodata/` XML files (~5–20MB) and newly compiled RPMs, executing `createrepo_c --update --recycle-pkglist --no-database` without downloading historical binaries.
+- **Incremental, Stateless Metadata Generation**: `bsgo-publisher` keeps no local state. It downloads the previously published `repodata/` XML files (~5-20MB) and only the RPMs that are new or changed in the build repository index, then runs `createrepo_c --update --skip-stat --pkglist` in a temp dir that is deleted afterwards. Unchanged RPMs are never downloaded again.
 - **Atomic "Commit-by-Pointer"**: Uploads new hash-prefixed XML files first, followed by an atomic overwrite of `repomd.xml` on S3, ensuring package managers (`zypper`, `dnf`) never observe inconsistent repository states.
 
 ---
