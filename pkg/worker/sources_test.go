@@ -150,3 +150,24 @@ func TestPullLFS(t *testing.T) {
 		t.Error("lfs pull of an unfetchable object must fail, not be swallowed")
 	}
 }
+
+func TestSetupSourcesTwiceInSameJobDir(t *testing.T) {
+	// A requeued job keeps its ID and job directory; the second attempt must
+	// not trip over the first attempt's checkout ("remote origin already exists").
+	bare, ids := bareRepoWithHistory(t)
+	jobDir := t.TempDir()
+	sb := &ProcessSandbox{WorkDir: t.TempDir()}
+	job := &v1.BuildJob{JobID: "j1", Package: "pkg", Source: v1.SourceSpec{GitURL: bare, CommitSHA: ids[1], RecipePath: "pkg.spec"}}
+	for attempt := 1; attempt <= 2; attempt++ {
+		spec, commit, err := sb.setupKVMSources(context.Background(), job, jobDir, io.Discard)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		if commit != ids[1] {
+			t.Errorf("attempt %d: commit %s, want %s", attempt, commit, ids[1])
+		}
+		if data, _ := os.ReadFile(spec); string(data) != "Name: two\n" {
+			t.Errorf("attempt %d: spec %q", attempt, data)
+		}
+	}
+}

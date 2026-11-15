@@ -168,6 +168,10 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	}
 
 	buildRoot := jobBuildRoot(jobDir)
+	// A requeued job reuses its job directory; a build root left by an
+	// attempt that was interrupted (host reboot, killed container) is
+	// root-owned and must be wiped through obs-build before reuse.
+	wipeBuildRoot(ctx, obsBin, buildRoot, w)
 	vmDisk, vmSwap, err := s.setupKVMDisks(job)
 	if err != nil {
 		return nil, fmt.Errorf("failed configuring VM disks: %w", err)

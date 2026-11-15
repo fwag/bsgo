@@ -49,6 +49,11 @@ func findPackageSources(pkgName, recipePath string) (string, string) {
 // exact source commit (empty for local fixture sources).
 func (s *ProcessSandbox) setupKVMSources(ctx context.Context, job *v1.BuildJob, jobDir string, w io.Writer) (specFile, commit string, err error) {
 	sourcesDir := filepath.Join(jobDir, "sources")
+	// A requeued job keeps its ID and therefore its job directory: start
+	// every attempt from an empty source tree.
+	if err := os.RemoveAll(sourcesDir); err != nil {
+		return "", "", fmt.Errorf("clearing sources of a previous attempt: %w", err)
+	}
 	if err := os.MkdirAll(sourcesDir, 0o750); err != nil {
 		return "", "", err
 	}
