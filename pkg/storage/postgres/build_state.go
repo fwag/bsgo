@@ -22,9 +22,9 @@ func (s *PostgresStore) UpsertBuildState(ctx context.Context, st *storage.Packag
 		ON CONFLICT (project, repo, arch, package, flavor) DO UPDATE SET
 			state = EXCLUDED.state,
 			details = EXCLUDED.details,
-			srcmd5 = EXCLUDED.srcmd5,
-			meta = EXCLUDED.meta,
-			bcnt = EXCLUDED.bcnt,
+			srcmd5 = COALESCE(NULLIF(EXCLUDED.srcmd5, ''), package_build_state.srcmd5),
+			meta = COALESCE(NULLIF(EXCLUDED.meta, ''), package_build_state.meta),
+			bcnt = GREATEST(EXCLUDED.bcnt, package_build_state.bcnt),
 			job_id = EXCLUDED.job_id,
 			updated_at = NOW()`
 	_, err := s.pool.Exec(ctx, query, st.Project, st.Repo, st.Arch, st.Package, st.Flavor,

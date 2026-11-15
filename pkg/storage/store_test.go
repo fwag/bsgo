@@ -167,3 +167,39 @@ func TestMemoryStoreBuildStates(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryStoreUpsertPreservesBuildIdentity(t *testing.T) {
+	tests := []struct {
+		name       string
+		next       storage.PackageBuildState
+		wantSrcMD5 string
+		wantMeta   string
+		wantBcnt   int
+	}{
+		{"status-only update keeps identity", storage.PackageBuildState{State: storage.StateBuilding}, "abc", "m1", 3},
+		{"new identity replaces old", storage.PackageBuildState{State: storage.StateScheduled, SrcMD5: "def", Meta: "m2", Bcnt: 4}, "def", "m2", 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := storage.NewMemoryStore()
+			base := storage.PackageBuildState{Project: "p", Repo: "r", Arch: "a", Package: "x",
+				State: storage.StateSucceeded, SrcMD5: "abc", Meta: "m1", Bcnt: 3}
+			if err := s.UpsertBuildState(ctx, &base); err != nil {
+				t.Fatal(err)
+			}
+			next := tt.next
+			next.Project, next.Repo, next.Arch, next.Package = "p", "r", "a", "x"
+			if err := s.UpsertBuildState(ctx, &next); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.ListBuildStates(ctx, "p", storage.BuildStateFilter{})
+			if err != nil || len(got) != 1 {
+				t.Fatalf("list: %v %d", err, len(got))
+			}
+			if got[0].SrcMD5 != tt.wantSrcMD5 || got[0].Meta != tt.wantMeta || got[0].Bcnt != tt.wantBcnt {
+				t.Errorf("got %+v", got[0])
+			}
+		})
+	}
+}

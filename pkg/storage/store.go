@@ -324,8 +324,26 @@ func (s *MemoryStore) UpsertBuildState(_ context.Context, st *PackageBuildState)
 
 	cp := *st
 	cp.UpdatedAt = time.Now()
+	if prev, ok := s.states[buildStateKey(&cp)]; ok {
+		preserveBuildIdentity(&cp, prev)
+	}
 	s.states[buildStateKey(&cp)] = &cp
 	return nil
+}
+
+// preserveBuildIdentity keeps srcmd5, meta and bcnt from prev when next does not
+// carry them, mirroring the PostgreSQL upsert: status-only updates must not erase
+// the identity of the last build.
+func preserveBuildIdentity(next, prev *PackageBuildState) {
+	if next.SrcMD5 == "" {
+		next.SrcMD5 = prev.SrcMD5
+	}
+	if next.Meta == "" {
+		next.Meta = prev.Meta
+	}
+	if next.Bcnt < prev.Bcnt {
+		next.Bcnt = prev.Bcnt
+	}
 }
 
 func (s *MemoryStore) ListBuildStates(_ context.Context, project string, filter BuildStateFilter) ([]*PackageBuildState, error) {
