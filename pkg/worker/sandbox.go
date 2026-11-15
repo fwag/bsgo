@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/openSUSE/bsgo/pkg/bininfo"
 	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/storage/s3"
@@ -721,9 +722,49 @@ func (s *ProcessSandbox) collectKVMArtifacts(ctx context.Context, buildRoot, job
 	return finalizeBuildArtifacts(pkgDir, job, artifacts, w, start)
 }
 
+// uploadBinInfo extracts the RPM headers of every produced RPM and uploads
+// them as one bininfo.json next to the artifacts. Any extraction failure fails
+// the job: an RPM without a trustworthy index entry must not be published.
+func (s *ProcessSandbox) uploadBinInfo(ctx context.Context, job *v1.BuildJob, pkgDir, target, arch string, artifacts []v1.ChrootRPM, w io.Writer) error {
+	var paths []string
+	for _, a := range artifacts {
+		if strings.HasSuffix(a.Filename, ".rpm") {
+			paths = append(paths, filepath.Join(pkgDir, a.Filename))
+		}
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	infos, err := bininfo.ExtractAll(ctx, paths)
+	if err != nil {
+		return fmt.Errorf("extracting bininfo: %w", err)
+	}
+	data, err := bininfo.Marshal(infos)
+	if err != nil {
+		return err
+	}
+	local := filepath.Join(pkgDir, bininfo.FileName)
+	if err := os.WriteFile(local, data, 0o600); err != nil {
+		return fmt.Errorf("writing %s: %w", bininfo.FileName, err)
+	}
+	if s.S3Storage == nil {
+		return nil
+	}
+	key := fmt.Sprintf("artifacts/%s/%s/%s/%s/%s", job.Project, target, arch, job.Package, bininfo.FileName)
+	if err := s.S3Storage.UploadFile(ctx, local, key); err != nil {
+		return fmt.Errorf("failed uploading %s to S3: %w", bininfo.FileName, err)
+	}
+	fmt.Fprintf(w, "[%s] bsgo-worker: uploaded bininfo for %d RPMs to s3://%s/%s\n",
+		time.Now().Format("15:04:05"), len(infos), s.S3Storage.Bucket(), key)
+	return nil
+}
+
 func (s *ProcessSandbox) uploadAndPublishArtifacts(ctx context.Context, job *v1.BuildJob, pkgDir, target, arch string, artifacts []v1.ChrootRPM, w io.Writer) error {
 	var artifactPaths []string
 	var artifactKeys []string
+	if err := s.uploadBinInfo(ctx, job, pkgDir, target, arch, artifacts, w); err != nil {
+		return err
+	}
 	if s.S3Storage != nil {
 		for _, a := range artifacts {
 			src := filepath.Join(pkgDir, a.Filename)
