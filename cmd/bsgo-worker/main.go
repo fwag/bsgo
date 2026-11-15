@@ -72,22 +72,7 @@ func main() {
 	if s3Storage != nil && err == nil {
 		store = s3Storage
 	}
-	sandbox := &worker.ProcessSandbox{
-		WorkDir:               cfg.WorkDir,
-		StateDir:              cfg.StateDir,
-		DiskDir:               cfg.DiskDir,
-		CacheDir:              cfg.CacheDir,
-		SandboxMode:           cfg.SandboxMode,
-		ObsBuildBin:           cfg.ObsBuildBin,
-		HostArch:              cfg.Architecture,
-		KVMUser:               cfg.KVMUser,
-		KVMVMArgs:             cfg.KVMVMArgs,
-		KVMAio:                cfg.KVMAio,
-		KVMCache:              cfg.KVMCache,
-		S3Storage:             store,
-		AllowUnisolatedChroot: cfg.AllowUnisolatedChroot,
-		KeepFailedJobs:        cfg.KeepFailedJobs,
-	}
+	sandbox := newSandbox(cfg, store)
 	daemon := worker.NewWorkerDaemon(cfg, nc, sandbox)
 
 	fmt.Printf("Starting bsgo-worker [%s] (Arch: %s, Sandbox: %s) connecting to %s...\n",
@@ -230,4 +215,23 @@ func applyHardware(cfg *worker.WorkerConfig, flagVCPUs int, flagMemoryMB int64) 
 	fmt.Printf("Hardware detected: %s\n", worker.DescribeHardware(detected))
 	fmt.Printf("Hardware effective: %s\n", worker.DescribeHardware(effective))
 	return nil
+}
+
+func newSandbox(cfg worker.WorkerConfig, store worker.ObjectStore) *worker.ProcessSandbox {
+	return &worker.ProcessSandbox{
+		WorkDir:               cfg.WorkDir,
+		StateDir:              cfg.StateDir,
+		DiskDir:               cfg.DiskDir,
+		CacheDir:              cfg.CacheDir,
+		SandboxMode:           cfg.SandboxMode,
+		ObsBuildBin:           cfg.ObsBuildBin,
+		HostArch:              cfg.Architecture,
+		KVMUser:               cfg.KVMUser,
+		KVMVMArgs:             cfg.KVMVMArgs,
+		KVMAio:                cfg.KVMAio,
+		KVMCache:              cfg.KVMCache,
+		S3Storage:             store,
+		AllowUnisolatedChroot: cfg.AllowUnisolatedChroot,
+		KeepFailedJobs:        cfg.KeepFailedJobs,
+	}
 }
