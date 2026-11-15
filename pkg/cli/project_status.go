@@ -126,6 +126,16 @@ func loadProjectStatus(ctx context.Context, store storage.Store, projectName str
 	return res, nil
 }
 
+// sumCounts adds up the per-state counts. With multibuild flavors a package
+// can have more than one row, so the "no state yet" line is clamped at zero.
+func sumCounts(counts map[string]int) int {
+	n := 0
+	for _, c := range counts {
+		n += c
+	}
+	return n
+}
+
 func statusLine(sb io.Writer, label string, n int, color string) {
 	fmt.Fprintf(sb, "  • %-20s %s\n", label, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(fmt.Sprintf("%d", n)))
 }
@@ -141,10 +151,17 @@ func formatProjectStatusHuman(res *ProjectStatusResult) string {
 	statusLine(&sb, "Failed:", res.Failed, "#FF3333")
 	statusLine(&sb, "Unresolvable:", res.Unresolvable, "#E5C07B")
 	statusLine(&sb, "Scheduled:", res.Pending, "#FFA500")
+	statusLine(&sb, "Blocked:", res.Counts[storage.StateBlocked], "#C678DD")
+	statusLine(&sb, "Broken:", res.Counts[storage.StateBroken], "#FF3333")
+	statusLine(&sb, "Excluded:", res.Counts[storage.StateExcluded], "#808080")
+	statusLine(&sb, "Disabled:", res.Counts[storage.StateDisabled], "#808080")
+	statusLine(&sb, "No state yet:", max(0, res.TotalPackages-sumCounts(res.Counts)), "#808080")
 
 	writeStateSample(&sb, res, "building", "Currently Building:", "#00BFFF")
 	writeStateSample(&sb, res, "failed", "Failed Packages (Sample):", "#FF3333")
 	writeStateSample(&sb, res, "unresolvable", "Unresolvable Packages (Sample):", "#E5C07B")
+	writeStateSample(&sb, res, "blocked", "Blocked Packages (Sample):", "#C678DD")
+	writeStateSample(&sb, res, "broken", "Broken Packages (Sample):", "#FF3333")
 	return sb.String()
 }
 
