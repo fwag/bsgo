@@ -19,11 +19,17 @@ import (
 )
 
 // sandboxArgs are the obs-build options selecting and sizing the sandbox (KVM
-// micro-VM or plain chroot). KVM runs get "-net none" unless the operator
+// micro-VM, systemd-nspawn container or plain chroot). KVM runs get "-net none" unless the operator
 // overrides the VM arguments.
 func (s *ProcessSandbox) sandboxArgs(job *v1.BuildJob, buildRoot, vmDisk, vmSwap, cacheDir string) []string {
-	if s.SandboxMode == "obs-build" {
+	switch s.SandboxMode {
+	case "obs-build":
 		return []string{"--clean", "--changelog", "--root", buildRoot, "--cachedir", cacheDir}
+	case "nspawn":
+		// build-vm-nspawn clears VM_ROOT and VM_SWAP and has no memory, disk
+		// or user knobs: systemd-nspawn runs directly on the build root with
+		// --private-network, so no --vm-disk/--vm-swap/--vm-memory/--vm-user.
+		return []string{"--clean", "--changelog", "--vm-type", "nspawn", "--root", buildRoot, "--cachedir", cacheDir}
 	}
 	memMB := int64(job.Resources.MemoryMB)
 	if memMB <= 0 {

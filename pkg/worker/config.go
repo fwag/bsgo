@@ -32,11 +32,13 @@ type WorkerConfig struct {
 	DiskDir      string
 	ObsBuildBin  string
 	Hardware     v1.WorkerHardware
-	SandboxMode  string
-	KVMUser      string
-	KVMVMArgs    string
-	KVMAio       string
-	KVMCache     string
+	// HardwareOverrides are explicit capacity settings; they win over detection.
+	HardwareOverrides HardwareOverrides
+	SandboxMode       string
+	KVMUser           string
+	KVMVMArgs         string
+	KVMAio            string
+	KVMCache          string
 	// AllowUnisolatedChroot lets BuildInfo jobs run in plain obs-build chroot
 	// mode, which has no network isolation. Default deny.
 	AllowUnisolatedChroot bool
@@ -50,6 +52,12 @@ type WorkerConfigFile struct {
 		StateDir string `yaml:"state_dir"`
 		CacheDir string `yaml:"cache_dir"`
 		DiskDir  string `yaml:"disk_dir"`
+		// Hardware overrides. Unset values are detected at startup.
+		TotalVCPUs      int32  `yaml:"total_vcpus"`
+		TotalMemoryMB   int64  `yaml:"total_memory_mb"`
+		DiskGB          int64  `yaml:"disk_gb"`
+		ReserveMemoryMB *int64 `yaml:"reserve_memory_mb"`
+		ReserveVCPUs    *int32 `yaml:"reserve_vcpus"`
 	} `yaml:"worker"`
 	Nats struct {
 		URL string `yaml:"url"`

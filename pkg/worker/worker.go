@@ -35,11 +35,18 @@ type WorkerDaemon struct {
 }
 
 func NewWorkerDaemon(cfg WorkerConfig, nc *nats.Conn, sandbox Sandbox) *WorkerDaemon {
-	if cfg.Hardware.TotalMemoryMB <= 0 {
-		cfg.Hardware.TotalMemoryMB = 16384
-	}
-	if cfg.Hardware.TotalVCPUs <= 0 {
-		cfg.Hardware.TotalVCPUs = 8
+	if cfg.Hardware.TotalMemoryMB <= 0 || cfg.Hardware.TotalVCPUs <= 0 {
+		det, err := DetectHardware("/proc", "/sys/fs/cgroup", cfg.WorkDir)
+		if err != nil {
+			det = v1.WorkerHardware{TotalVCPUs: 1, TotalMemoryMB: 2048}
+		}
+		eff := EffectiveHardware(det, cfg.HardwareOverrides)
+		if cfg.Hardware.TotalMemoryMB <= 0 {
+			cfg.Hardware.TotalMemoryMB = eff.TotalMemoryMB
+		}
+		if cfg.Hardware.TotalVCPUs <= 0 {
+			cfg.Hardware.TotalVCPUs = eff.TotalVCPUs
+		}
 	}
 	if cfg.Hardware.AvailableMemoryMB <= 0 {
 		cfg.Hardware.AvailableMemoryMB = cfg.Hardware.TotalMemoryMB
@@ -206,16 +213,10 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 }
 
 func (w *WorkerDaemon) allocateJob(job *v1.BuildJob, cancel context.CancelFunc) (int64, int32) {
-	reqMem := int64(job.Resources.MemoryMB)
-	if reqMem <= 0 {
-		reqMem = 2048
-	}
-	reqVCPUs := int32(job.Resources.VCPUs)
-	if reqVCPUs <= 0 {
-		reqVCPUs = 1
-	}
-
 	w.mu.Lock()
+	reqVCPUs, reqMem := grantResources(job.Resources, w.cfg.Hardware)
+	job.Resources.VCPUs = reqVCPUs
+	job.Resources.MemoryMB = reqMem
 	w.cfg.Hardware.AvailableMemoryMB -= reqMem
 	if w.cfg.Hardware.AvailableMemoryMB < 0 {
 		w.cfg.Hardware.AvailableMemoryMB = 0
@@ -370,4 +371,19 @@ func (w *natsLogWriter) Write(p []byte) (n int, err error) {
 	subject := fmt.Sprintf("bsgo.logs.%s", w.jobID)
 	err = w.nc.Publish(subject, p)
 	return len(p), err
+}
+
+// grantResources returns the vCPUs and memory a job is granted: its request
+// (defaults 1 vCPU / 2048 MiB) capped at the worker's effective capacity. The
+// sandbox, including obs-build --jobs, sees only the granted values.
+func grantResources(req v1.ResourceRequirements, total v1.WorkerHardware) (int32, int64) {
+	vcpus := req.VCPUs
+	if vcpus <= 0 {
+		vcpus = 1
+	}
+	mem := req.MemoryMB
+	if mem <= 0 {
+		mem = 2048
+	}
+	return min(vcpus, max(total.TotalVCPUs, 1)), min(mem, total.TotalMemoryMB)
 }

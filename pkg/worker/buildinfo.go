@@ -19,6 +19,7 @@ var commitIDPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 
 // checkHermeticAllowed enforces the isolation policy for BuildInfo jobs.
 //
+// nspawn mode runs systemd-nspawn with --private-network and is isolated too.
 // KVM mode runs the build in a micro-VM started with "-net none". obs-build
 // chroot mode ("obs-build") has no network isolation at all: the build runs
 // with the worker's own network namespace. A BuildInfo job promises a
@@ -31,7 +32,7 @@ func (s *ProcessSandbox) checkHermeticAllowed(job *v1.BuildJob) error {
 		return nil
 	}
 	switch s.SandboxMode {
-	case "kvm":
+	case "kvm", "nspawn":
 		return nil
 	case "obs-build":
 		if s.AllowUnisolatedChroot {
@@ -108,9 +109,10 @@ func renderRPMList(bi *v1.BuildInfo, bdepsDir string) string {
 // by watching the build output, see runWatched.
 func hermeticArgs(job *v1.BuildJob, configPath, rpmlistPath, specFile string) []string {
 	bi := job.BuildInfo
+	granted := int(max(job.Resources.VCPUs, 1))
 	jobs := int(bi.Jobs)
-	if jobs <= 0 {
-		jobs = int(max(job.Resources.VCPUs, 1))
+	if jobs <= 0 || jobs > granted {
+		jobs = granted
 	}
 	args := []string{
 		"--dist", configPath,

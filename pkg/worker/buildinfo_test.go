@@ -96,10 +96,19 @@ func TestHermeticArgs(t *testing.T) {
 			without: []string{"--release", "--disturl", "--buildflavor=gcc13", "--obspackage=gcc"},
 		},
 		{
-			name:   "explicit jobs win",
+			name:   "explicit jobs below granted vcpus win",
+			mutate: func(j *v1.BuildJob) { j.BuildInfo.Jobs = 4 },
+			want: []string{
+				"--dist", "/c", "--rpmlist", "/r", "--arch", "x86_64:i686:i586:noarch", "--jobs", "4", "--statistics",
+				"--release", "1.2", "--disturl", "obs://build.example/Proj/repo/abc-pkg",
+				"--buildflavor=gcc13", "--obspackage=gcc", "/s/pkg.spec",
+			},
+		},
+		{
+			name:   "explicit jobs capped to granted vcpus",
 			mutate: func(j *v1.BuildJob) { j.BuildInfo.Jobs = 12 },
 			want: []string{
-				"--dist", "/c", "--rpmlist", "/r", "--arch", "x86_64:i686:i586:noarch", "--jobs", "12", "--statistics",
+				"--dist", "/c", "--rpmlist", "/r", "--arch", "x86_64:i686:i586:noarch", "--jobs", "6", "--statistics",
 				"--release", "1.2", "--disturl", "obs://build.example/Proj/repo/abc-pkg",
 				"--buildflavor=gcc13", "--obspackage=gcc", "/s/pkg.spec",
 			},

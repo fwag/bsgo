@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,6 +24,8 @@ func main() {
 		s3Bucket   string
 		workDir    string
 		diskDir    string
+		vcpus      int
+		memoryMB   int64
 	)
 
 	flag.StringVar(&configFile, "config", "config/worker.yaml", "Path to YAML configuration file")
@@ -32,9 +35,19 @@ func main() {
 	flag.StringVar(&s3Bucket, "s3-bucket", "", "S3 bucket for artifact upload (overrides config)")
 	flag.StringVar(&workDir, "work-dir", "", "Root workspace directory for build jobs")
 	flag.StringVar(&diskDir, "disk-dir", "", "Dedicated directory for VM disk block devices (overrides config)")
+	flag.IntVar(&vcpus, "vcpus", 0, "Total vCPUs offered to builds (overrides detection and config)")
+	flag.Int64Var(&memoryMB, "memory-mb", 0, "Total memory in MiB offered to builds (overrides detection and config)")
 	flag.Parse()
 
 	cfg := resolveWorkerConfig(configFile, workerID, arch, natsURL, s3Bucket, workDir, diskDir)
+	if err := applyHardware(&cfg, vcpus, memoryMB); err != nil {
+		fmt.Fprintf(os.Stderr, "Hardware detection failed: %v\n", err)
+		os.Exit(1)
+	}
+	if err := worker.CheckSandboxMode(cfg.SandboxMode); err != nil {
+		fmt.Fprintf(os.Stderr, "Sandbox check failed: %v\n", err)
+		os.Exit(1)
+	}
 	if cfg.Architecture == "" {
 		fmt.Fprintln(os.Stderr, "Worker architecture is required: set --arch or worker.arch in the config file")
 		os.Exit(1)
@@ -92,12 +105,7 @@ func resolveWorkerConfig(configFile, flagID, flagArch, flagNats, flagBucket, fla
 		S3Bucket:    "bsgo-artifacts",
 		WorkDir:     "/tmp/bsgo-worker",
 		SandboxMode: "rpmbuild",
-		Hardware: v1.WorkerHardware{
-			TotalVCPUs:      8,
-			TotalMemoryMB:   16384,
-			AvailableDiskGB: 50,
-			SandboxType:     "rpmbuild",
-		},
+		Hardware:    v1.WorkerHardware{SandboxType: "rpmbuild"},
 	}
 
 	if fileCfg, err := worker.LoadConfigFile(configFile); err == nil {
@@ -127,6 +135,7 @@ func applyFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile)
 	if fileCfg.Worker.DiskDir != "" {
 		cfg.DiskDir = fileCfg.Worker.DiskDir
 	}
+	applyHardwareFileConfig(cfg, fileCfg)
 	if fileCfg.Nats.URL != "" {
 		cfg.NatsURL = fileCfg.Nats.URL
 	}
@@ -186,4 +195,33 @@ func applyFlagOverrides(cfg *worker.WorkerConfig, flagID, flagArch, flagNats, fl
 	if flagDisk != "" {
 		cfg.DiskDir = flagDisk
 	}
+}
+
+func applyHardwareFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile) {
+	cfg.HardwareOverrides.VCPUs = fileCfg.Worker.TotalVCPUs
+	cfg.HardwareOverrides.MemoryMB = fileCfg.Worker.TotalMemoryMB
+	cfg.HardwareOverrides.DiskGB = fileCfg.Worker.DiskGB
+	cfg.HardwareOverrides.ReserveMemoryMB = fileCfg.Worker.ReserveMemoryMB
+	cfg.HardwareOverrides.ReserveVCPUs = fileCfg.Worker.ReserveVCPUs
+}
+
+// applyHardware detects the host resources, applies the explicit overrides
+// (config file, then flags) and logs detected and effective values once.
+func applyHardware(cfg *worker.WorkerConfig, flagVCPUs int, flagMemoryMB int64) error {
+	if flagVCPUs > 0 {
+		cfg.HardwareOverrides.VCPUs = int32(min(flagVCPUs, math.MaxInt32))
+	}
+	if flagMemoryMB > 0 {
+		cfg.HardwareOverrides.MemoryMB = flagMemoryMB
+	}
+	detected, err := worker.DetectHardware("/proc", "/sys/fs/cgroup", cfg.WorkDir)
+	if err != nil {
+		return err
+	}
+	effective := worker.EffectiveHardware(detected, cfg.HardwareOverrides)
+	effective.SandboxType = cfg.Hardware.SandboxType
+	cfg.Hardware = effective
+	fmt.Printf("Hardware detected: %s\n", worker.DescribeHardware(detected))
+	fmt.Printf("Hardware effective: %s\n", worker.DescribeHardware(effective))
+	return nil
 }

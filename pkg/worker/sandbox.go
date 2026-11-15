@@ -158,7 +158,7 @@ func (s *ProcessSandbox) Execute(ctx context.Context, job *v1.BuildJob, logWrite
 		return s.buildWithHelm(ctx, job, jobDir, multiWriter, start)
 	}
 
-	if s.SandboxMode == "kvm" || s.SandboxMode == "obs-build" {
+	if s.SandboxMode == "kvm" || s.SandboxMode == "obs-build" || s.SandboxMode == "nspawn" {
 		return s.buildWithKVM(ctx, job, jobDir, multiWriter, start)
 	}
 
