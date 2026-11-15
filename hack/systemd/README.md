@@ -18,7 +18,7 @@ For a test host (e.g. aisrv) where all bsgo services run as one user.
 ## As the user
 
     # restart the Podman containers at boot
-    podman update --restart always bsgo-postgres bsgo-nats bsgo-garage
+    for c in bsgo-postgres bsgo-nats bsgo-garage; do podman update --restart always $c; done
     systemctl --user enable --now podman-restart.service
 
     mkdir -p ~/.config/systemd/user
