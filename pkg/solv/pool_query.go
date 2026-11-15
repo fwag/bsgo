@@ -185,8 +185,8 @@ func (p *Pool) solvInfo(s solvID) *solvInfo {
 		if ci.sha256 != 0 {
 			i.checksum = C.GoString(ci.checksum)
 		}
-		if ci.location != nil {
-			i.location = C.GoString(ci.location)
+		if loc := C.bsgo_solvable_location(p.ptr, C.Id(s)); loc != nil {
+			i.location = C.GoString(loc)
 		}
 	}
 	p.cache.info[s] = i

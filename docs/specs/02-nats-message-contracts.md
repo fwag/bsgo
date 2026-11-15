@@ -328,3 +328,33 @@ message PublishRequest {
   int64 timestamp_unix = 9;
 }
 ```
+
+### 3.8. Repo Changed Event: `bsgo.events.repo.changed`
+Emitted by the indexer after it replaced the binaries of a unit in the build
+repository of a prpa (project, repository, architecture) and the index content
+changed. Core NATS subject, not persisted. Every prpa that has the repository in
+its build path (and the prpa itself) becomes dirty and is checked again.
+
+```json
+{"project": "SUSE:SLFO:1.2", "repo": "standard", "arch": "x86_64"}
+```
+
+### 3.9. Scheduler coordination (NATS KV)
+Server replicas share the scheduler work by prpa through two JetStream KV
+buckets. Keys are the unpadded base64url encoding of the prpa string
+`project/repo/arch`.
+
+| Bucket | Content | Lifetime |
+|--------|---------|----------|
+| `bsgo-checker-dirty` | `{"prpa","first","last"}` (unix nanoseconds of the first and the latest mark). Written by package, project config, repo-changed and job-finished events and by the periodic resync. | Until a pass consumed it; `Clear` is a compare-and-delete on the revision, so a mark refreshed during a pass survives. |
+| `bsgo-checker-leases` | Owner id of the replica that checks the prpa (key `<prpa>`), or writes its index (key `index/<prpa>`). | Bucket TTL (30 s), renewed every 10 s while the pass runs. |
+
+A replica processes a dirty prpa only when its mark is older than the debounce
+interval (or the first mark is older than ten intervals) and it holds the lease.
+The build triggers on `bsgo.triggers.>` no longer create jobs: they mark the
+project's prpas dirty, and a trigger with `force_rebuild` first records a forced
+rebuild request in PostgreSQL that the checker consumes when it schedules the
+unit. `bsgo.status` messages of phase `BUILDING`, `SUCCEEDED`, `FAILED` and
+`ABORTED` update the unit's build state; a `SUCCEEDED` message first integrates
+the reported artifacts (`bininfo.json` plus RPMs, verified by sha256) into the
+build repository.

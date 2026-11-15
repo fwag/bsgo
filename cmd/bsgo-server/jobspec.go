@@ -83,7 +83,7 @@ func bdepOf(b checker.Bdep) (v1.Bdep, error) {
 func resourcesOf(l manifest.ResourceLimits) (v1.ResourceRequirements, error) {
 	r := v1.ResourceRequirements{VCPUs: defaultVCPUs, MemoryMB: defaultMemoryMB, DiskGB: defaultDiskGB}
 	if l.VCPUs > 0 {
-		r.VCPUs = int32(min(l.VCPUs, 1<<20)) // #nosec G115 -- bounded
+		r.VCPUs = int32(min(l.VCPUs, 1<<20))
 	}
 	if l.Memory != "" {
 		mb, err := quantity(l.Memory, 1)
@@ -149,5 +149,5 @@ func timeoutSeconds(s string) (int32, error) {
 	if err != nil || d < 0 || d > 1<<30*time.Second {
 		return 0, fmt.Errorf("invalid timeout %q", s)
 	}
-	return int32(d / time.Second), nil // #nosec G115 -- bounded above
+	return int32(d / time.Second), nil
 }

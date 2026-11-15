@@ -258,16 +258,23 @@ int bsgo_solvable_info(Pool *pool, Id p, BsgoSolvInfo *out) {
     out->arch = pool_id2str(pool, s->arch);
     out->repo = s->repo ? s->repo->repoid - 1 : -1;
     out->checksum = NULL;
-    out->location = NULL;
     out->sha256 = 0;
     if (s->repo && s->repo->nrepodata > 0) {
         Id chktype = 0;
         out->checksum = solvable_lookup_checksum(s, SOLVABLE_CHECKSUM, &chktype);
         out->sha256 = out->checksum && chktype == REPOKEY_TYPE_SHA256;
-        unsigned int medianr = 0;
-        out->location = solvable_lookup_location(s, &medianr);
     }
     return 0;
+}
+
+/* The returned string lives in libsolv's temporary string space: copy it before
+ * the next libsolv call. */
+const char *bsgo_solvable_location(Pool *pool, Id p) {
+    if (!pool || p <= 0 || p >= pool->nsolvables) return NULL;
+    Solvable *s = pool->solvables + p;
+    if (!s->repo || s->repo->nrepodata == 0) return NULL;
+    unsigned int medianr = 0;
+    return solvable_lookup_location(s, &medianr);
 }
 
 int bsgo_solvable_deps(Pool *pool, Id p, int which, Id **out) {

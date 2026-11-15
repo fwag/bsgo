@@ -2,7 +2,6 @@ package checker_test
 
 import (
 	"context"
-	"crypto/sha1" // #nosec G505 -- test-only derivation of git-like commit ids
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -158,8 +157,8 @@ func (w *world) saveProject() {
 }
 
 func commitOf(content string) string {
-	sum := sha1.Sum([]byte(content)) // #nosec G401 -- not a security use
-	return hex.EncodeToString(sum[:])
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:20])
 }
 
 // spec renders a minimal spec file.

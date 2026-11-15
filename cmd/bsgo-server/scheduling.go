@@ -66,10 +66,10 @@ func subscribeDispatcherResults(nc *nats.Conn, disp *dispatcher.Dispatcher) {
 		}
 		logf("STATUS", "job %s (%s) phase -> %s", st.JobID, st.Package, st.Phase)
 		exit := 0
-		switch {
-		case st.Phase == "ABORTED":
+		switch st.Phase {
+		case "ABORTED":
 			exit = 137
-		case st.Phase == "FAILED":
+		case "FAILED":
 			exit = 1
 			if st.ExitCode != nil {
 				exit = *st.ExitCode

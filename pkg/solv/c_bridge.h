@@ -21,7 +21,6 @@ typedef struct {
     const char *evr;
     const char *arch;
     const char *checksum;
-    const char *location;
     int repo;
     int sha256;
 } BsgoSolvInfo;
@@ -55,6 +54,7 @@ Id bsgo_str2dep(Pool *pool, const char *s);
 int bsgo_pool_prepare(Pool *pool);
 int bsgo_whatprovides(Pool *pool, Id dep, Id **out);
 int bsgo_solvable_info(Pool *pool, Id p, BsgoSolvInfo *out);
+const char *bsgo_solvable_location(Pool *pool, Id p);
 int bsgo_solvable_deps(Pool *pool, Id p, int which, Id **out);
 int bsgo_dep_decompose(Pool *pool, Id dep, Id *name, Id *evr, int *flags);
 const char *bsgo_dep2str(Pool *pool, Id dep);

@@ -58,7 +58,7 @@ func (ps *pass) jobSpec(u *unit, meta, explain, attempt string, c storage.BuildC
 		DistURL:      "bsgo://" + ps.prpa.Project + "/" + ps.prpa.Repo + "/" + u.commit + "-" + u.name,
 		Meta:         meta,
 		Explain:      explain,
-		Priority:     50 + int32(min(u.ndepend, 10000)), // #nosec G115 -- bounded above
+		Priority:     priorityOf(u.ndepend),
 		LogIdleLimit: ps.logIdleLimit(),
 		Resources:    u.manifest.Resources,
 	}
@@ -216,4 +216,18 @@ func (ps *pass) forcedAt(u *unit) (t time.Time) {
 		}
 	}
 	return t
+}
+
+// maxPriorityBoost caps the priority bonus for units many others wait for.
+const maxPriorityBoost = 10000
+
+// priorityOf is 50 plus the number of units that depend on the unit, capped.
+func priorityOf(dependents int) int32 {
+	if dependents >= maxPriorityBoost {
+		return 50 + maxPriorityBoost
+	}
+	if dependents < 0 {
+		return 50
+	}
+	return 50 + int32(dependents)
 }
