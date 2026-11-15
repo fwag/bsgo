@@ -2,6 +2,9 @@
 #include "c_bridge.h"
 #include <solv/poolarch.h>
 #include <solv/repo.h>
+#include <solv/evr.h>
+#include <solv/pool_parserpmrichdep.h>
+#include <solv/testcase.h>
 
 Pool *bsgo_pool_create(const char *arch) {
     Pool *pool = pool_create();
@@ -13,6 +16,11 @@ Pool *bsgo_pool_create(const char *arch) {
 
 void bsgo_pool_free(Pool *pool) {
     if (pool) {
+        if (pool->considered) {
+            map_free(pool->considered);
+            free(pool->considered);
+            pool->considered = NULL;
+        }
         pool_free(pool);
     }
 }
@@ -51,17 +59,6 @@ Repo *bsgo_load_repo_from_rpmmd_mem(Pool *pool, const char *name, const void *bu
     }
     fclose(fp);
 
-    // Prune foreign architecture solvables so they are not indexed into provides table
-    if (pool->id2arch) {
-        for (Id p = repo->start; p < repo->end; p++) {
-            Solvable *s = pool->solvables + p;
-            if (s->repo == repo && pool_badarch_solvable(pool, s)) {
-                s->provides = 0;
-                s->requires = 0;
-            }
-        }
-    }
-
     return repo;
 }
 
@@ -99,322 +96,158 @@ int bsgo_add_package(Repo *repo, const char *name, const char *evr, const char *
 
     s->provides = repo_addid_dep(repo, s->provides, pool_rel2id(pool, s->name, s->evr, REL_EQ, 1), 0);
     for (int i = 0; i < num_provides; i++) {
-        Id prov_id = pool_str2id(pool, provides[i], 1);
+        Id prov_id = bsgo_str2dep(pool, provides[i]);
         s->provides = repo_addid_dep(repo, s->provides, prov_id, 0);
     }
 
     for (int i = 0; i < num_requires; i++) {
-        Id req_id = pool_str2id(pool, requires[i], 1);
+        Id req_id = bsgo_str2dep(pool, requires[i]);
         s->requires = repo_addid_dep(repo, s->requires, req_id, 0);
     }
 
     return 0;
 }
 
-static Id select_provider(Pool *pool, Queue *plist, int num_prefers, const char **prefers, int *ambiguous, const char *req_name) {
-    *ambiguous = 0;
-    if (plist->count == 0) return 0;
-    if (plist->count == 1) return plist->elements[0];
 
-    // 0. Filter by architecture score (prefer native architecture over subarch/foreign)
-    if (pool->id2arch) {
-        unsigned int best_score = 0;
-        for (int i = 0; i < plist->count; i++) {
-            Solvable *s = pool->solvables + plist->elements[i];
-            unsigned int score = pool_arch2score(pool, s->arch);
-            if (score > 0 && (best_score == 0 || score < best_score)) {
-                best_score = score;
-            }
-        }
-        if (best_score > 0) {
-            Queue best_q;
-            queue_init(&best_q);
-            for (int i = 0; i < plist->count; i++) {
-                Solvable *s = pool->solvables + plist->elements[i];
-                if (pool_arch2score(pool, s->arch) == best_score) {
-                    queue_push(&best_q, plist->elements[i]);
-                }
-            }
-            if (best_q.count == 1) {
-                Id chosen = best_q.elements[0];
-                queue_free(&best_q);
-                return chosen;
-            }
-            if (best_q.count > 0 && best_q.count < plist->count) {
-                queue_empty(plist);
-                for (int i = 0; i < best_q.count; i++) {
-                    queue_push(plist, best_q.elements[i]);
-                }
-            }
-            queue_free(&best_q);
+Id bsgo_str2dep(Pool *pool, const char *s) {
+    if (!s || !*s) return 0;
+    if (*s == '(') return pool_parserpmrichdep(pool, s);
+    return testcase_str2dep(pool, s);
+}
+
+/* Rank of an architecture for same-name selection: lower is better, noarch is worst
+ * (OBS archpath order is "x86_64:i686:i586:noarch"). */
+static unsigned int arch_rank(Pool *pool, Id arch) {
+    if (arch == ARCH_NOARCH) return 1u << 20;
+    unsigned int score = pool->id2arch ? pool_arch2score(pool, arch) : 0;
+    return score ? score : (1u << 19);
+}
+
+static int better_solvable(Pool *pool, Solvable *a, Solvable *b) {
+    unsigned int ra = arch_rank(pool, a->arch);
+    unsigned int rb = arch_rank(pool, b->arch);
+    if (ra != rb) return ra < rb;
+    return pool_evrcmp(pool, a->evr, b->evr, EVRCMP_COMPARE) > 0;
+}
+
+int bsgo_pool_prepare(Pool *pool) {
+    if (!pool) return -1;
+    pool_freewhatprovides(pool);
+    if (pool->considered) {
+        map_free(pool->considered);
+        free(pool->considered);
+        pool->considered = NULL;
+    }
+    int nstr = pool->ss.nstrings;
+    Id *best = calloc(nstr + 1, sizeof(Id));
+    Id *owner = calloc(nstr + 1, sizeof(Id));
+    Map *considered = malloc(sizeof(Map));
+    if (!best || !owner || !considered) {
+        free(best);
+        free(owner);
+        free(considered);
+        return -1;
+    }
+    map_init(considered, pool->nsolvables);
+
+    Repo *r;
+    int ri;
+    FOR_REPOS(ri, r) {
+        Id p;
+        Solvable *s;
+        FOR_REPO_SOLVABLES(r, p, s) {
+            if (!pool_installable(pool, s)) continue;
+            Id n = s->name;
+            if (owner[n] && owner[n] != r->repoid) continue;
+            owner[n] = r->repoid;
+            if (!best[n] || better_solvable(pool, s, pool->solvables + best[n])) best[n] = p;
         }
     }
-
-    // 1. If all remaining candidates share the exact same package name, choose the first (e.g. multi-version)
-    const char *first_name = pool_id2str(pool, (pool->solvables + plist->elements[0])->name);
-    int all_same_name = 1;
-    for (int i = 1; i < plist->count; i++) {
-        const char *sname = pool_id2str(pool, (pool->solvables + plist->elements[i])->name);
-        if (!sname || strcmp(sname, first_name) != 0) {
-            all_same_name = 0;
-            break;
-        }
+    for (int n = 0; n < nstr; n++) {
+        if (best[n]) MAPSET(considered, best[n]);
     }
-    if (all_same_name) {
-        return plist->elements[0];
-    }
-
-    // 2. Exact name match: if requirement name matches a candidate package name
-    if (req_name && *req_name) {
-        for (int i = 0; i < plist->count; i++) {
-            Solvable *s = pool->solvables + plist->elements[i];
-            const char *sname = pool_id2str(pool, s->name);
-            if (sname && strcmp(sname, req_name) == 0) {
-                return plist->elements[i];
-            }
-        }
-    }
-
-    // 3. Priority-ordered matching against prefer list
-    for (int j = 0; j < num_prefers; j++) {
-        if (!prefers[j] || prefers[j][0] == '-') {
-            continue; // Skip empty or negative prefers (e.g. -package)
-        }
-        for (int i = 0; i < plist->count; i++) {
-            Solvable *s = pool->solvables + plist->elements[i];
-            const char *sname = pool_id2str(pool, s->name);
-            if (sname && strcmp(sname, prefers[j]) == 0) {
-                return plist->elements[i];
-            }
-        }
-    }
-
-    *ambiguous = 1;
+    free(best);
+    free(owner);
+    pool->considered = considered;
+    pool_createwhatprovides(pool);
     return 0;
 }
 
-static void toposort_solvables(Pool *pool, Queue *installed, Queue *sorted) {
-    Map placed;
-    map_init(&placed, pool->nsolvables);
-
-    int remaining = installed->count;
-    while (remaining > 0) {
-        int progress = 0;
-        for (int i = 0; i < installed->count; i++) {
-            Id s_id = installed->elements[i];
-            if (MAPTST(&placed, s_id)) continue;
-
-            Solvable *s = pool->solvables + s_id;
-            int deps_satisfied = 1;
-
-            if (s->requires) {
-                Id *rp = s->repo->idarraydata + s->requires;
-                while (*rp) {
-                    Id req = *rp++;
-                    Id p, d;
-                    FOR_PROVIDES(p, d, req) {
-                        for (int k = 0; k < installed->count; k++) {
-                            if (installed->elements[k] == p && !MAPTST(&placed, p)) {
-                                deps_satisfied = 0;
-                                break;
-                            }
-                        }
-                        if (!deps_satisfied) break;
-                    }
-                    if (!deps_satisfied) break;
-                }
-            }
-
-            if (deps_satisfied) {
-                MAPSET(&placed, s_id);
-                queue_push(sorted, s_id);
-                remaining--;
-                progress = 1;
-            }
-        }
-
-        if (!progress) {
-            // Cycle fallback: push remaining in current order
-            for (int i = 0; i < installed->count; i++) {
-                Id s_id = installed->elements[i];
-                if (!MAPTST(&placed, s_id)) {
-                    queue_push(sorted, s_id);
-                }
-            }
-            break;
-        }
-    }
-    map_free(&placed);
+int bsgo_whatprovides(Pool *pool, Id dep, Id **out) {
+    *out = NULL;
+    int n = 0;
+    Id p, pp;
+    FOR_PROVIDES(p, pp, dep) n++;
+    if (n == 0) return 0;
+    Id *res = malloc(sizeof(Id) * n);
+    if (!res) return -1;
+    int i = 0;
+    FOR_PROVIDES(p, pp, dep) res[i++] = p;
+    *out = res;
+    return n;
 }
 
-ExpansionOutcome bsgo_expand(Pool *pool,
-                             int num_reqs, const char **reqs,
-                             int num_prefers, const char **prefers,
-                             int num_ignores, const char **ignores) {
-    ExpansionOutcome outcome;
-    memset(&outcome, 0, sizeof(outcome));
-
-    pool_createwhatprovides(pool);
-
-    Queue todo, installed;
-    queue_init(&todo);
-    queue_init(&installed);
-
-    Map installed_map, visited_reqs;
-    map_init(&installed_map, pool->nsolvables);
-    map_init(&visited_reqs, pool->ss.nstrings);
-
-    for (int i = 0; i < num_reqs; i++) {
-        Id req_id = pool_str2id(pool, reqs[i], 1);
-        queue_push(&todo, req_id);
+int bsgo_solvable_info(Pool *pool, Id p, BsgoSolvInfo *out) {
+    if (!pool || p <= 0 || p >= pool->nsolvables) return -1;
+    Solvable *s = pool->solvables + p;
+    out->name = pool_id2str(pool, s->name);
+    out->evr = pool_id2str(pool, s->evr);
+    out->arch = pool_id2str(pool, s->arch);
+    out->repo = s->repo ? s->repo->repoid - 1 : -1;
+    out->checksum = NULL;
+    out->sha256 = 0;
+    if (s->repo && s->repo->nrepodata > 0) {
+        Id chktype = 0;
+        out->checksum = solvable_lookup_checksum(s, SOLVABLE_CHECKSUM, &chktype);
+        out->sha256 = out->checksum && chktype == REPOKEY_TYPE_SHA256;
     }
-
-    while (todo.count > 0) {
-        Id req_id = queue_shift(&todo);
-        if (req_id <= 0 || req_id == SOLVABLE_PREREQMARKER || req_id == SOLVABLE_FILEMARKER) {
-            continue;
-        }
-        if (req_id < pool->ss.nstrings && MAPTST(&visited_reqs, req_id)) {
-            continue;
-        }
-        if (req_id < pool->ss.nstrings) {
-            MAPSET(&visited_reqs, req_id);
-        }
-
-        const char *req_name = pool_id2str(pool, req_id);
-        if (req_name && num_ignores > 0) {
-            int is_ignored = 0;
-            for (int i = 0; i < num_ignores; i++) {
-                if (!ignores[i]) continue;
-                if (strcmp(ignores[i], req_name) == 0) {
-                    is_ignored = 1;
-                    break;
-                }
-                const char *colon = strchr(ignores[i], ':');
-                if (colon && strcmp(colon + 1, req_name) == 0) {
-                    is_ignored = 1;
-                    break;
-                }
-            }
-            if (is_ignored) {
-                continue;
-            }
-        }
-
-        Queue plist;
-        queue_init(&plist);
-        Id p, d;
-        FOR_PROVIDES(p, d, req_id) {
-            Solvable *s = pool->solvables + p;
-            if (!pool_installable(pool, s)) {
-                continue;
-            }
-            queue_push(&plist, p);
-        }
-
-        if (plist.count == 0) {
-            outcome.status = BSGO_SOLV_ERR_NOPROVIDER;
-            outcome.err_detail = strdup(pool_id2str(pool, req_id));
-            queue_free(&plist);
-            goto cleanup;
-        }
-
-        Id chosen = 0;
-        // Check if already satisfied by installed package
-        for (int i = 0; i < plist.count; i++) {
-            if (MAPTST(&installed_map, plist.elements[i])) {
-                chosen = plist.elements[i];
-                break;
-            }
-        }
-
-        if (!chosen) {
-            int ambiguous = 0;
-            const char *req_name = pool_id2str(pool, req_id);
-            chosen = select_provider(pool, &plist, num_prefers, prefers, &ambiguous, req_name);
-            if (ambiguous) {
-                outcome.status = BSGO_SOLV_ERR_CHOICE;
-                outcome.err_detail = strdup(pool_id2str(pool, req_id));
-                queue_free(&plist);
-                goto cleanup;
-            }
-        }
-        queue_free(&plist);
-
-        if (!MAPTST(&installed_map, chosen)) {
-            MAPSET(&installed_map, chosen);
-            queue_push(&installed, chosen);
-
-            Solvable *s = pool->solvables + chosen;
-            if (s->requires) {
-                Id *rp = s->repo->idarraydata + s->requires;
-                while (*rp) {
-                    if (*rp != SOLVABLE_PREREQMARKER && *rp != SOLVABLE_FILEMARKER) {
-                        queue_push(&todo, *rp);
-                    }
-                    rp++;
-                }
-            }
-        }
-    }
-
-    // Topological sort
-    Queue sorted;
-    queue_init(&sorted);
-    toposort_solvables(pool, &installed, &sorted);
-
-    outcome.status = BSGO_SOLV_OK;
-    outcome.package_count = sorted.count;
-    if (sorted.count > 0) {
-        outcome.packages = malloc(sizeof(ResolvedPackage) * sorted.count);
-        if (!outcome.packages) {
-            outcome.status = -1;
-            outcome.err_detail = strdup("out of memory allocating packages");
-            queue_free(&sorted);
-            goto cleanup;
-        }
-        for (int i = 0; i < sorted.count; i++) {
-            Solvable *s = pool->solvables + sorted.elements[i];
-            const char *name = pool_id2str(pool, s->name);
-            const char *evr = pool_id2str(pool, s->evr);
-            const char *arch = pool_id2str(pool, s->arch);
-            const char *sha = NULL;
-            if (s->repo && s->repo->nrepodata > 0) {
-                Id chktype = 0;
-                sha = solvable_lookup_checksum(s, SOLVABLE_CHECKSUM, &chktype);
-            }
-            outcome.packages[i].name = name ? strdup(name) : strdup("");
-            outcome.packages[i].evr = evr ? strdup(evr) : strdup("");
-            outcome.packages[i].arch = arch ? strdup(arch) : strdup("");
-            outcome.packages[i].sha256 = sha ? strdup(sha) : strdup("");
-        }
-    } else {
-        outcome.packages = NULL;
-    }
-    queue_free(&sorted);
-
-cleanup:
-    queue_free(&todo);
-    queue_free(&installed);
-    map_free(&installed_map);
-    map_free(&visited_reqs);
-    return outcome;
+    return 0;
 }
 
-void bsgo_free_outcome(ExpansionOutcome *outcome) {
-    if (!outcome) return;
-    if (outcome->err_detail) {
-        free(outcome->err_detail);
-        outcome->err_detail = NULL;
+int bsgo_solvable_deps(Pool *pool, Id p, int which, Id **out) {
+    static const Id keys[] = {SOLVABLE_REQUIRES, SOLVABLE_CONFLICTS, SOLVABLE_OBSOLETES,
+                              SOLVABLE_RECOMMENDS, SOLVABLE_SUPPLEMENTS, SOLVABLE_PROVIDES};
+    *out = NULL;
+    if (which < 0 || which >= (int)(sizeof(keys) / sizeof(keys[0]))) return -1;
+    Queue q;
+    queue_init(&q);
+    /* kind 5 (provides) returns only the explicit provides, without the file list
+     * entries libsolv keeps behind SOLVABLE_FILEMARKER. */
+    Id marker = keys[which] == SOLVABLE_PROVIDES ? -SOLVABLE_FILEMARKER : 0;
+    solvable_lookup_deparray(pool->solvables + p, keys[which], &q, marker);
+    int n = 0;
+    Id *res = q.count > 0 ? malloc(sizeof(Id) * q.count) : NULL;
+    if (q.count > 0 && !res) {
+        queue_free(&q);
+        return -1;
     }
-    if (outcome->packages) {
-        for (int i = 0; i < outcome->package_count; i++) {
-            free(outcome->packages[i].name);
-            free(outcome->packages[i].evr);
-            free(outcome->packages[i].arch);
-            free(outcome->packages[i].sha256);
-        }
-        free(outcome->packages);
-        outcome->packages = NULL;
+    for (int i = 0; i < q.count; i++) {
+        Id d = q.elements[i];
+        if (d == SOLVABLE_PREREQMARKER || d == SOLVABLE_FILEMARKER) continue;
+        res[n++] = d;
     }
+    if (n == 0) {
+        free(res);
+        res = NULL;
+    }
+    *out = res;
+    queue_free(&q);
+    return n;
+}
+
+int bsgo_dep_decompose(Pool *pool, Id dep, Id *name, Id *evr, int *flags) {
+    if (!ISRELDEP(dep)) return 0;
+    Reldep *rd = GETRELDEP(pool, dep);
+    *name = rd->name;
+    *evr = rd->evr;
+    *flags = rd->flags;
+    return 1;
+}
+
+const char *bsgo_dep2str(Pool *pool, Id dep) {
+    return pool_dep2str(pool, dep);
+}
+
+const char *bsgo_id2str(Pool *pool, Id id) {
+    return pool_id2str(pool, id);
 }

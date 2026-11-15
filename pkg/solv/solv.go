@@ -7,32 +7,12 @@ package solv
 import "C"
 
 import (
-	"bytes"
-	"compress/gzip"
 	"fmt"
-	"io"
 	"math"
 	"runtime"
-	"strings"
 	"sync"
 	"unsafe"
 )
-
-type NoProviderError struct {
-	Requirement string
-}
-
-func (e *NoProviderError) Error() string {
-	return fmt.Sprintf("no provider found for requirement: %s", e.Requirement)
-}
-
-type AmbiguityError struct {
-	Requirement string
-}
-
-func (e *AmbiguityError) Error() string {
-	return fmt.Sprintf("multiple conflicting providers found for requirement: %s", e.Requirement)
-}
 
 type PackageSpec struct {
 	Name     string
@@ -42,29 +22,16 @@ type PackageSpec struct {
 	Requires []string
 }
 
-type ResolvedPackage struct {
-	Name   string
-	EVR    string
-	Arch   string
-	SHA256 string
-}
-
-type ExpansionRequest struct {
-	BuildRequires []string
-	Prefer        []string
-	Ignore        []string
-	FileProvides  map[string][]string
-	Architecture  string
-	RPMMDRepos    map[string][]byte
-}
-
-type ExpansionResult struct {
-	Packages []ResolvedPackage
-}
-
+// Pool is a libsolv pool. Repositories are consulted in creation order: the
+// first repository has the highest priority. All methods are safe for
+// concurrent use; expansions on one pool are serialized because libsolv pools
+// are not thread safe.
 type Pool struct {
-	mu  sync.Mutex
-	ptr *C.Pool
+	mu     sync.Mutex
+	ptr    *C.Pool
+	dirty  bool
+	cache  *queryCache
+	loaded map[string]struct{}
 }
 
 type Repo struct {
@@ -81,7 +48,7 @@ func NewPool(arch string) (*Pool, error) {
 	if p == nil {
 		return nil, fmt.Errorf("failed to allocate libsolv pool")
 	}
-	return &Pool{ptr: p}, nil
+	return &Pool{ptr: p, dirty: true, cache: newQueryCache(), loaded: map[string]struct{}{}}, nil
 }
 
 func (p *Pool) Close() {
@@ -101,6 +68,7 @@ func (p *Pool) CreateRepo(name string) *Repo {
 	cName := C.CString(name)
 	defer C.free(unsafe.Pointer(cName))
 	r := C.bsgo_repo_create(p.ptr, cName)
+	p.dirty = true
 	return &Repo{ptr: r, pool: p}
 }
 
@@ -119,6 +87,7 @@ func (p *Pool) LoadRepoFromMemory(name string, data []byte) (*Repo, error) {
 	if r == nil {
 		return nil, fmt.Errorf("failed to parse solv blob into repository")
 	}
+	p.dirty = true
 	return &Repo{ptr: r, pool: p}, nil
 }
 
@@ -128,18 +97,9 @@ func (p *Pool) LoadRepoFromRPMMD(name string, data []byte) (*Repo, error) {
 		return nil, fmt.Errorf("cannot load empty rpmmd data")
 	}
 
-	uncompressed := data
-	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
-		zr, err := gzip.NewReader(bytes.NewReader(data))
-		if err != nil {
-			return nil, fmt.Errorf("failed decompressing rpmmd gzip: %w", err)
-		}
-		defer zr.Close()
-		decomp, err := io.ReadAll(zr)
-		if err != nil {
-			return nil, fmt.Errorf("failed reading decompressed rpmmd: %w", err)
-		}
-		uncompressed = decomp
+	uncompressed, err := gunzipIfNeeded(data)
+	if err != nil {
+		return nil, err
 	}
 
 	p.mu.Lock()
@@ -152,12 +112,14 @@ func (p *Pool) LoadRepoFromRPMMD(name string, data []byte) (*Repo, error) {
 	if r == nil {
 		return nil, fmt.Errorf("failed to parse rpmmd data into repository: %s", name)
 	}
+	p.dirty = true
 	return &Repo{ptr: r, pool: p}, nil
 }
 
 func (r *Repo) AddPackage(spec PackageSpec) error {
 	r.pool.mu.Lock()
 	defer r.pool.mu.Unlock()
+	r.pool.dirty = true
 
 	cName := C.CString(spec.Name)
 	defer C.free(unsafe.Pointer(cName))
@@ -221,100 +183,6 @@ func (r *Repo) DumpMemory() ([]byte, error) {
 	cLen := C.int(int32(outLen))
 	data := C.GoBytes(outBuf, cLen)
 	return data, nil
-}
-
-func (p *Pool) Resolve(req ExpansionRequest) (*ExpansionResult, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	loadRPMRepos(p.ptr, req.RPMMDRepos)
-	effectiveReqs := applyFileProvides(req.BuildRequires, req.FileProvides)
-
-	cReqs, freeReqs := makeCStringArray(effectiveReqs)
-	defer freeReqs()
-	cPrefers, freePrefers := makeCStringArray(req.Prefer)
-	defer freePrefers()
-	cIgnores, freeIgnores := makeCStringArray(req.Ignore)
-	defer freeIgnores()
-
-	if len(effectiveReqs) > math.MaxInt32 || len(req.Prefer) > math.MaxInt32 || len(req.Ignore) > math.MaxInt32 {
-		return nil, fmt.Errorf("slice length exceeds max int32")
-	}
-
-	// #nosec G115 -- slice lengths are bounded by math.MaxInt32
-	outcome := C.bsgo_expand(
-		p.ptr,
-		C.int(int32(len(effectiveReqs))), cReqs,
-		C.int(int32(len(req.Prefer))), cPrefers,
-		C.int(int32(len(req.Ignore))), cIgnores,
-	)
-	defer C.bsgo_free_outcome(&outcome)
-
-	switch outcome.status {
-	case C.BSGO_SOLV_OK:
-		return parseResolvedPackages(&outcome), nil
-	case C.BSGO_SOLV_ERR_NOPROVIDER:
-		return nil, &NoProviderError{Requirement: C.GoString(outcome.err_detail)}
-	case C.BSGO_SOLV_ERR_CHOICE:
-		return nil, &AmbiguityError{Requirement: C.GoString(outcome.err_detail)}
-	default:
-		return nil, fmt.Errorf("libsolv expansion failed with status %d", outcome.status)
-	}
-}
-
-func applyFileProvides(reqs []string, fileProvides map[string][]string) []string {
-	if len(fileProvides) == 0 {
-		return reqs
-	}
-	res := make([]string, 0, len(reqs))
-	for _, r := range reqs {
-		if strings.HasPrefix(r, "/") {
-			if providers, ok := fileProvides[r]; ok && len(providers) > 0 {
-				res = append(res, providers...)
-				continue
-			}
-		}
-		res = append(res, r)
-	}
-	return res
-}
-
-func loadRPMRepos(ptr *C.Pool, repos map[string][]byte) {
-	for name, data := range repos {
-		uncompressed := data
-		if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
-			zr, err := gzip.NewReader(bytes.NewReader(data))
-			if err == nil {
-				decomp, readErr := io.ReadAll(zr)
-				_ = zr.Close()
-				if readErr == nil {
-					uncompressed = decomp
-				}
-			}
-		}
-
-		cName := C.CString(name)
-		_ = C.bsgo_load_repo_from_rpmmd_mem(ptr, cName, unsafe.Pointer(&uncompressed[0]), C.size_t(len(uncompressed)))
-		C.free(unsafe.Pointer(cName))
-	}
-}
-
-func parseResolvedPackages(outcome *C.ExpansionOutcome) *ExpansionResult {
-	count := int(outcome.package_count)
-	res := &ExpansionResult{
-		Packages: make([]ResolvedPackage, count),
-	}
-
-	cPkgs := unsafe.Slice(outcome.packages, count)
-	for i := 0; i < count; i++ {
-		res.Packages[i] = ResolvedPackage{
-			Name:   C.GoString(cPkgs[i].name),
-			EVR:    C.GoString(cPkgs[i].evr),
-			Arch:   C.GoString(cPkgs[i].arch),
-			SHA256: C.GoString(cPkgs[i].sha256),
-		}
-	}
-	return res
 }
 
 func makeCStringArray(strs []string) (**C.char, func()) {

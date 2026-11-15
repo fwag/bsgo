@@ -285,16 +285,14 @@ func TestMultiArchAndIgnoreResolution(t *testing.T) {
 		t.Fatalf("expected python311-base.x86_64, got %+v", res.Packages)
 	}
 
-	// 2. Ignore list: requirement in Ignore should be skipped cleanly
-	resIgn, err := pool.Resolve(solv.ExpansionRequest{
+	// 2. OBS applies Ignore only to dependencies of installed packages, a
+	// direct request for a missing package stays unresolvable.
+	_, err = pool.Resolve(solv.ExpansionRequest{
 		BuildRequires: []string{"missing-required-pkg"},
 		Ignore:        []string{"missing-required-pkg"},
 	})
-	if err != nil {
-		t.Fatalf("expected ignored package to succeed, got: %v", err)
-	}
-	if len(resIgn.Packages) != 0 {
-		t.Fatalf("expected 0 packages for ignored req, got: %d", len(resIgn.Packages))
+	if err == nil {
+		t.Fatalf("expected direct request of a missing package to fail")
 	}
 
 	// 3. FileProvides substitution: file requirement mapped to package name

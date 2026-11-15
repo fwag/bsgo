@@ -4,86 +4,78 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"sort"
+	"sync"
 )
 
+// WorkerPool resolves expansion requests for one architecture. Repositories
+// passed with a request are loaded into a long-lived PathPool cached by
+// content hash, so only the first request for a given repository set parses
+// anything. At most numWorkers resolutions run at the same time.
 type WorkerPool struct {
-	arch    string
-	jobChan chan workerJob
-	stop    chan struct{}
+	arch  string
+	slots chan struct{}
+	cache *PoolCache
+	mu    sync.Mutex
+	stop  chan struct{}
 }
 
-type workerJob struct {
-	req      ExpansionRequest
-	respChan chan workerResponse
-}
-
-type workerResponse struct {
-	result *ExpansionResult
-	err    error
-}
+// defaultCachedPools bounds the number of distinct repository sets kept warm.
+const defaultCachedPools = 8
 
 func NewWorkerPool(arch string, numWorkers int) (*WorkerPool, error) {
 	if numWorkers <= 0 {
 		numWorkers = runtime.NumCPU()
 	}
-
-	wp := &WorkerPool{
-		arch:    arch,
-		jobChan: make(chan workerJob),
-		stop:    make(chan struct{}),
-	}
-
-	for i := 0; i < numWorkers; i++ {
-		go wp.runWorker()
-	}
-
-	return wp, nil
+	return &WorkerPool{
+		arch:  arch,
+		slots: make(chan struct{}, numWorkers),
+		cache: NewPoolCache(defaultCachedPools),
+		stop:  make(chan struct{}),
+	}, nil
 }
 
 func (wp *WorkerPool) Close() {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+	select {
+	case <-wp.stop:
+		return
+	default:
+	}
 	close(wp.stop)
+	wp.cache.Close()
 }
 
-func (wp *WorkerPool) runWorker() {
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-
-	for {
-		select {
-		case <-wp.stop:
-			return
-		case job := <-wp.jobChan:
-			pool, err := NewPool(wp.arch)
-			if err != nil {
-				job.respChan <- workerResponse{result: nil, err: err}
-				continue
-			}
-			res, resErr := pool.Resolve(job.req)
-			pool.Close()
-			job.respChan <- workerResponse{result: res, err: resErr}
-		}
+// blobsFromRequest orders the legacy repo map by name; the map carries no
+// priority so the name order defines it.
+func blobsFromRequest(repos map[string][]byte) []RepoBlob {
+	names := make([]string, 0, len(repos))
+	for n := range repos {
+		names = append(names, n)
 	}
+	sort.Strings(names)
+	blobs := make([]RepoBlob, len(names))
+	for i, n := range names {
+		blobs[i] = RepoBlob{Name: n, Data: repos[n]}
+	}
+	return blobs
 }
 
 func (wp *WorkerPool) Resolve(ctx context.Context, req ExpansionRequest) (*ExpansionResult, error) {
-	respChan := make(chan workerResponse, 1)
-	job := workerJob{
-		req:      req,
-		respChan: respChan,
-	}
-
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-wp.stop:
 		return nil, fmt.Errorf("worker pool is stopped")
-	case wp.jobChan <- job:
+	case wp.slots <- struct{}{}:
 	}
+	defer func() { <-wp.slots }()
 
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case resp := <-respChan:
-		return resp.result, resp.err
+	pp, err := wp.cache.Get(wp.arch, blobsFromRequest(req.RPMMDRepos))
+	if err != nil {
+		return nil, err
 	}
+	req.RPMMDRepos = nil
+	return pp.Resolve(req)
 }

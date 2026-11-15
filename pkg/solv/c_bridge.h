@@ -10,29 +10,20 @@
 #include <solv/queue.h>
 #include <solv/bitmap.h>
 #include <solv/repo_rpmmd.h>
+#include <solv/poolarch.h>
 #include <solv/knownid.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define BSGO_SOLV_OK 0
-#define BSGO_SOLV_ERR_NOPROVIDER 1
-#define BSGO_SOLV_ERR_CHOICE 2
-#define BSGO_SOLV_ERR_CONFLICT 3
-
 typedef struct {
-    char *name;
-    char *evr;
-    char *arch;
-    char *sha256;
-} ResolvedPackage;
-
-typedef struct {
-    int status;
-    char *err_detail;
-    int package_count;
-    ResolvedPackage *packages;
-} ExpansionOutcome;
+    const char *name;
+    const char *evr;
+    const char *arch;
+    const char *checksum;
+    int repo;
+    int sha256;
+} BsgoSolvInfo;
 
 Pool *bsgo_pool_create(const char *arch);
 void bsgo_pool_free(Pool *pool);
@@ -46,11 +37,13 @@ int bsgo_add_package(Repo *repo, const char *name, const char *evr, const char *
                      int num_provides, const char **provides,
                      int num_requires, const char **requires);
 
-ExpansionOutcome bsgo_expand(Pool *pool,
-                             int num_reqs, const char **reqs,
-                             int num_prefers, const char **prefers,
-                             int num_ignores, const char **ignores);
-
-void bsgo_free_outcome(ExpansionOutcome *outcome);
+Id bsgo_str2dep(Pool *pool, const char *s);
+int bsgo_pool_prepare(Pool *pool);
+int bsgo_whatprovides(Pool *pool, Id dep, Id **out);
+int bsgo_solvable_info(Pool *pool, Id p, BsgoSolvInfo *out);
+int bsgo_solvable_deps(Pool *pool, Id p, int which, Id **out);
+int bsgo_dep_decompose(Pool *pool, Id dep, Id *name, Id *evr, int *flags);
+const char *bsgo_dep2str(Pool *pool, Id dep);
+const char *bsgo_id2str(Pool *pool, Id id);
 
 #endif
