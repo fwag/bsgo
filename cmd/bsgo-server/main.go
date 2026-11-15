@@ -23,8 +23,6 @@ import (
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/publisher"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
-	"github.com/openSUSE/bsgo/pkg/signd"
-	"github.com/openSUSE/bsgo/pkg/signer"
 	"github.com/openSUSE/bsgo/pkg/storage"
 	"github.com/openSUSE/bsgo/pkg/storage/postgres"
 	"github.com/openSUSE/bsgo/pkg/storage/s3"
@@ -38,7 +36,6 @@ type ServerConfig struct {
 	S3Endpoint string
 	S3Bucket   string
 	WorkDir    string
-	SignerType string
 	SigndAddr  string
 	TLSCert    string
 	TLSKey     string
@@ -74,7 +71,6 @@ func parseServerConfig() ServerConfig {
 	flag.StringVar(&cfg.S3Endpoint, "s3-endpoint", getEnv("S3_ENDPOINT", "http://127.0.0.1:3900"), "S3 storage endpoint")
 	flag.StringVar(&cfg.S3Bucket, "s3-bucket", getEnv("S3_BUCKET", "bsgo-artifacts"), "S3 bucket for published repositories")
 	flag.StringVar(&cfg.WorkDir, "work-dir", "", "Parent directory of the per-publish temp dirs (system temp dir if empty); nothing is kept there between publishes")
-	flag.StringVar(&cfg.SignerType, "signer-type", getEnv("SIGNER_TYPE", "signd"), "Signer backend: 'signd' or 'memory'")
 	flag.StringVar(&cfg.SigndAddr, "signd-addr", getEnv("SIGND_ADDR", "127.0.0.1:5167"), "bsgo-signd network address")
 	flag.StringVar(&cfg.TLSCert, "signd-tls-cert", getEnv("SIGND_TLS_CERT", ""), "Client certificate for mTLS connection to bsgo-signd")
 	flag.StringVar(&cfg.TLSKey, "signd-tls-key", getEnv("SIGND_TLS_KEY", ""), "Client key for mTLS connection to bsgo-signd")
@@ -161,29 +157,6 @@ func initControlPlaneStore(ctx context.Context, dbURL string) storage.Store {
 	return storage.NewMemoryStore()
 }
 
-func initSignerDriver(cfg ServerConfig, store storage.Store) signer.SignerDriver {
-	if cfg.SignerType == "memory" {
-		return signer.NewMemorySignDriver()
-	}
-
-	var client *signd.Client
-	if cfg.TLSCert != "" && cfg.TLSKey != "" {
-		tlsCfg, err := signd.LoadClientTLSConfig(cfg.TLSCert, cfg.TLSKey, cfg.ServerCA)
-		if err == nil {
-			client = signd.NewTLSClient(cfg.SigndAddr, tlsCfg)
-		}
-	}
-	if client == nil {
-		client = signd.NewClient(cfg.SigndAddr)
-	}
-
-	if keyStore, ok := store.(signer.ProjectKeyStore); ok {
-		return signer.NewRemoteSignerDriver(client, keyStore)
-	}
-
-	return signer.NewMemorySignDriver()
-}
-
 type s3DoDAdapter struct {
 	storage publisher.ObjectStore
 }
@@ -236,17 +209,6 @@ type eventPubAdapter struct {
 
 func (a *eventPubAdapter) PublishEvent(_ context.Context, subject string, data []byte) error {
 	return a.nc.Publish(subject, data)
-}
-
-type signerAdapter struct {
-	driver signer.SignerDriver
-}
-
-func (a *signerAdapter) SignRepositoryMetadata(ctx context.Context, repodataDir string, opts publisher.SignOptions) (string, string, error) {
-	svc := signer.NewSignerService(a.driver)
-	return svc.SignRepositoryMetadata(ctx, repodataDir, signer.SignOptions{
-		Project: opts.Project,
-	})
 }
 
 type DiskS3Client struct {

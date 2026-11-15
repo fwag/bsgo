@@ -57,10 +57,11 @@ func startPublisher(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jet
 		}
 	}
 	pub := &publisher.Publisher{
-		Store:    objects,
-		Index:    buildrepo.NewReader(store, &s3DoDAdapter{storage: objects}),
-		Policy:   publisher.ManifestPolicy{Projects: store},
-		Signer:   &signerAdapter{driver: initSignerDriver(cfg, store)},
+		Store:  objects,
+		Index:  buildrepo.NewReader(store, &s3DoDAdapter{storage: objects}),
+		Policy: publisher.ManifestPolicy{Projects: store},
+		// Signer stays nil until repository metadata signing (plan 02, S2)
+		// lands: no signature is better than an invalid one.
 		Events:   &eventPubAdapter{nc: nc},
 		TempRoot: cfg.WorkDir,
 		GCGrace:  cfg.PublisherGC,

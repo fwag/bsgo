@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"testing"
-
-	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
 func TestInitControlPlaneStoreDoesNotSeedDefaultProject(t *testing.T) {
@@ -16,24 +14,6 @@ func TestInitControlPlaneStoreDoesNotSeedDefaultProject(t *testing.T) {
 	}
 	if len(prjs) != 0 {
 		t.Fatalf("expected 0 projects in fresh store, got %d (found %s)", len(prjs), prjs[0].Project.Name)
-	}
-}
-
-func TestInitSignerDriver(t *testing.T) {
-	store := storage.NewMemoryStore()
-
-	// Memory driver
-	cfgMem := ServerConfig{SignerType: "memory"}
-	drvMem := initSignerDriver(cfgMem, store)
-	if drvMem == nil {
-		t.Fatalf("expected non-nil memory driver")
-	}
-
-	// Remote driver
-	cfgRemote := ServerConfig{SignerType: "signd", SigndAddr: "127.0.0.1:5167"}
-	drvRemote := initSignerDriver(cfgRemote, store)
-	if drvRemote == nil {
-		t.Fatalf("expected non-nil remote driver")
 	}
 }
 
