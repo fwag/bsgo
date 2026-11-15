@@ -242,6 +242,7 @@ func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Comma
 			}
 
 			trigger := v1.NewTrigger(projectName, pkgName, p.Source.Git, commitSHA, p.Source.Branch, "developer")
+			trigger.ForceRebuild = true // rebuild regardless of the meta; the checker consumes the request
 			jobID := trigger.TriggerID
 			subject := natsqueue.TriggerSubject(natsqueue.PriorityHigh, projectName, pkgName)
 			result := map[string]any{

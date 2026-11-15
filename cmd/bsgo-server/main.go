@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -22,14 +21,11 @@ import (
 	"github.com/openSUSE/bsgo/pkg/dispatcher"
 	"github.com/openSUSE/bsgo/pkg/dod"
 	"github.com/openSUSE/bsgo/pkg/gateway"
-	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/publisher"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
-	"github.com/openSUSE/bsgo/pkg/scheduler"
 	"github.com/openSUSE/bsgo/pkg/signd"
 	"github.com/openSUSE/bsgo/pkg/signer"
-	"github.com/openSUSE/bsgo/pkg/solv"
 	"github.com/openSUSE/bsgo/pkg/storage"
 	"github.com/openSUSE/bsgo/pkg/storage/postgres"
 	"github.com/openSUSE/bsgo/pkg/storage/s3"
@@ -50,6 +46,14 @@ type ServerConfig struct {
 	ServerCA   string
 	// DoDRepomdTTL is how often an external repository's repomd.xml is re-checked.
 	DoDRepomdTTL time.Duration
+	// Checker enables the scheduler loop (the OBS bs_sched equivalent).
+	Checker bool
+	// CheckerDebounce is how long a prpa must stay unchanged before it is checked.
+	CheckerDebounce time.Duration
+	// CheckerWorkers bounds the prpas checked concurrently by this instance.
+	CheckerWorkers int
+	// CheckerResync marks every prpa dirty at this interval (0 disables).
+	CheckerResync time.Duration
 }
 
 func parseServerConfig() ServerConfig {
@@ -73,6 +77,10 @@ func parseServerConfig() ServerConfig {
 	flag.StringVar(&cfg.TLSKey, "signd-tls-key", getEnv("SIGND_TLS_KEY", ""), "Client key for mTLS connection to bsgo-signd")
 	flag.StringVar(&cfg.ServerCA, "signd-server-ca", getEnv("SIGND_SERVER_CA", ""), "Server root CA certificate for verifying bsgo-signd")
 	flag.DurationVar(&cfg.DoDRepomdTTL, "dod-repomd-ttl", getEnvDuration("DOD_REPOMD_TTL", dod.DefaultRepomdTTL), "Interval between repomd.xml re-checks of external (DoD) repositories")
+	flag.BoolVar(&cfg.Checker, "checker", getEnvBool("BSGO_CHECKER", true), "Run the scheduler checker loop (prpa passes, job creation, indexing)")
+	flag.DurationVar(&cfg.CheckerDebounce, "checker-debounce", getEnvDuration("BSGO_CHECKER_DEBOUNCE", 2*time.Second), "Quiet time of a prpa before its checker pass starts")
+	flag.IntVar(&cfg.CheckerWorkers, "checker-workers", 2, "Prpas checked concurrently by this instance")
+	flag.DurationVar(&cfg.CheckerResync, "checker-resync", getEnvDuration("BSGO_CHECKER_RESYNC", 10*time.Minute), "Interval at which every prpa is re-checked as a safety net; 0 disables")
 	flag.Parse()
 
 	if subcmd != "" {
@@ -131,7 +139,7 @@ func runControlPlane(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js je
 		fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher)...\n")
 	}
 
-	startSchedulerAndDispatcher(ctx, cfg, nc, js, store, pubService)
+	startSchedulerAndDispatcher(ctx, cfg, nc, js, store)
 	startHTTPServer(ctx, cfg.HTTPPort, store, nc)
 
 	fmt.Printf("bsgo Control Plane is LIVE and listening for triggers and workers\n")
@@ -293,41 +301,6 @@ func (a *s3DoDAdapter) PutObject(ctx context.Context, key string, data []byte) e
 	return a.storage.UploadFile(ctx, tmpFile.Name(), key)
 }
 
-func startSchedulerAndDispatcher(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jetstream.JetStream, store storage.Store, pubService *publisher.Publisher) {
-	disp := dispatcher.NewDispatcher(dispatcher.NewFuncPublisher(func(subj string, data []byte) {
-		_ = nc.Publish(subj, data)
-	}), 30*time.Second)
-
-	gatekeeper := scheduler.NewMemoryGatekeeper()
-	loadGatekeeperFromStore(ctx, store, gatekeeper)
-
-	subscribeWorkerHeartbeats(nc, disp)
-	subscribeJobStatus(ctx, nc, store, gatekeeper, disp)
-
-	solverPool := solv.NewMultiArchPool(2)
-	pub := scheduler.NewNatsPublisher(func(pCtx context.Context, subject string, data []byte) error {
-		return nc.Publish(subject, data)
-	})
-	sched := scheduler.NewScheduler(store, solverPool, pub, scheduler.Config{S3Bucket: cfg.S3Bucket})
-
-	var s3Client publisher.S3Client
-	if s3Storage, err := s3.NewS3Storage(ctx, cfg.S3Endpoint, "garage", cfg.S3Bucket, "", ""); err == nil {
-		s3Client = s3Storage
-	} else {
-		s3Client = NewDiskS3Client("/tmp/bsgo-artifacts")
-	}
-	dodIngestor := dod.NewExternalRepoIngestor(nil)
-	dodFetcher := dod.NewDoDFetcher(nil, &s3DoDAdapter{storage: s3Client})
-	sched.SetDoD(dodIngestor, dodFetcher)
-	sched.SetRepoCache(dod.NewRepoCache(nil, &s3DoDAdapter{storage: s3Client}, store, dod.RepoCacheConfig{TTL: cfg.DoDRepomdTTL}))
-
-	cascade := scheduler.NewCascadeEngine(store, solverPool, pub, gatekeeper)
-
-	subscribeTriggers(ctx, nc, sched, disp, store)
-	subscribePublicationEvents(ctx, nc, cascade)
-	startDispatchLoop(ctx, disp, nc)
-}
-
 func subscribeWorkerHeartbeats(nc *nats.Conn, disp *dispatcher.Dispatcher) {
 	knownWorkers := make(map[string]bool)
 	var workerMu sync.Mutex
@@ -343,42 +316,6 @@ func subscribeWorkerHeartbeats(nc *nats.Conn, disp *dispatcher.Dispatcher) {
 					time.Now().Format("15:04:05"), hb.WorkerID, hb.Architecture, hb.Hardware.TotalVCPUs, hb.Hardware.TotalMemoryMB/1024)
 			}
 			workerMu.Unlock()
-		}
-	})
-}
-
-func subscribeJobStatus(ctx context.Context, nc *nats.Conn, store storage.Store, gk *scheduler.MemoryGatekeeper, disp *dispatcher.Dispatcher) {
-	_, _ = nc.Subscribe("bsgo.status", func(msg *nats.Msg) {
-		var st map[string]any
-		if err := json.Unmarshal(msg.Data, &st); err != nil {
-			return
-		}
-
-		jobID, _ := st["job_id"].(string)
-		phase, _ := st["phase"].(string)
-		pkgName, _ := st["package"].(string)
-		prjName, _ := st["project"].(string)
-
-		if jobID != "" && phase != "" {
-			fmt.Printf("[%s] [STATUS] Job %s (%s) phase -> %s\n",
-				time.Now().Format("15:04:05"), jobID, pkgName, phase)
-		}
-
-		recordBuildState(ctx, store, msg.Data)
-		updateGatekeeperStatus(gk, prjName, pkgName, phase)
-		if (phase == "SUCCEEDED" || phase == "FAILED" || phase == "ABORTED") && prjName != "" {
-			exitCode := 0
-			switch phase {
-			case "FAILED":
-				exitCode = 1
-				if c, ok := st["exit_code"].(float64); ok {
-					exitCode = int(c)
-				}
-			case "ABORTED":
-				exitCode = 137
-			}
-			workerID, _ := st["worker_id"].(string)
-			disp.RecordJobResult(jobID, workerID, prjName, exitCode, 30*time.Second)
 		}
 	})
 }
@@ -494,121 +431,8 @@ func (c *DiskS3Client) DeleteObject(_ context.Context, s3Key string) error {
 	return nil
 }
 
-func updateGatekeeperStatus(gk *scheduler.MemoryGatekeeper, prjName, pkgName, phase string) {
-	if gk == nil || prjName == "" || pkgName == "" {
-		return
-	}
-	switch phase {
-	case "BUILDING":
-		gk.SetBuilding(prjName, pkgName, true)
-		gk.SetUnresolvable(prjName, pkgName, false)
-	case "SUCCEEDED":
-		gk.SetBuilding(prjName, pkgName, false)
-		gk.SetUnresolvable(prjName, pkgName, false)
-	case "UNRESOLVABLE":
-		gk.SetBuilding(prjName, pkgName, false)
-		gk.SetUnresolvable(prjName, pkgName, true)
-	case "FAILED", "ABORTED":
-		gk.SetBuilding(prjName, pkgName, false)
-	}
-}
-
-func subscribePublicationEvents(ctx context.Context, nc *nats.Conn, cascade *scheduler.CascadeEngine) {
-	_, _ = nc.Subscribe(natsqueue.SubjectEventsPublished, func(msg *nats.Msg) {
-		var ev v1.PublicationEvent
-		if err := json.Unmarshal(msg.Data, &ev); err != nil {
-			return
-		}
-
-		cascade.Gatekeeper().SetBuilding(ev.Project, ev.Package, false)
-
-		fmt.Printf("[%s] [PUBLISHER] Received publication event: %s/%s (%s)\n",
-			time.Now().Format("15:04:05"), ev.Project, ev.Package, ev.Target)
-
-		triggers, err := cascade.ProcessPublicationEvent(ctx, &ev)
-		if err == nil && len(triggers) > 0 {
-			fmt.Printf("[%s] [CASCADE] Emitted %d downstream rebuild triggers for %s/%s\n",
-				time.Now().Format("15:04:05"), len(triggers), ev.Project, ev.Package)
-		}
-	})
-}
-
-func subscribeTriggers(ctx context.Context, nc *nats.Conn, sched *scheduler.Scheduler, disp *dispatcher.Dispatcher, store storage.Store) {
-	_, _ = nc.Subscribe("bsgo.triggers.>", func(msg *nats.Msg) {
-		var trig v1.BuildTrigger
-		if err := json.Unmarshal(msg.Data, &trig); err != nil {
-			return
-		}
-
-		// Infer priority tier if missing
-		if trig.Priority == "" {
-			parts := strings.Split(msg.Subject, ".")
-			if len(parts) >= 3 && (parts[2] == "high" || parts[2] == "med" || parts[2] == "low") {
-				trig.Priority = parts[2]
-			}
-		}
-
-		fmt.Printf("[%s] [SCHEDULER] Ingested trigger: %s/%s (Ref: %s, Commit: %s, Priority: %s, Reason: %s)\n",
-			time.Now().Format("15:04:05"), trig.Project, trig.Package, trig.Ref, trig.CommitSHA, trig.NormalizedPriority(), trig.Reason)
-
-		jobs, err := sched.ProcessTrigger(ctx, &trig)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] [SCHEDULER] Trigger processing failed for %s/%s: %v\n",
-				time.Now().Format("15:04:05"), trig.Project, trig.Package, err)
-			publishUnresolvable(nc, &trig, err)
-			return
-		}
-
-		enqueueDispatchedJobs(nc, disp, jobs)
-	})
-}
-
 // publishUnresolvable announces a scheduling failure. Target and architecture
 // come from the failing (target, arch) pair when known, else from the trigger.
-func publishUnresolvable(nc *nats.Conn, trig *v1.BuildTrigger, cause error) {
-	target, arch := trig.Target, trig.Architecture
-	var scoped *scheduler.TargetArchError
-	if errors.As(cause, &scoped) {
-		target, arch = scoped.Target, scoped.Arch
-	}
-	statusMsg, err := json.Marshal(map[string]any{
-		"job_id":       trig.TriggerID,
-		"project":      trig.Project,
-		"package":      trig.Package,
-		"target":       target,
-		"architecture": arch,
-		"phase":        "UNRESOLVABLE",
-		"reason":       cause.Error(),
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] [SCHEDULER] Failed to encode status for %s/%s: %v\n",
-			time.Now().Format("15:04:05"), trig.Project, trig.Package, err)
-		return
-	}
-	if err := nc.Publish("bsgo.status", statusMsg); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] [SCHEDULER] Failed to publish status for %s/%s: %v\n",
-			time.Now().Format("15:04:05"), trig.Project, trig.Package, err)
-	}
-}
-
-func enqueueDispatchedJobs(nc *nats.Conn, disp *dispatcher.Dispatcher, jobs []*v1.BuildJob) {
-	for _, j := range jobs {
-		disp.EnqueueJob(j)
-		fmt.Printf("[%s] [DISPATCHER] Enqueued build job: %s (%s/%s, Priority: %d)\n",
-			time.Now().Format("15:04:05"), j.JobID, j.Project, j.Package, j.Priority)
-
-		statusMsg, _ := json.Marshal(map[string]any{
-			"job_id":       j.JobID,
-			"project":      j.Project,
-			"package":      j.Package,
-			"target":       j.Target,
-			"phase":        "PENDING",
-			"architecture": j.Architecture,
-		})
-		_ = nc.Publish("bsgo.status", statusMsg)
-	}
-}
-
 func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nats.Conn) {
 	go func() {
 		ticker := time.NewTicker(300 * time.Millisecond)
@@ -657,85 +481,6 @@ func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nat
 			}
 		}
 	}()
-}
-
-func createFallbackJob(ctx context.Context, store storage.Store, trig *v1.BuildTrigger) (*v1.BuildJob, error) {
-	if trig.Architecture == "" {
-		return nil, fmt.Errorf("trigger missing required architecture")
-	}
-	if trig.Target == "" {
-		return nil, fmt.Errorf("trigger missing required target")
-	}
-
-	repos := resolveFallbackRepositories(ctx, store, trig.Project, trig.Target, trig.Architecture)
-
-	return &v1.BuildJob{
-		JobID:        trig.TriggerID,
-		Project:      trig.Project,
-		Package:      trig.Package,
-		Target:       trig.Target,
-		Architecture: trig.Architecture,
-		Priority:     50,
-		Repositories: repos,
-		Destination: v1.ArtifactDestination{
-			S3Bucket: "bsgo-artifacts",
-			S3Prefix: fmt.Sprintf("artifacts/%s/%s/", trig.Project, trig.Package),
-		},
-		CreatedAtUnix: time.Now().Unix(),
-	}, nil
-}
-
-func resolveFallbackRepositories(ctx context.Context, store storage.Store, project, targetName, arch string) []v1.RepositoryDependency {
-	var repos []v1.RepositoryDependency
-	if store == nil {
-		return appendDefaultRepo(repos, project, targetName, arch)
-	}
-
-	prj, err := store.GetProject(ctx, project)
-	if err != nil || prj == nil {
-		return appendDefaultRepo(repos, project, targetName, arch)
-	}
-
-	targetCfg, exists := prj.Targets[targetName]
-	if !exists {
-		return appendDefaultRepo(repos, project, targetName, arch)
-	}
-
-	for _, dep := range targetCfg.Dependencies {
-		if r := buildDependencyRepo(dep, targetName, arch); r != nil {
-			repos = append(repos, *r)
-		}
-	}
-
-	return appendDefaultRepo(repos, project, targetName, arch)
-}
-
-func buildDependencyRepo(dep manifest.DependencySource, defaultTarget, arch string) *v1.RepositoryDependency {
-	if dep.Project != "" {
-		depTarget := dep.Target
-		if depTarget == "" {
-			depTarget = defaultTarget
-		}
-		return &v1.RepositoryDependency{
-			Project:  dep.Project,
-			Target:   depTarget,
-			Arch:     arch,
-			S3Prefix: fmt.Sprintf("repos/%s/%s/%s/", dep.Project, depTarget, arch),
-		}
-	}
-	if dep.URL != "" {
-		return &v1.RepositoryDependency{URL: dep.URL}
-	}
-	return nil
-}
-
-func appendDefaultRepo(repos []v1.RepositoryDependency, project, targetName, arch string) []v1.RepositoryDependency {
-	return append(repos, v1.RepositoryDependency{
-		Project:  project,
-		Target:   targetName,
-		Arch:     arch,
-		S3Prefix: fmt.Sprintf("repos/%s/%s/%s/", project, targetName, arch),
-	})
 }
 
 func startHTTPServer(ctx context.Context, httpPort int, store storage.Store, nc *nats.Conn) {
@@ -792,6 +537,16 @@ func initRepoStorage(ctx context.Context) gateway.RepoStorage {
 func getEnv(key, fallback string) string {
 	if val := os.Getenv(key); val != "" {
 		return val
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	switch strings.ToLower(os.Getenv(key)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
 	}
 	return fallback
 }

@@ -13,7 +13,7 @@ import (
 const upsertBuildStateSQL = `
 	INSERT INTO package_build_state
 		(project, repo, arch, package, flavor, state, details, source_commit, meta, bcnt, job_id, built_meta, updated_at)
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CASE WHEN $6 = 'succeeded' THEN $9 ELSE '' END, NOW())
+	VALUES ($1, $2, $3, $4, $5, $6::varchar, $7, $8, $9::varchar, $10, $11, CASE WHEN $6::varchar = 'succeeded' THEN $9::varchar ELSE '' END, NOW())
 	ON CONFLICT (project, repo, arch, package, flavor) DO UPDATE SET
 		state = EXCLUDED.state,
 		details = EXCLUDED.details,

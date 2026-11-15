@@ -20,6 +20,8 @@ const (
 	SubjectJobStatus       = "bsgo.status"
 	SubjectPublishPattern  = "bsgo.publish.>"
 	SubjectEventsPublished = "bsgo.events.published"
+	// SubjectEventsRepoChanged announces new binaries in a build repository.
+	SubjectEventsRepoChanged = "bsgo.events.repo.changed"
 
 	PriorityHigh = "high"
 	PriorityMed  = "med"
