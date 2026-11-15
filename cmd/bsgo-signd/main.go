@@ -38,6 +38,9 @@ func main() {
 		tlsCert    string
 		tlsKey     string
 		clientCA   string
+		obsName    string
+		keyDays    int
+		keyBits    int
 	)
 
 	flag.StringVar(&listenAddr, "listen", "0.0.0.0:5167", "Network address to listen on")
@@ -46,6 +49,9 @@ func main() {
 	flag.StringVar(&tlsCert, "tls-cert", "", "Path to TLS server certificate PEM file")
 	flag.StringVar(&tlsKey, "tls-key", "", "Path to TLS server private key PEM file")
 	flag.StringVar(&clientCA, "client-ca", "", "Path to client CA certificate PEM file for mTLS authentication")
+	flag.StringVar(&obsName, "obs-name", "bsgo", "Instance name used as the domain of key user IDs: <project> OBS Project <project@NAME>")
+	flag.IntVar(&keyDays, "key-days", 800, "Default lifetime in days of generated project keys")
+	flag.IntVar(&keyBits, "key-bits", 4096, "RSA key size of generated project keys")
 	flag.Parse()
 
 	if passphrase == "" {
@@ -64,6 +70,7 @@ func main() {
 	defer masterKey.Destroy()
 
 	engine := signd.NewSignEngine(masterKey, nil)
+	engine.SetKeyParams(signd.KeyParams{ObsName: obsName, DefaultDays: keyDays, RSABits: keyBits})
 	server := signd.NewServer(engine)
 
 	if err := configureSecurity(server, allowCIDRs, tlsCert, tlsKey, clientCA); err != nil {

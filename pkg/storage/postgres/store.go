@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -197,14 +198,21 @@ func (s *PostgresStore) ListPackages(ctx context.Context, projectName string) ([
 
 func (s *PostgresStore) SaveProjectKey(ctx context.Context, key *storage.ProjectSigningKey) error {
 	query := `
-		INSERT INTO project_signing_keys (project_name, key_flavor, key_type, public_key_armored, encrypted_private_key, fingerprint, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		INSERT INTO project_signing_keys (project_name, key_flavor, key_type, public_key_armored, encrypted_private_key, fingerprint, algo, expires_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
 		ON CONFLICT (project_name, key_flavor, key_type) DO UPDATE SET
 			public_key_armored = EXCLUDED.public_key_armored,
 			encrypted_private_key = EXCLUDED.encrypted_private_key,
 			fingerprint = EXCLUDED.fingerprint,
+			algo = EXCLUDED.algo,
+			expires_at = EXCLUDED.expires_at,
 			updated_at = NOW()`
-	_, err := s.pool.Exec(ctx, query, key.ProjectName, key.KeyFlavor, key.KeyType, key.PublicKeyArmored, key.EncryptedPrivateKey, key.Fingerprint)
+	var expires *time.Time
+	if !key.ExpiresAt.IsZero() {
+		expires = &key.ExpiresAt
+	}
+	_, err := s.pool.Exec(ctx, query, key.ProjectName, key.KeyFlavor, key.KeyType, key.PublicKeyArmored,
+		key.EncryptedPrivateKey, key.Fingerprint, key.Algo, expires)
 	if err != nil {
 		return fmt.Errorf("failed to save project key: %w", err)
 	}
@@ -213,25 +221,37 @@ func (s *PostgresStore) SaveProjectKey(ctx context.Context, key *storage.Project
 
 func (s *PostgresStore) GetProjectKey(ctx context.Context, projectName, flavor, keyType string) (*storage.ProjectSigningKey, error) {
 	query := `
-		SELECT project_name, key_flavor, key_type, public_key_armored, encrypted_private_key, fingerprint
+		SELECT project_name, key_flavor, key_type, public_key_armored, encrypted_private_key, fingerprint, algo, expires_at
 		FROM project_signing_keys
 		WHERE project_name = $1 AND key_flavor = $2 AND key_type = $3`
-	var key storage.ProjectSigningKey
-	err := s.pool.QueryRow(ctx, query, projectName, flavor, keyType).Scan(
-		&key.ProjectName, &key.KeyFlavor, &key.KeyType, &key.PublicKeyArmored, &key.EncryptedPrivateKey, &key.Fingerprint,
-	)
+	key, err := scanProjectKey(s.pool.QueryRow(ctx, query, projectName, flavor, keyType))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, storage.ErrNotFound
 		}
 		return nil, fmt.Errorf("failed to fetch project key: %w", err)
 	}
+	return key, nil
+}
+
+// scanProjectKey reads one project_signing_keys row selected with the
+// columns of GetProjectKey.
+func scanProjectKey(row pgx.Row) (*storage.ProjectSigningKey, error) {
+	var key storage.ProjectSigningKey
+	var expires *time.Time
+	if err := row.Scan(&key.ProjectName, &key.KeyFlavor, &key.KeyType, &key.PublicKeyArmored,
+		&key.EncryptedPrivateKey, &key.Fingerprint, &key.Algo, &expires); err != nil {
+		return nil, err
+	}
+	if expires != nil {
+		key.ExpiresAt = *expires
+	}
 	return &key, nil
 }
 
 func (s *PostgresStore) ListProjectKeys(ctx context.Context, projectName string) ([]*storage.ProjectSigningKey, error) {
 	query := `
-		SELECT project_name, key_flavor, key_type, public_key_armored, encrypted_private_key, fingerprint
+		SELECT project_name, key_flavor, key_type, public_key_armored, encrypted_private_key, fingerprint, algo, expires_at
 		FROM project_signing_keys
 		WHERE project_name = $1
 		ORDER BY key_flavor, key_type`
@@ -243,13 +263,11 @@ func (s *PostgresStore) ListProjectKeys(ctx context.Context, projectName string)
 
 	var list []*storage.ProjectSigningKey
 	for rows.Next() {
-		var key storage.ProjectSigningKey
-		if err := rows.Scan(
-			&key.ProjectName, &key.KeyFlavor, &key.KeyType, &key.PublicKeyArmored, &key.EncryptedPrivateKey, &key.Fingerprint,
-		); err != nil {
+		key, err := scanProjectKey(rows)
+		if err != nil {
 			return nil, err
 		}
-		list = append(list, &key)
+		list = append(list, key)
 	}
 	return list, nil
 }

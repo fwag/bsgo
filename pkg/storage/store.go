@@ -24,6 +24,12 @@ type ProjectSigningKey struct {
 	PublicKeyArmored    string `json:"public_key_armored"`
 	EncryptedPrivateKey string `json:"encrypted_private_key"`
 	Fingerprint         string `json:"fingerprint"`
+	// Algo is the key algorithm label (for example "rsa4096"). Empty marks a
+	// legacy raw RSA key from before OpenPGP support; such keys are treated
+	// as absent and regenerated on first use.
+	Algo string `json:"algo"`
+	// ExpiresAt is the OpenPGP key expiry; the zero value means none.
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type TargetSolv struct {

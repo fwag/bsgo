@@ -1,6 +1,6 @@
 # Plan: Signing (RPMs, repository metadata, provenance)
 
-Status: proposed (2026-11-15)
+Status: S0 and S1 implemented (2026-11-15); S2-S6 proposed
 Audience: implementation agents (Sonnet) + human reviewer
 Depends on: plan 01 (scheduler, indexer, publisher, hermetic worker) — merged.
 
@@ -135,13 +135,15 @@ Rules:
 
 ## 4. Work packages
 
-### S0. Remove the fake implementations (small, first)
+### S0. Remove the fake implementations (small, first) - DONE
 Delete `SignRPM`/`SignPackageArtifacts` byte-appending code and the PEM
 "OpenPGP-looking" detached format; make the publisher skip `repomd.xml.asc`
 until S2 lands (no signature is better than an invalid one). Tests updated.
 Acceptance: no code path writes non-OpenPGP signatures.
 
-### S1. OpenPGP keys in bsgo-signd (SD1, SD3)
+### S1. OpenPGP keys in bsgo-signd (SD1, SD3) - DONE (protocol and client; signflavor selection from prjconf arrives with S3)
+
+Implemented as documented in `docs/specs/05-signd-protocol.md`: stateless signd with a two-phase digest protocol (TRAILER, SIGN), `pkg/signer` client with namespace inheritance and autoextend, migration 00008. The publisher has no signer until S2.
 Files: `pkg/signd` (`crypto_engine.go`, `master_key.go`, `server.go`),
 `pkg/storage` (`project_signing_keys`: add `fingerprint`, `algo`,
 `expires_at`, `armored_pubkey`; migration), `pkg/signer`.

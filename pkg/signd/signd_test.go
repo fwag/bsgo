@@ -2,14 +2,11 @@ package signd_test
 
 import (
 	"context"
-	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/pem"
 	"math/big"
 	"net"
 	"testing"
@@ -47,90 +44,10 @@ func TestMasterKeyLifecycle(t *testing.T) {
 	}
 }
 
-func TestSignEngineProjectKeys(t *testing.T) {
-	mk, _ := signd.NewMasterKey("cluster-passphrase")
-	defer mk.Destroy()
-
-	engine := signd.NewSignEngine(mk, nil)
-
-	// 1. Generate project keypair
-	keyModel, err := engine.GenerateProjectKeypair("openSUSE:Factory", "default", "gpg")
-	if err != nil {
-		t.Fatalf("failed generating project keypair: %v", err)
-	}
-
-	if keyModel.ProjectName != "openSUSE:Factory" {
-		t.Errorf("expected openSUSE:Factory, got %s", keyModel.ProjectName)
-	}
-	if keyModel.PublicKeyArmored == "" || keyModel.EncryptedPrivateKey == "" {
-		t.Fatalf("keys should not be empty")
-	}
-
-	// 2. Sign a digest
-	digest := sha256.Sum256([]byte("payload-to-sign"))
-	sig, err := engine.SignDigestWithProjectKey(keyModel.EncryptedPrivateKey, digest[:])
-	if err != nil {
-		t.Fatalf("failed signing digest: %v", err)
-	}
-
-	// 3. Verify signature using public key from database model
-	block, _ := pem.Decode([]byte(keyModel.PublicKeyArmored))
-	if block == nil {
-		t.Fatalf("failed decoding public key pem")
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		t.Fatalf("failed parsing public key: %v", err)
-	}
-	rsaPub := pub.(*rsa.PublicKey)
-
-	if err := rsa.VerifyPKCS1v15(rsaPub, crypto.SHA256, digest[:], sig); err != nil {
-		t.Fatalf("signature verification failed: %v", err)
-	}
-}
-
-func TestServerClientProtocol(t *testing.T) {
-	mk, _ := signd.NewMasterKey("test-pass")
-	defer mk.Destroy()
-
-	engine := signd.NewSignEngine(mk, nil)
-	server := signd.NewServer(engine)
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to listen: %v", err)
-	}
-	addr := ln.Addr().String()
-
-	go func() {
-		_ = server.Serve(ln)
-	}()
-	defer server.Close()
-
-	client := signd.NewClient(addr)
-
-	keyModel, err := client.GenerateKey(context.Background(), "demo-project", "default", "gpg")
-	if err != nil {
-		t.Fatalf("client failed to generate key: %v", err)
-	}
-	if keyModel.PublicKeyArmored == "" || keyModel.EncryptedPrivateKey == "" {
-		t.Fatalf("expected non-empty keys in generated model")
-	}
-
-	digest := sha256.Sum256([]byte("test-data-packet"))
-	sig, err := client.SignDigest(context.Background(), keyModel.EncryptedPrivateKey, digest[:])
-	if err != nil {
-		t.Fatalf("client failed to sign digest: %v", err)
-	}
-	if len(sig) == 0 {
-		t.Fatalf("expected non-empty signature")
-	}
-}
-
 func TestServerCIDRFiltering(t *testing.T) {
 	mk, _ := signd.NewMasterKey("cidr-pass")
 	defer mk.Destroy()
-	engine := signd.NewSignEngine(mk, nil)
+	engine := newTestEngine(mk)
 
 	// Server restricting access to non-localhost CIDR
 	serverBlocked := signd.NewServer(engine)
@@ -150,11 +67,12 @@ func TestServerCIDRFiltering(t *testing.T) {
 	defer serverBlocked.Close()
 
 	client := signd.NewClient(addrBlocked)
-	keyModel, _ := engine.GenerateProjectKeypair("demo", "default", "gpg")
-	digest := sha256.Sum256([]byte("test"))
+	keyModel, err := engine.GenerateKey("demo", "default", 0)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
 
-	_, err = client.SignDigest(context.Background(), keyModel.EncryptedPrivateKey, digest[:])
-	if err == nil {
+	if _, err = client.PublicKey(context.Background(), keyModel.EncryptedPrivateKey); err == nil {
 		t.Errorf("expected connection to be rejected due to CIDR filtering")
 	}
 
@@ -175,12 +93,8 @@ func TestServerCIDRFiltering(t *testing.T) {
 	defer serverAllowed.Close()
 
 	clientAllowed := signd.NewClient(addrAllowed)
-	sig, err := clientAllowed.SignDigest(context.Background(), keyModel.EncryptedPrivateKey, digest[:])
-	if err != nil {
+	if _, err := clientAllowed.PublicKey(context.Background(), keyModel.EncryptedPrivateKey); err != nil {
 		t.Fatalf("expected allowed client to succeed: %v", err)
-	}
-	if len(sig) == 0 {
-		t.Fatalf("expected signature")
 	}
 }
 
@@ -224,7 +138,7 @@ func generateTestCert(t *testing.T) (tls.Certificate, *x509.CertPool) {
 func TestServerClientTLS(t *testing.T) {
 	mk, _ := signd.NewMasterKey("tls-pass")
 	defer mk.Destroy()
-	engine := signd.NewSignEngine(mk, nil)
+	engine := newTestEngine(mk)
 
 	serverCert, caPool := generateTestCert(t)
 	serverTLS := &tls.Config{
@@ -246,12 +160,14 @@ func TestServerClientTLS(t *testing.T) {
 	}()
 	defer server.Close()
 
-	keyModel, _ := engine.GenerateProjectKeypair("tls-project", "default", "gpg")
-	digest := sha256.Sum256([]byte("tls-test-packet"))
+	keyModel, err := engine.GenerateKey("tls-project", "default", 0)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
 
 	// Non-TLS client should fail handshake
 	plainClient := signd.NewClient(addr)
-	if _, err := plainClient.SignDigest(context.Background(), keyModel.EncryptedPrivateKey, digest[:]); err == nil {
+	if _, err := plainClient.PublicKey(context.Background(), keyModel.EncryptedPrivateKey); err == nil {
 		t.Errorf("expected plain client to fail against TLS server")
 	}
 
@@ -261,11 +177,7 @@ func TestServerClientTLS(t *testing.T) {
 		MinVersion: tls.VersionTLS13,
 	}
 	tlsClient := signd.NewTLSClient(addr, clientTLS)
-	sig, err := tlsClient.SignDigest(context.Background(), keyModel.EncryptedPrivateKey, digest[:])
-	if err != nil {
+	if _, err := tlsClient.PublicKey(context.Background(), keyModel.EncryptedPrivateKey); err != nil {
 		t.Fatalf("expected TLS client to succeed: %v", err)
-	}
-	if len(sig) == 0 {
-		t.Fatalf("expected non-empty signature from TLS client")
 	}
 }
