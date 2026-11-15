@@ -569,6 +569,23 @@ Tasks:
 
 ---
 
+### WP8 bootstrap overrides in effect (remove when the bootstrap ends)
+
+Recorded 2026-11-15 on the aisrv test deployment (`~/Devel/packages/SLFO-1.2-import`):
+
+- `private_config.raw_config`: `FileProvides` for `/usr/bin/python3`,
+  `/usr/bin/ruby`, `/usr/bin/ruby.ruby3.2` and `/usr/bin/ronn` that also accept the
+  1.1 providers (`python311-base`, `ruby3.2`, ...), plus `Prefer` for the 1.2
+  ones. SLFO 1.1 has no package named `python3-base`/`ruby3.4`.
+- `targets.standard.arch_config.i586.raw_config`: `BuildFlags: !*` then only
+  `onlybuild:glibc onlybuild:gcc13` (baselibs for x86_64 `-32bit`), and
+  `VMinstall: !kernel-obs-build` (x86_64-only, KVM only).
+- `aaa_base` pinned to `3cd55347ee15804e9f2c8041e815fe20b78c86cf8b093a45dc24635723f5301b`
+  (slfo-1.2 tip): the commit pinned by SLFO (`aafc4d99...`, from pool/aaa_base
+  PR #11) is not available on src.opensuse.org.
+- Bootstrap Dependency `SUSE:SLFO:1.1/standard` (`http://127.0.0.1:8088/`,
+  x86_64 + noarch + 152 i586 RPMs from `i586-needed.txt`).
+
 ## 5. Dependency graph of work packages
 
 ```
