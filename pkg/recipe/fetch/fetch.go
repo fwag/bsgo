@@ -31,18 +31,19 @@ type Cache interface {
 // maxFileSize bounds a single recipe file; larger files are rejected.
 const maxFileSize = 16 << 20
 
+// commitRef is the local ref that receives the fetched commit.
+const commitRef = "refs/bsgo/commit"
+
 var (
 	commitRe = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 	// recipeNameRe selects the files the scheduler reads.
-	recipeNameRe = regexp.MustCompile(`^(?:[^/]+\.spec|_multibuild|_constraints)$`)
+	recipeNameRe = regexp.MustCompile(`^(?:[^/\n]+\.spec|_multibuild|_constraints)$`)
 )
 
 // Fetcher fetches recipe files, consulting an optional cache first.
 type Fetcher struct {
 	// Cache is consulted before and updated after a fetch; nil disables it.
 	Cache Cache
-	// GitBin is the git executable; empty means "git".
-	GitBin string
 }
 
 // Fetch returns the recipe files of repository url at exactly commit. It
@@ -61,7 +62,7 @@ func (f *Fetcher) Fetch(ctx context.Context, url, commit string) (Files, error) 
 			return files, nil
 		}
 	}
-	files, err := f.fetchGit(ctx, url, commit)
+	files, err := fetchRecipes(ctx, url, commit)
 	if err != nil {
 		return nil, err
 	}
@@ -83,32 +84,86 @@ func validate(url, commit string) error {
 	return nil
 }
 
-func (f *Fetcher) fetchGit(ctx context.Context, url, commit string) (Files, error) {
+func fetchRecipes(ctx context.Context, url, commit string) (Files, error) {
 	dir, err := os.MkdirTemp("", "bsgo-recipe-*")
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
-	g := &gitRunner{bin: f.GitBin, dir: dir}
-	if g.bin == "" {
-		g.bin = "git"
-	}
-	if _, err := g.run(ctx, "init", "--quiet"); err != nil {
+	g := &repo{dir: dir, url: url, commit: commit}
+	if err := g.init(ctx); err != nil {
 		return nil, err
 	}
-	if _, err := g.run(ctx, "fetch", "--quiet", "--depth", "1", "--filter=blob:none", "--no-tags", "--", url, commit); err != nil {
+	if err := g.fetch(ctx); err != nil {
 		return nil, fmt.Errorf("fetch commit %s from %s: %w", commit, url, err)
 	}
-	return g.readRecipes(ctx, commit)
+	return g.readRecipes(ctx)
 }
 
-// readRecipes reads the top-level recipe files of commit.
-func (g *gitRunner) readRecipes(ctx context.Context, commit string) (Files, error) {
-	out, err := g.run(ctx, "ls-tree", "-z", "--long", commit+"^{tree}")
+// repo is a throwaway repository holding one shallow, blob-filtered commit.
+// The repository URL and commit id never appear on a command line: they are
+// handed to the VCS tool through its environment configuration (a remote with
+// a refspec that names the commit), so every command below has fixed
+// arguments.
+type repo struct {
+	dir, url, commit string
+}
+
+// env builds the process environment. The protocol allow-list excludes the
+// ext transport and other helper programs.
+func (g *repo) env() []string {
+	return append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1", "GIT_CONFIG_NOSYSTEM=1",
+		"GIT_ALLOW_PROTOCOL=file:git:http:https:ssh",
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=remote.src.url", "GIT_CONFIG_VALUE_0="+g.url,
+		"GIT_CONFIG_KEY_1=remote.src.fetch", "GIT_CONFIG_VALUE_1="+g.commit+":"+commitRef,
+	)
+}
+
+func (g *repo) exec(cmd *exec.Cmd, stdin string) ([]byte, error) {
+	cmd.Dir = g.dir
+	cmd.Env = g.env()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("git %s: %w: %s", cmd.Args[1], err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+func (g *repo) init(ctx context.Context) error {
+	_, err := g.exec(exec.CommandContext(ctx, "git", "init", "--quiet"), "")
+	return err
+}
+
+// fetch downloads exactly g.commit; the command fails when the server does
+// not have, or will not serve, that object.
+func (g *repo) fetch(ctx context.Context) error {
+	_, err := g.exec(exec.CommandContext(ctx, "git", "fetch", "--quiet", "--depth", "1", "--filter=blob:none", "--no-tags", "src"), "")
+	if err != nil {
+		return err
+	}
+	out, err := g.exec(exec.CommandContext(ctx, "git", "rev-parse", "--verify", commitRef+"^{commit}"), "")
+	if err != nil {
+		return err
+	}
+	if got := strings.TrimSpace(string(out)); got != g.commit {
+		return fmt.Errorf("fetched %s, want %s", got, g.commit)
+	}
+	return nil
+}
+
+// readRecipes reads the top-level recipe files of the fetched commit.
+func (g *repo) readRecipes(ctx context.Context) (Files, error) {
+	out, err := g.exec(exec.CommandContext(ctx, "git", "ls-tree", "-z", "--long", commitRef+"^{tree}"), "")
 	if err != nil {
 		return nil, err
 	}
-	files := Files{}
+	var names []string
 	for _, ent := range bytes.Split(out, []byte{0}) {
 		name, size, ok := parseTreeEntry(string(ent))
 		if !ok || !recipeNameRe.MatchString(name) {
@@ -117,16 +172,51 @@ func (g *gitRunner) readRecipes(ctx context.Context, commit string) (Files, erro
 		if size > maxFileSize {
 			return nil, fmt.Errorf("recipe file %s is too large (%d bytes)", name, size)
 		}
-		data, err := g.run(ctx, "cat-file", "blob", commit+":"+name)
-		if err != nil {
+		names = append(names, name)
+	}
+	return g.readBlobs(ctx, names)
+}
+
+// readBlobs reads the named blobs with one cat-file process; blobs missing
+// from a partial clone are fetched from the remote on demand.
+func (g *repo) readBlobs(ctx context.Context, names []string) (Files, error) {
+	files := Files{}
+	if len(names) == 0 {
+		return files, nil
+	}
+	var in strings.Builder
+	for _, n := range names {
+		in.WriteString(commitRef + ":" + n + "\n")
+	}
+	out, err := g.exec(exec.CommandContext(ctx, "git", "cat-file", "--batch"), in.String())
+	if err != nil {
+		return nil, err
+	}
+	for _, n := range names {
+		var data []byte
+		if data, out, err = nextBlob(out, n); err != nil {
 			return nil, err
 		}
-		files[name] = data
+		files[n] = data
 	}
 	return files, nil
 }
 
-// parseTreeEntry parses a "git ls-tree --long" record for a blob:
+// nextBlob splits one "<oid> blob <size>\n<content>\n" record off out.
+func nextBlob(out []byte, name string) (data, rest []byte, err error) {
+	hdr, rest, ok := bytes.Cut(out, []byte{'\n'})
+	f := strings.Fields(string(hdr))
+	if !ok || len(f) != 3 || f[1] != "blob" {
+		return nil, nil, fmt.Errorf("unexpected cat-file output for %s: %q", name, hdr)
+	}
+	size, err := strconv.Atoi(f[2])
+	if err != nil || size < 0 || len(rest) < size+1 {
+		return nil, nil, fmt.Errorf("bad cat-file size for %s: %q", name, hdr)
+	}
+	return append([]byte(nil), rest[:size]...), rest[size+1:], nil
+}
+
+// parseTreeEntry parses a "ls-tree --long" record for a blob:
 // "<mode> blob <oid> <size>\t<name>".
 func parseTreeEntry(ent string) (name string, size int64, ok bool) {
 	meta, name, found := strings.Cut(ent, "\t")
@@ -142,21 +232,4 @@ func parseTreeEntry(ent string) (name string, size int64, ok bool) {
 		return "", 0, false
 	}
 	return name, size, true
-}
-
-type gitRunner struct {
-	bin string
-	dir string
-}
-
-func (g *gitRunner) run(ctx context.Context, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, g.bin, args...)
-	cmd.Dir = g.dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1", "GIT_CONFIG_NOSYSTEM=1")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.Bytes(), nil
 }

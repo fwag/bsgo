@@ -5,7 +5,9 @@
 package recipetest
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,7 +54,7 @@ func nz(l []string) []string {
 // the worker variant, which keeps the Macros: blocks, as OBS hands it to
 // Build::parse. It returns the config and the layered text.
 func LoadConfig(prjconfPath, project, repo, arch string) (*buildconfig.Config, string, error) {
-	raw, err := os.ReadFile(prjconfPath)
+	raw, err := os.ReadFile(filepath.Clean(prjconfPath))
 	if err != nil {
 		return nil, "", err
 	}
@@ -102,11 +104,9 @@ func packageCases(pdir, pkg, repo string) ([]Case, error) {
 	for _, e := range ents {
 		files = append(files, e.Name())
 	}
-	var mb *recipe.Multibuild
-	if data, err := os.ReadFile(filepath.Join(pdir, recipe.MultibuildFile)); err == nil {
-		if mb, err = recipe.ParseMultibuild(data); err != nil {
-			return nil, fmt.Errorf("%s: %w", pkg, err)
-		}
+	mb, err := readMultibuild(pdir)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", pkg, err)
 	}
 	var out []Case
 	for _, u := range recipe.Expand(pkg, files, mb, repo) {
@@ -117,4 +117,17 @@ func packageCases(pdir, pkg, repo string) ([]Case, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// readMultibuild returns the parsed _multibuild of a package directory, or nil
+// when there is none.
+func readMultibuild(pdir string) (*recipe.Multibuild, error) {
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(pdir, recipe.MultibuildFile)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return recipe.ParseMultibuild(data)
 }
