@@ -168,6 +168,16 @@ versions of a rebuilt package are never removed. This conflicts with the
 | `bs_worker` `--rpmlist` | worker downloads exact bdeps into a job-local dir and runs `build --rpmlist` (no `--repo`) |
 | DoD / remote path repo | `pkg/dod`: ingest remote `primary.xml` once per repomd checksum → solv blob cached in S3/PG; fetch binaries on demand |
 
+Multi-arch baselibs: `-32bit` x86_64 RPMs (glibc-devel-32bit, ...) are produced
+by `mkbaselibs` inside the **i586** build and reach the x86_64 build repository
+through the prjconf `ExportFilter` (`\.x86_64\.rpm$ x86_64`), not by an x86_64
+build. bsgo therefore needs: workers that offer `i586` (worker `archs`,
+default BSCando set, builds run under `linux32`); an `i586` target in the
+project; and the indexer export described in spec 02 section 3.8 (import unit
+`<unit>:import:i586` in the x86_64 build repository). The checker gives import
+binaries no producer and never blocks on them: a package needing `glibc-devel-32bit`
+stays `unresolvable` until the i586 build of glibc has delivered it (OBS behaviour).
+
 Horizontal scaling remains: checkers are partitioned by prpa, workers pull
 jobs, publishers lock per prpa in NATS KV, and all binaries live in S3. No
 component needs a shared filesystem.
@@ -523,6 +533,12 @@ Tasks:
    Use `--json` and report failures.
 
 ### WP8. Bootstrap runbook (operator task, after WP0–WP7)
+0. Multi-arch (needed for packages with `BuildRequires: *-32bit`): add `i586`
+   to the target's `architectures` in `project.yaml` (for the i586 repository
+   only a restricted set may be wanted: `arch_config.i586.build_flags:
+   [onlybuild:glibc, ...]`), and make the workers offer it (`worker.archs:
+   [x86_64, i586]` or leave the default on x86_64 hosts; `linux32` and an
+   i586-capable kernel/qemu are required).
 1. Reset state: purge the `bsgo.status` stream, truncate
    `package_build_state`, empty the `bins/SUSE:SLFO:1.2/` prefix, and remove
    stale `/var/tmp/bsgo-worker/jobs/*` (and `cache/s3_repos`).

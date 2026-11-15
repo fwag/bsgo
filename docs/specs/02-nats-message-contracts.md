@@ -184,6 +184,7 @@ enum WorkerStatus {
 message WorkerHeartbeat {
   string worker_id = 1;       // Unique worker host identifier
   string architecture = 2;    // Host architecture
+  repeated string archs = 8;  // Architectures the worker can build (see below)
   WorkerStatus status = 3;
   string active_job_id = 4;   // Present if status == WORKER_STATUS_BUSY
   
@@ -200,6 +201,15 @@ message WorkerHardware {
   repeated string cpu_features = 5; // e.g. ["avx2", "avx512"]
 }
 ```
+
+The heartbeat doubles as registration. `archs` lists the build architectures the
+worker offers: by default the BSCando set of the host architecture (an `x86_64`
+host offers `x86_64`, `i586`, `i686`), or the explicit `worker.archs` list of the
+worker configuration. The dispatcher assigns a job only to a worker whose `archs`
+contains the job's `architecture`. A heartbeat without `archs` (older worker)
+means "only `architecture`". For architectures with a personality helper in the
+cando table (`i586` on `x86_64`), the worker runs obs-build under `linux32`, like
+`bs_worker`; obs-build itself does not switch the personality.
 
 ### 3.4. Job Control (Superseded Abort): `bsgo.jobs.<job_id>.control`
 Emitted by `bsgo-dispatcher` to terminate builds superseded by new commits.
@@ -321,6 +331,18 @@ its build path (and the prpa itself) becomes dirty and is checked again.
 ```json
 {"project": "SUSE:SLFO:1.2", "repo": "standard", "arch": "x86_64"}
 ```
+
+Cross-architecture export: when the job of a unit in prpa A finishes, the
+indexer splits its binaries by the layered `ExportFilter` (OBS semantics: rules
+tried in reverse order of their regular expression text, first match wins; the
+targets are architectures, `.` is the own architecture; a matching rule without
+targets drops the binary; a binary matching no rule stays in A; an empty filter
+uses the OBS default of A). Binaries targeted at another architecture B of the
+same project and repository are written to the build repository of prpa B as the
+import unit `<unit>:import:<A>` (for example `glibc:import:i586`), keeping the S3
+key of the original artifact. Each export replaces the previous import set of
+that name, also with an empty set, and B gets its own repo-changed event. Import
+units are not buildable, have no artifact prefix, and are never re-exported.
 
 ### 3.9. Scheduler coordination (NATS KV)
 Server replicas share the scheduler work by prpa through two JetStream KV
