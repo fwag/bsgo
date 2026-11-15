@@ -241,7 +241,7 @@ func (c *ProjectConfig) Clone() *ProjectConfig {
 
 // Merge returns a new ProjectConfig combining base (c) with override.
 //
-// Deprecated: ADR 0010 layers configuration textually (buildconfig.Layer), not
+// Legacy path: ADR 0010 layers configuration textually (buildconfig.Layer), not
 // by merging structs. Merge ignores Defines, Release and RawConfig. It remains
 // only for the scheduler's legacy ResolveTargetConfig until WP4 replaces it.
 // When override has FromScratch set to true, upstream base configuration is discarded.

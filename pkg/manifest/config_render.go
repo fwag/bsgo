@@ -7,7 +7,7 @@ import (
 
 // RenderBuildConfig serializes a manifest.ProjectConfig into legacy obs-build .build.config format.
 //
-// Deprecated: use buildconfig.Render and buildconfig.Layer (ADR 0010). This
+// Legacy path: use buildconfig.Render and buildconfig.Layer (ADR 0010). This
 // renderer ignores Defines, Release and RawConfig and remains only for the
 // legacy scheduler and worker paths until WP4.
 func RenderBuildConfig(cfg *ProjectConfig) string {
