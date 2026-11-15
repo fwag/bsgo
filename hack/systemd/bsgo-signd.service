@@ -1,0 +1,12 @@
+[Unit]
+Description=bsgo signing daemon
+After=podman-restart.service
+
+[Service]
+WorkingDirectory=%h/Devel/bsgo
+EnvironmentFile=%h/Devel/bsgo/config/s3-credentials.env
+ExecStart=%h/Devel/bsgo/bin/bsgo-signd -listen 127.0.0.1:5167 -allow-cidrs 127.0.0.1/32
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

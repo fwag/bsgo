@@ -204,6 +204,10 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	bin, runArgs := personalityCommand(PersonalityHelper(s.HostArch, job.Architecture), obsBin, args)
 	fmt.Fprintf(w, "[%s] bsgo-worker: executing %s %s\n", time.Now().Format("15:04:05"), bin, strings.Join(runArgs, " "))
 	run := runWatched(ctx, bin, runArgs, jobDir, limitsFor(job), w)
+	if run.aborted || ctx.Err() != nil {
+		// Killing sudo does not stop the root-owned build underneath.
+		s.terminateBuild(obsBin, buildRoot, w)
+	}
 	if run.err != nil {
 		fmt.Fprintf(w, "[%s] bsgo-worker: KVM execution exited: %v\n", time.Now().Format("15:04:05"), run.err)
 		res := &ExecutionResult{ExitCode: run.exitCode, Aborted: run.aborted, SourceCommit: commit}
@@ -361,4 +365,33 @@ func classifyRun(parent, runCtx context.Context, err error, lim buildLimits) run
 			err: fmt.Errorf("aborted: build killed by signal %s", ws.Signal())}
 	}
 	return runOutcome{exitCode: max(ee.ExitCode(), 1), err: err}
+}
+
+// machinectlCmd is how the worker terminates nspawn build containers. obs-build
+// runs as root (through sudo), so cancelling the job only kills sudo; the
+// container keeps running. The host needs a sudo rule for exactly this
+// command ("sudo -n /usr/bin/machinectl terminate obsbuild.*").
+var machinectlCmd = []string{"sudo", "-n", "/usr/bin/machinectl", "terminate"}
+
+// terminateBuild stops the root-owned build of buildRoot after an aborted or
+// cancelled run (worker shutdown, abort request, timeout, idle limit).
+func (s *ProcessSandbox) terminateBuild(obsBin, buildRoot string, w io.Writer) {
+	tctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	var cmd *exec.Cmd
+	if s.SandboxMode == "nspawn" {
+		name := "obsbuild." + strings.ReplaceAll(filepath.Base(buildRoot), "_", "-")
+		args := append(append([]string{}, machinectlCmd[1:]...), name)
+		// #nosec G204 -- fixed command; the machine name derives from the job build root
+		cmd = exec.CommandContext(tctx, machinectlCmd[0], args...)
+	} else {
+		// #nosec G204 -- obs-build runner executes parameterized sandbox binary
+		cmd = exec.CommandContext(tctx, obsBin, "--root", buildRoot, "--kill")
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(w, "[%s] bsgo-worker: failed to terminate build in %s: %v (%s)\n",
+			time.Now().Format("15:04:05"), buildRoot, err, strings.TrimSpace(string(out)))
+		return
+	}
+	fmt.Fprintf(w, "[%s] bsgo-worker: terminated build in %s\n", time.Now().Format("15:04:05"), buildRoot)
 }

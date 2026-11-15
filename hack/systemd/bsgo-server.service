@@ -1,0 +1,19 @@
+[Unit]
+Description=bsgo control plane (API, checker, dispatcher, publisher)
+After=podman-restart.service bsgo-signd.service bsgo-repo-slfo11.service
+Wants=bsgo-signd.service bsgo-repo-slfo11.service
+
+[Service]
+WorkingDirectory=%h/Devel/bsgo
+EnvironmentFile=%h/Devel/bsgo/config/s3-credentials.env
+Environment=DATABASE_URL=postgres://bsgo:password@localhost:5432/bsgodb?sslmode=disable
+# The containers may still be starting after boot.
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do podman exec bsgo-postgres pg_isready -q && exit 0; sleep 2; done; exit 1'
+ExecStart=%h/Devel/bsgo/bin/bsgo-server -role all -signer-type signd -signd-addr 127.0.0.1:5167
+StandardOutput=append:%h/Devel/bsgo/server.log
+StandardError=append:%h/Devel/bsgo/server.log
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

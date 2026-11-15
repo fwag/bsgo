@@ -1,0 +1,20 @@
+[Unit]
+Description=bsgo build worker (obs-build, nspawn)
+After=bsgo-server.service
+Wants=bsgo-server.service
+
+[Service]
+WorkingDirectory=%h/Devel/bsgo
+EnvironmentFile=%h/Devel/bsgo/config/s3-credentials.env
+ExecStart=%h/Devel/bsgo/bin/bsgo-worker -config %h/Devel/bsgo/config/worker-nspawn.yaml
+StandardOutput=append:%h/Devel/bsgo/worker.log
+StandardError=append:%h/Devel/bsgo/worker.log
+# On stop the worker cancels its jobs and terminates their nspawn
+# containers (needs the machinectl sudo rule, see README.md).
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

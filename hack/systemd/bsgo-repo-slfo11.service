@@ -1,0 +1,10 @@
+# Serves the local SUSE:SLFO:1.1 mirror used as Bootstrap Dependency.
+[Unit]
+Description=bsgo bootstrap repo SUSE:SLFO:1.1 (HTTP :8088)
+
+[Service]
+ExecStart=/usr/bin/python3 -m http.server 8088 --directory %h/Devel/packages/1.1/standard --bind 0.0.0.0
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
