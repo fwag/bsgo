@@ -406,3 +406,28 @@ func TestMacroTooDeep(t *testing.T) {
 		t.Errorf("expected nesting error, got %v (prefer %v)", err, cfg.Prefer)
 	}
 }
+
+func TestMacroExpansionSizeBounded(t *testing.T) {
+	big := strings.Repeat("x", 64<<10)
+	text := "%define big " + big + "\n" +
+		"%define twenty " + strings.Repeat("%{big}", 20) + "\n" +
+		"Prefer: %{twenty}\n"
+	cfg, err := Parse(text, "x86_64")
+	if cfg == nil {
+		t.Fatal("nil config")
+	}
+	total := 0
+	for _, p := range cfg.Prefer {
+		total += len(p)
+	}
+	if total > maxExpandedLen+len("MACRO") {
+		t.Fatalf("expanded prefer has %d bytes, cap is %d", total, maxExpandedLen)
+	}
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	if !strings.Contains(msg+strings.Join(cfg.Warnings, " "), "too large") {
+		t.Errorf("expected size diagnostic, got err=%v warnings=%v", err, cfg.Warnings)
+	}
+}

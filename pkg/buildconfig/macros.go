@@ -33,6 +33,11 @@ const stdMacros = `
 
 const maxMacroTries = 1000
 
+// maxExpandedLen bounds the size of one expanded line. maxMacroTries limits the
+// number of expansion steps, but each step can double the text, so the size
+// needs its own bound (not present in Perl; prjconf is maintainer-supplied input).
+const maxExpandedLen = 1 << 20
+
 var (
 	macroRe      = regexp.MustCompile(`(?s)^(.*?)%(\{([^}]+)\}|[?!]*[0-9a-zA-Z_]+|%|\*\*?|#|\(|\[)`)
 	macroLineRe  = regexp.MustCompile(`(?s)^%define\s*([0-9a-zA-Z_]+)(?:\(([^)]*)\))?\s*(.*?)\n?$`)
@@ -200,6 +205,11 @@ func (e *macroEngine) step(st *expState) bool {
 	st.tries++
 	if over {
 		e.warn("macro too deeply nested")
+		st.line = "MACRO"
+		return false
+	}
+	if st.out.Len()+len(st.line) > maxExpandedLen {
+		e.warn("macro expansion too large")
 		st.line = "MACRO"
 		return false
 	}
