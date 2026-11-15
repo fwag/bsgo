@@ -1,9 +1,12 @@
 package manifest_test
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/openSUSE/bsgo/pkg/manifest"
+	"gopkg.in/yaml.v3"
 )
 
 func TestShardPath(t *testing.T) {
@@ -204,16 +207,16 @@ targets:
 		t.Fatalf("failed to parse project with config: %v", err)
 	}
 
-	if prj.Config == nil {
+	if prj.PublicConfig == nil {
 		t.Fatalf("expected non-nil root config")
 	}
-	if prj.Config.EffectiveBuildEngine() != "build" {
-		t.Errorf("expected build engine 'build', got %q", prj.Config.EffectiveBuildEngine())
+	if prj.PublicConfig.EffectiveBuildEngine() != "build" {
+		t.Errorf("expected build engine 'build', got %q", prj.PublicConfig.EffectiveBuildEngine())
 	}
-	if !prj.Config.HasBuildType("spec") {
+	if !prj.PublicConfig.HasBuildType("spec") {
 		t.Errorf("expected HasBuildType(spec) to be true")
 	}
-	if !prj.Config.HasRepoType("rpm-md") {
+	if !prj.PublicConfig.HasRepoType("rpm-md") {
 		t.Errorf("expected HasRepoType(rpm-md) to be true")
 	}
 
@@ -435,14 +438,65 @@ targets:
 		t.Errorf("expected private_config to be populated")
 	}
 
-	if prj.Config != prj.PublicConfig {
-		t.Errorf("expected Config alias to match PublicConfig")
+	if prj.Config != nil || prj.Protected != nil || prj.NamespaceScoped != nil || prj.Private != nil {
+		t.Errorf("deprecated aliases must be cleared after load")
 	}
-	if prj.Protected != prj.ProtectedConfig || prj.NamespaceScoped != prj.ProtectedConfig {
-		t.Errorf("expected Protected and NamespaceScoped aliases to match ProtectedConfig")
+}
+
+func TestAliasesAreReadOnlyAndDefinesKeepOrder(t *testing.T) {
+	in := []byte(`schema_version: v1
+project:
+  name: "a:b"
+config:
+  defines:
+    zeta: "1"
+    alpha: "two words"
+    mid: "13"
+  release: "<CI_CNT>.<B_CNT>"
+  raw_config: |
+    %if 0%{?x}
+    Prefer: y
+    %endif
+namespace_scoped:
+  prefer: ["p"]
+private:
+  support: ["s"]
+targets:
+  standard:
+    architectures: ["x86_64"]
+    dependencies:
+      - url: "https://example.invalid/repo/"
+        name: "SUSE:SLFO:1.1/standard"
+`)
+	prj, err := manifest.ParseProject(in)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if prj.Private != prj.PrivateConfig {
-		t.Errorf("expected Private alias to match PrivateConfig")
+	names := []string{}
+	for _, d := range prj.PublicConfig.Defines {
+		names = append(names, d.Name+"="+d.Value)
+	}
+	if got := strings.Join(names, ","); got != "zeta=1,alpha=two words,mid=13" {
+		t.Fatalf("defines order lost: %s", got)
+	}
+	if prj.Targets["standard"].Dependencies[0].Name != "SUSE:SLFO:1.1/standard" {
+		t.Fatalf("dependency name not parsed")
+	}
+	out, err := yaml.Marshal(prj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, alias := range []string{"\nconfig:", "namespace_scoped:", "\nprivate:", "\nprotected:"} {
+		if strings.Contains(string(out), alias) {
+			t.Errorf("alias %q written back:\n%s", alias, out)
+		}
+	}
+	again, err := manifest.ParseProject(out)
+	if err != nil {
+		t.Fatalf("re-parse: %v\n%s", err, out)
+	}
+	if !reflect.DeepEqual(prj, again) {
+		t.Fatalf("marshal round trip differs:\n%s", out)
 	}
 }
 

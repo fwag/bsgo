@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -81,6 +82,9 @@ type BuildTarget struct {
 
 // ProjectConfig defines project-wide or target-specific build, solver, and publication settings.
 type ProjectConfig struct {
+	// Defines holds top-level %define lines in source order (ADR 0010). The
+	// parser evaluates them, so directives below may reference them.
+	Defines      Defines             `yaml:"defines,omitempty"`
 	BuildTypes   []string            `yaml:"build_types,omitempty"`
 	BuildEngine  string              `yaml:"build_engine,omitempty"`
 	RepoTypes    []string            `yaml:"repo_types,omitempty"`
@@ -101,8 +105,60 @@ type ProjectConfig struct {
 	BuildFlags   []string            `yaml:"build_flags,omitempty"`
 	PublishFlags []string            `yaml:"publish_flags,omitempty"`
 	Optflags     map[string]string   `yaml:"optflags,omitempty"`
-	Macros       string              `yaml:"macros,omitempty"`
-	MacrosFile   string              `yaml:"macros_file,omitempty"`
+	// Release is the Release: directive value, for example "<CI_CNT>.<B_CNT>".
+	Release string `yaml:"release,omitempty"`
+	// Macros is the opaque rpm Macros: body, evaluated by rpm at build time.
+	Macros string `yaml:"macros,omitempty"`
+	// RawConfig is a verbatim prjconf fragment for constructs without a
+	// structured field. It is rendered after the structured directives of the
+	// same scope and before Macros.
+	RawConfig string `yaml:"raw_config,omitempty"`
+	// MacrosFile is deprecated (ADR 0010); Render rejects it.
+	MacrosFile string `yaml:"macros_file,omitempty"`
+}
+
+// Define is one top-level %define of a prjconf.
+type Define struct {
+	Name  string
+	Value string
+}
+
+// Defines is an ordered list of %define entries. In YAML it is a mapping so
+// that it reads naturally, and the mapping order is preserved on load and
+// save (ordering matters for %define).
+type Defines []Define
+
+// UnmarshalYAML decodes a mapping node keeping the key order.
+func (d *Defines) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: defines must be a mapping of name to value", node.Line)
+	}
+	out := make(Defines, 0, len(node.Content)/2)
+	seen := make(map[string]bool, len(node.Content)/2)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k, v := node.Content[i], node.Content[i+1]
+		if v.Kind != yaml.ScalarNode {
+			return fmt.Errorf("line %d: define %q must have a scalar value", v.Line, k.Value)
+		}
+		if seen[k.Value] {
+			return fmt.Errorf("line %d: duplicate define %q", k.Line, k.Value)
+		}
+		seen[k.Value] = true
+		out = append(out, Define{Name: k.Value, Value: v.Value})
+	}
+	*d = out
+	return nil
+}
+
+// MarshalYAML encodes the list as an ordered mapping.
+func (d Defines) MarshalYAML() (any, error) {
+	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for _, e := range d {
+		n.Content = append(n.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: e.Name},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: e.Value})
+	}
+	return n, nil
 }
 
 // EffectiveBuildTypes returns the declared build types or defaults to ["spec"].
@@ -161,6 +217,7 @@ func (c *ProjectConfig) Clone() *ProjectConfig {
 		return nil
 	}
 	cloned := *c
+	cloned.Defines = slices.Clone(c.Defines)
 	cloned.BuildTypes = cloneSlice(c.BuildTypes)
 	cloned.RepoTypes = cloneSlice(c.RepoTypes)
 	cloned.Prefer = cloneSlice(c.Prefer)
@@ -183,6 +240,10 @@ func (c *ProjectConfig) Clone() *ProjectConfig {
 }
 
 // Merge returns a new ProjectConfig combining base (c) with override.
+//
+// Deprecated: ADR 0010 layers configuration textually (buildconfig.Layer), not
+// by merging structs. Merge ignores Defines, Release and RawConfig. It remains
+// only for the scheduler's legacy ResolveTargetConfig until WP4 replaces it.
 // When override has FromScratch set to true, upstream base configuration is discarded.
 func (c *ProjectConfig) Merge(override *ProjectConfig) *ProjectConfig {
 	if c == nil && override == nil {
@@ -514,6 +575,10 @@ type DependencySource struct {
 	Target  string `yaml:"target,omitempty"`
 	URL     string `yaml:"url,omitempty"`
 	Type    string `yaml:"type,omitempty"`
+	// Name is the stable "project/repository" name of a url entry, used as
+	// _project/_repository when layering configs (for example
+	// "SUSE:SLFO:1.1/standard").
+	Name string `yaml:"name,omitempty"`
 }
 
 type TargetFlags struct {
@@ -601,39 +666,18 @@ func ParseProject(data []byte) (*ProjectManifest, error) {
 		return nil, errors.New("missing required field: project.name")
 	}
 
-	normalizePublicConfig(&prj)
-	normalizeProtectedConfig(&prj)
-	normalizePrivateConfig(&prj)
+	normalizeAliases(&prj)
 
 	return &prj, nil
 }
 
-func normalizePublicConfig(prj *ProjectManifest) {
-	cfg := prj.GetPublicConfig()
-	if cfg == nil {
-		return
-	}
-	prj.PublicConfig = cfg
-	prj.Config = cfg
-}
-
-func normalizeProtectedConfig(prj *ProjectManifest) {
-	cfg := prj.GetProtectedConfig()
-	if cfg == nil {
-		return
-	}
-	prj.ProtectedConfig = cfg
-	prj.Protected = cfg
-	prj.NamespaceScoped = cfg
-}
-
-func normalizePrivateConfig(prj *ProjectManifest) {
-	cfg := prj.GetPrivateConfig()
-	if cfg == nil {
-		return
-	}
-	prj.PrivateConfig = cfg
-	prj.Private = cfg
+// normalizeAliases moves values loaded through the deprecated alias keys into
+// the canonical fields and clears the aliases, so they are never written back.
+func normalizeAliases(prj *ProjectManifest) {
+	prj.PublicConfig = prj.GetPublicConfig()
+	prj.ProtectedConfig = prj.GetProtectedConfig()
+	prj.PrivateConfig = prj.GetPrivateConfig()
+	prj.Config, prj.Protected, prj.NamespaceScoped, prj.Private = nil, nil, nil, nil
 }
 
 func ParsePackage(data []byte) (*PackageManifest, error) {
