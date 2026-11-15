@@ -17,18 +17,25 @@ project:
   title: "openSUSE Factory Distribution"
   description: "Rolling release base distribution"
 
-# Optional project-wide configuration defaults (replaces legacy OBS _config / prjconf)
-config:
+# Build Configuration (equivalent to OBS prjconf, see ADR 0010).
+# Scopes: public_config  -> every Consumer Project that has this project in its path
+#         protected_config -> this project and its "<name>:*" subprojects (%_is_in_project)
+#         private_config   -> this project only (%_is_this_project)
+public_config:
   build_types:
     - "spec"
   build_engine: "build"
   repo_types:
     - "rpm-md"
+  defines:                      # top-level %define, visible to directives below
+    lua_pref: "lua54"
   prefer:
-    - "mariadb-server"
-    - "java-17-openjdk-devel"
+    - "%{lua_pref}"             # expanded via defines, like OBS
+    - "-yast2-schema"           # negative prefer
+    - "python3-kiwi:libsystemd0" # context prefer (only when pulled in by python3-kiwi)
   ignore:
     - "broken-pkg"
+    - "dracut:systemd-sysvinit" # ignore only when required by dracut
   substitute:
     default-jdk: ["java-17-openjdk-devel"]
   preinstall:
@@ -39,8 +46,27 @@ config:
     - "kernel-default"
   build_flags:
     - "allowrootforbuild"
-  macros: |
+  release: "<CI_CNT>.<B_CNT>"
+  macros: |                     # opaque rpm Macros: body, evaluated by rpm at build time
     %vendor openSUSE
+  raw_config: |                 # verbatim prjconf for constructs with no structured field
+    %if !0%{?is_stage_project}
+    Release: <CI_CNT>.<B_CNT> spec:160000.<CI_CNT>.<B_CNT>
+    %endif
+
+protected_config:
+  build_flags:
+    - "excludebuild:lttng-modules"
+
+private_config:
+  macros: |
+    %source_date_epoch_from_changelog Y
+
+# Per-architecture overlays (%ifarch); also allowed under targets.<name>.arch_config
+arch_config:
+  aarch64:
+    prefer:
+      - "-grub2-x86_64-efi"
 
 targets:
   standard:
@@ -86,34 +112,77 @@ targets:
 | `project.name` | string | Yes | Unique canonical project identifier (e.g. `openSUSE:Factory`). |
 | `project.title` | string | No | Short human-readable display title. |
 | `project.description` | string | No | Markdown/text description. |
-| `config` | obj | No | Project-wide build, solver, and publication settings. |
-| `config.build_types` | list[str] | No | Allowed build recipe types (e.g. `["spec"]`, `["kiwi"]`, `["docker"]`, `["helm"]`). Defaults to `["spec"]`. |
-| `config.build_engine` | string | No | Toolchain execution engine (`"build"`, `"podman"`, `"mock"`, `"helm"`). Defaults to `"build"`. |
-| `config.repo_types` | list[str] | No | Published repository index formats (`["rpm-md"]`, `["none"]`, `["helm"]`). Defaults to `["rpm-md"]`. |
-| `config.from_scratch` | bool | No | If `true`, stops config inheritance from dependency targets (clean OBS `FromScratch:` replacement). |
-| `config.prefer` | list[str] | No | Preferred package list for resolving dependency ambiguities in `libsolv`. |
-| `config.ignore` | list[str] | No | Package list to ignore during dependency resolution. |
-| `config.substitute` | map[str, list[str]] | No | Virtual capability to concrete package substitutions. |
-| `config.conflict` | list[list[str]] | No | Declared mutual exclusions between packages in build chroot. |
-| `config.preinstall` | list[str] | No | Minimal packages extracted to bootstrap chroot before `rpm` runs (`bash`, `rpm`). |
-| `config.vminstall` | list[str] | No | Hypervisor packages required to boot worker KVM micro-VM. |
-| `config.order` | list[str] | No | Forced package installation order to break dependency cycles. |
-| `config.build_flags` | list[str] | No | Build execution flags (e.g. `allowrootforbuild`). |
-| `config.publish_flags` | list[str] | No | Publication behavior flags (e.g. `archsync`). |
-| `config.optflags` | map[str, str] | No | Architecture-specific compiler flags (e.g. `x86_64: "-O2 -g"`). |
-| `config.macros` | string | No | Inline RPM macro definitions passed to build toolchain. |
-| `config.macros_file` | string | No | Path to Git repository file containing distribution RPM macros. |
+| `public_config` | obj | No | Build Configuration visible to every Consumer Project (OBS prjconf outside `_is_in_project` guards). Deprecated read-only alias: `config`. |
+| `protected_config` | obj | No | Build Configuration applied only to this project and its `<name>:*` subprojects (`%_is_in_project`). Deprecated read-only aliases: `protected`, `namespace_scoped`. |
+| `private_config` | obj | No | Build Configuration applied only to this project (`%_is_this_project`). Deprecated read-only alias: `private`. |
+| `arch_config.<arch>` | obj | No | Architecture overlay (`%ifarch`). Same fields as `*_config`. |
+| `*_config.build_types` | list[str] | No | Allowed build recipe types (e.g. `["spec"]`, `["kiwi"]`, `["docker"]`, `["helm"]`). Defaults to `["spec"]`. |
+| `*_config.build_engine` | string | No | Toolchain execution engine (`"build"`, `"podman"`, `"mock"`, `"helm"`). Defaults to `"build"`. |
+| `*_config.repo_types` | list[str] | No | Published repository index formats (`["rpm-md"]`, `["none"]`, `["helm"]`). Defaults to `["rpm-md"]`. |
+| `*_config.from_scratch` | bool | No | If `true`, stops config inheritance from dependency targets (clean OBS `FromScratch:` replacement). |
+| `*_config.prefer` | list[str] | No | Preferred package list for resolving dependency ambiguities in `libsolv`. |
+| `*_config.ignore` | list[str] | No | Package list to ignore during dependency resolution. |
+| `*_config.substitute` | map[str, list[str]] | No | Virtual capability to concrete package substitutions. |
+| `*_config.conflict` | list[list[str]] | No | Declared mutual exclusions between packages in build chroot. |
+| `*_config.preinstall` | list[str] | No | Minimal packages extracted to bootstrap chroot before `rpm` runs (`bash`, `rpm`). |
+| `*_config.vminstall` | list[str] | No | Hypervisor packages required to boot worker KVM micro-VM. |
+| `*_config.support` | list[str] | No | Packages added to every build environment (`Support:`); `!name` removes an inherited entry. |
+| `*_config.required` | list[str] | No | Packages required in every build environment and included in rebuild decisions (`Required:`). |
+| `*_config.file_provides` | map[str, list[str]] | No | File path to providing packages (`FileProvides:`). |
+| `*_config.expand_flags` | list[str] | No | Dependency expansion flags (`ExpandFlags:`, e.g. `keepfilerequires`). |
+| `*_config.export_filter` | list[str] | No | Binary export filters (`ExportFilter:` regex + target arches). |
+| `*_config.constraints` | list[str] | No | Worker hardware constraints (`Constraint:`). |
+| `*_config.macros_file` | string | No | **Deprecated** (ADR 0010). Previously pointed at a raw prjconf/macros file; importers must convert it into structured fields plus `raw_config`. |
+| `*_config.order` | list[str] | No | Forced package installation order to break dependency cycles. |
+| `*_config.build_flags` | list[str] | No | Build execution flags (e.g. `allowrootforbuild`). |
+| `*_config.publish_flags` | list[str] | No | Publication behavior flags (e.g. `archsync`). |
+| `*_config.optflags` | map[str, str] | No | Architecture-specific compiler flags (e.g. `x86_64: "-O2 -g"`). |
+| `*_config.defines` | map[str,str] | No | Top-level `%define`s evaluated by the config parser; usable in other directives (`%{name}`). |
+| `*_config.macros` | string | No | Opaque rpm `Macros:` body passed verbatim to the build toolchain; evaluated by rpm at build time. |
+| `*_config.release` | string | No | Release scheme (`Release:` directive, e.g. `<CI_CNT>.<B_CNT>`). |
+| `*_config.raw_config` | string | No | Verbatim prjconf fragment appended after the structured fields of the same scope. Escape hatch for constructs without a structured field; importers must use it instead of flattening `%if` branches. |
 | `targets.<name>` | map | Yes | Dictionary of build targets defined for this project. |
 | `targets.<name>.architectures` | list[str] | Yes | Build architectures supported (e.g. `x86_64`, `aarch64`). |
-| `targets.<name>.config` | obj | No | Target-specific configuration override merged hierarchically over project `config`. |
-| `targets.<name>.dependencies` | list[obj] | Yes | Ordered dependency layers for `libsolv`. Evaluated in order: top entry has highest priority. |
+| `targets.<name>.config` | obj | No | Target overlay (`%_repository` conditionals). Same fields as `*_config`. |
+| `targets.<name>.arch_config.<arch>` | obj | No | Target + architecture overlay. |
+| `targets.<name>.dependencies` | list[obj] | Yes | Ordered path. The target's own repository always comes first, then these entries in order; a package name found in an earlier entry hides same-named packages in later ones. A Bootstrap Dependency is listed here temporarily. |
 | `targets.<name>.dependencies[].project` | string | Conditional | Reference to another `bsgo` project. |
 | `targets.<name>.dependencies[].target` | string | Conditional | Target within the referenced project. |
 | `targets.<name>.dependencies[].url` | string | Conditional | External RPM repository URL (handled via Download-on-Demand + S3 caching). |
 | `targets.<name>.dependencies[].type` | string | Conditional | External repository type (defaults to `rpm-md`). |
+| `targets.<name>.dependencies[].name` | string | Conditional | Required for `url` entries: stable `project/repository` name used as `%_repository`/`_project` when layering configs (e.g. `SUSE:SLFO:1.1/standard`). |
 | `targets.<name>.flags.build` | bool | No | Master build switch for target (default: `true`). |
 | `targets.<name>.flags.publish` | bool | No | Master repository publication switch (default: `true`). |
 | `targets.<name>.flags.debuginfo`| bool | No | Whether to extract and publish `debuginfo`/`debugsource` RPMs (default: `true`). |
+
+### Build Configuration Semantics (normative, ADR 0010)
+
+1. **Rendering.** For one path element and one Consumer Project, a scope set
+   is selected: `public_config` always; `protected_config` if the consumer
+   equals the project or starts with `<project>:`; `private_config` if the
+   consumer equals the project. Each selected scope, then `targets.<name>.config`,
+   then the matching `arch_config` overlays, is rendered to prjconf text in
+   this order: `defines` (as `%define`), directives, `raw_config`,
+   `Macros:` block.
+2. **Layering.** The rendered texts of all path elements are concatenated in
+   reverse path order (the furthest dependency first, the consumer's own
+   project last), each preceded by `%define _repository`, `_is_this_project`
+   and `_is_in_project`, exactly like OBS `BSSched/ProjPacks.pm:getconfig`.
+   `from_scratch: true` discards everything rendered before it. The
+   concatenated text is then parsed once. Implementations must not merge
+   structured fields directly.
+3. **Merge semantics** are those of obs-build `Build::read_config`:
+   list directives append (`prefer`, `ignore`, `substitute`, `conflict`,
+   `file_provides`, `support`, `required`, `preinstall`, `vminstall`,
+   `build_flags`, `expand_flags`, `export_filter`); scalar directives
+   override (`release`, `build_engine`, `repo_types`, `build_types`);
+   a `!` prefix removes an entry (`support: ["!foo"]`).
+4. **Two outputs.** The scheduler parses the text with `Macros:` blocks
+   stripped. Workers receive the full text (with `Macros:`) as `build --dist`.
+5. **Conformance.** An importer converting an OBS prjconf must pass the
+   round-trip test: for every arch × repository × Consumer Project
+   (self, subproject, foreign), parsing the rendered config yields the same
+   result as parsing the original prjconf through OBS `getconfig`.
 
 ---
 

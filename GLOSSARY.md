@@ -24,6 +24,22 @@ _Avoid_: Bucket, directory partition
 A build architecture and base dependency repository definition against which a Package is compiled.
 _Avoid_: Build repo, architecture target, distro definition
 
+**Build Configuration**:
+The rules that govern dependency resolution and build execution for a Build Target (preferences, ignores, preinstall set, release scheme, defines, rpm macros), declared in the Project Manifest and equivalent to an OBS prjconf.
+_Avoid_: prjconf, _config, project config, meta config
+
+**Config Scope**:
+The visibility of a Build Configuration section: public (every Consumer Project), protected (this Project and its subprojects), or private (this Project only).
+_Avoid_: Namespace-scoped config, inheritance level
+
+**Consumer Project**:
+The Project whose build is being configured when Build Configurations from several Projects along a dependency path are layered; it determines which Config Scopes apply.
+_Avoid_: Viewpoint, child project, downstream project
+
+**Bootstrap Dependency**:
+A dependency entry added to a Build Target only until every Package has been built once against it, then removed so the Project rebuilds against its own binaries.
+_Avoid_: Seed repo, base repo, temporary path
+
 **Build Job**:
 A unit of work dispatched to a worker to build a specific package revision against a build target (supports RPM, OCI Container, and Kiwi images).
 _Avoid_: Task, build step, compilation run
