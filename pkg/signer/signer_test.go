@@ -4,11 +4,13 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/openSUSE/bsgo/pkg/manifest"
 	"github.com/openSUSE/bsgo/pkg/publisher"
+	"github.com/openSUSE/bsgo/pkg/scheduler/buildrepo"
 	"github.com/openSUSE/bsgo/pkg/signd"
 	"github.com/openSUSE/bsgo/pkg/signer"
 	"github.com/openSUSE/bsgo/pkg/storage"
@@ -178,76 +180,45 @@ func (m *mockPublisherSigner) SignRepositoryMetadata(ctx context.Context, repoda
 	})
 }
 
+type emptyIndex struct{}
+
+func (emptyIndex) Index(context.Context, buildrepo.Prpa) (*buildrepo.Index, error) {
+	return &buildrepo.Index{Hash: "empty"}, nil
+}
+
+type publishAllPolicy struct{}
+
+func (publishAllPolicy) Policy(context.Context, buildrepo.Prpa) (publisher.Policy, error) {
+	return publisher.Policy{Publish: true, RPMMD: true}, nil
+}
+
 func TestPublisherWithSignerIntegration(t *testing.T) {
+	if _, err := exec.LookPath("createrepo_c"); err != nil {
+		t.Skip("createrepo_c not installed")
+	}
 	ctx := context.Background()
-	driver := signer.NewMemorySignDriver()
-
-	tempDir := t.TempDir()
-	pub := publisher.NewPublisher(&mockCrExecutor{}, &mockS3Client{}, publisher.NewLocalLockManager(), tempDir)
-	pub.SetMetadataSigner(&mockPublisherSigner{driver: driver})
-
-	// Create test repo layout
-	repoDir := filepath.Join(tempDir, "openSUSE:Factory", "standard", "x86_64")
-	repodataDir := filepath.Join(repoDir, "repodata")
-	_ = os.MkdirAll(repodataDir, 0750)
-	_ = os.WriteFile(filepath.Join(repodataDir, "repomd.xml"), []byte("<repomd/>"), 0600)
-
-	req := publisher.PublishRequest{
-		RequestID:    "pub-sign-test",
-		Project:      "openSUSE:Factory",
-		Target:       "standard",
-		Architecture: "x86_64",
-		NewRPMPaths:  []string{},
+	store := publisher.NewMemoryStore()
+	pub := &publisher.Publisher{
+		Store:    store,
+		Index:    emptyIndex{},
+		Policy:   publishAllPolicy{},
+		Signer:   &mockPublisherSigner{driver: signer.NewMemorySignDriver()},
+		TempRoot: t.TempDir(),
 	}
+	prpa := buildrepo.Prpa{Project: "openSUSE:Factory", Repo: "standard", Arch: "x86_64"}
 
-	res, err := pub.ProcessPublishRequest(ctx, req)
+	res, err := pub.Publish(ctx, prpa)
 	if err != nil {
-		t.Fatalf("unexpected error processing publish with signer: %v", err)
+		t.Fatalf("unexpected error publishing with signer: %v", err)
 	}
 
-	foundAsc := false
-	foundKey := false
-	for _, key := range res.UploadedXMLKeys {
-		if filepath.Base(key) == "repomd.xml.asc" {
-			foundAsc = true
+	uploaded := res.SubRepos[publisher.SubRepoStandard].Uploaded
+	if len(uploaded) == 0 || uploaded[len(uploaded)-1] != "repos/openSUSE:Factory/standard/x86_64/repodata/repomd.xml" {
+		t.Fatalf("repomd.xml must be the last upload, got %v", uploaded)
+	}
+	for _, name := range []string{"repomd.xml.asc", "repomd.xml.key"} {
+		if !store.Has("repos/openSUSE:Factory/standard/x86_64/repodata/" + name) {
+			t.Errorf("expected %s to be published", name)
 		}
-		if filepath.Base(key) == "repomd.xml.key" {
-			foundKey = true
-		}
 	}
-
-	if !foundAsc || !foundKey {
-		t.Errorf("expected repomd.xml.asc and repomd.xml.key in uploaded keys, got %v", res.UploadedXMLKeys)
-	}
-}
-
-type mockCrExecutor struct{}
-
-func (m *mockCrExecutor) Run(_ context.Context, _ publisher.CreateRepoOptions) error {
-	return nil
-}
-
-type mockS3Client struct {
-	uploaded []string
-}
-
-func (m *mockS3Client) DownloadMetadata(_ context.Context, _, _ string) error {
-	return nil
-}
-
-func (m *mockS3Client) UploadFile(_ context.Context, _, s3Key string) error {
-	m.uploaded = append(m.uploaded, s3Key)
-	return nil
-}
-
-func (m *mockS3Client) DownloadFile(_ context.Context, _, _ string) error {
-	return nil
-}
-
-func (m *mockS3Client) ListObjects(_ context.Context, _ string) ([]publisher.S3ObjectInfo, error) {
-	return nil, nil
-}
-
-func (m *mockS3Client) DeleteObject(_ context.Context, _ string) error {
-	return nil
 }

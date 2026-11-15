@@ -1,7 +1,6 @@
 package v1
 
 import (
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -198,33 +197,6 @@ type WorkerHardware struct {
 	CPUFeatures       []string `json:"cpu_features"`
 }
 
-type PublishRequest struct {
-	RequestID     string     `json:"request_id"`
-	JobID         string     `json:"job_id,omitempty"`
-	Project       string     `json:"project"`
-	Target        string     `json:"target"`
-	Architecture  string     `json:"architecture"`
-	Package       string     `json:"package,omitempty"`
-	RepoTypes     []string   `json:"repo_types,omitempty"`
-	NewRPMPaths   []string   `json:"new_rpm_paths,omitempty"`
-	ArtifactKeys  []string   `json:"artifact_keys,omitempty"`
-	DeletedRPMs   []string   `json:"deleted_rpms,omitempty"`
-	SubRepos      []string   `json:"sub_repos,omitempty"`
-	Advisories    []Advisory `json:"advisories,omitempty"`
-	AppStreamData []byte     `json:"appstream_data,omitempty"`
-	AppStreamPath string     `json:"appstream_path,omitempty"`
-}
-
-// PackageDeletionRequest requests removal of a package and its associated RPM binaries from published repodata.
-type PackageDeletionRequest struct {
-	RequestID    string   `json:"request_id"`
-	Project      string   `json:"project"`
-	Target       string   `json:"target"`
-	Architecture string   `json:"architecture"`
-	Package      string   `json:"package"`
-	DeletedRPMs  []string `json:"deleted_rpms,omitempty"`
-}
-
 // Advisory defines an errata or security advisory for updateinfo.xml (e.g. for zypper patch / zypper cve).
 type Advisory struct {
 	ID          string            `json:"id"`
@@ -254,17 +226,6 @@ type AdvisoryPackage struct {
 	Release  string `json:"release"`
 	Arch     string `json:"arch"`
 	Filename string `json:"filename"`
-}
-
-// HasSubRepo reports whether the given sub-repository (e.g. "standard", "debug", "src") is explicitly requested.
-func (r *PublishRequest) HasSubRepo(sr string) bool {
-	sr = strings.ToLower(strings.TrimSpace(sr))
-	for _, s := range r.SubRepos {
-		if strings.ToLower(strings.TrimSpace(s)) == sr {
-			return true
-		}
-	}
-	return false
 }
 
 type PublicationEvent struct {

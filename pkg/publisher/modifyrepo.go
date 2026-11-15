@@ -195,8 +195,35 @@ func buildUpdateXML(a v1.Advisory) UpdateXML {
 	return u
 }
 
+func checkFileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// Enrichment is optional extra rpm-md metadata of a repository: errata for
+// updateinfo.xml and an AppStream catalog.
+type Enrichment struct {
+	// ID names the temporary files; it defaults to "md".
+	ID            string
+	Advisories    []v1.Advisory
+	AppStreamData []byte
+	AppStreamPath string
+}
+
+func (e Enrichment) id() string {
+	if e.ID == "" {
+		return "md"
+	}
+	return e.ID
+}
+
+// Empty reports whether there is nothing to inject.
+func (e Enrichment) Empty() bool {
+	return len(e.Advisories) == 0 && len(e.AppStreamData) == 0 && e.AppStreamPath == ""
+}
+
 // EnrichMetadata injects updateinfo and appstream metadata into repodata via modifyrepo_c.
-func EnrichMetadata(ctx context.Context, executor ModifyRepoExecutor, repodataDir string, req v1.PublishRequest, workDir string) error {
+func EnrichMetadata(ctx context.Context, executor ModifyRepoExecutor, repodataDir string, req Enrichment, workDir string) error {
 	if executor == nil {
 		return nil
 	}
@@ -212,7 +239,7 @@ func EnrichMetadata(ctx context.Context, executor ModifyRepoExecutor, repodataDi
 	return nil
 }
 
-func injectUpdateInfo(ctx context.Context, executor ModifyRepoExecutor, repodataDir string, req v1.PublishRequest, workDir string) error {
+func injectUpdateInfo(ctx context.Context, executor ModifyRepoExecutor, repodataDir string, req Enrichment, workDir string) error {
 	if len(req.Advisories) == 0 {
 		return nil
 	}
@@ -222,7 +249,7 @@ func injectUpdateInfo(ctx context.Context, executor ModifyRepoExecutor, repodata
 		return err
 	}
 
-	tmpFile := filepath.Join(workDir, fmt.Sprintf("updateinfo-%s.xml", req.RequestID))
+	tmpFile := filepath.Join(workDir, fmt.Sprintf("updateinfo-%s.xml", req.id()))
 	if err := os.WriteFile(tmpFile, xmlData, 0600); err != nil {
 		return fmt.Errorf("failed writing tmp updateinfo: %w", err)
 	}
@@ -239,11 +266,11 @@ func injectUpdateInfo(ctx context.Context, executor ModifyRepoExecutor, repodata
 	return nil
 }
 
-func injectAppStream(ctx context.Context, executor ModifyRepoExecutor, repodataDir string, req v1.PublishRequest, workDir string) error {
+func injectAppStream(ctx context.Context, executor ModifyRepoExecutor, repodataDir string, req Enrichment, workDir string) error {
 	var appStreamFile string
 
 	if len(req.AppStreamData) > 0 {
-		tmpFile := filepath.Join(workDir, fmt.Sprintf("appstream-%s.xml", req.RequestID))
+		tmpFile := filepath.Join(workDir, fmt.Sprintf("appstream-%s.xml", req.id()))
 		if err := os.WriteFile(tmpFile, req.AppStreamData, 0600); err != nil {
 			return fmt.Errorf("failed writing tmp appstream: %w", err)
 		}

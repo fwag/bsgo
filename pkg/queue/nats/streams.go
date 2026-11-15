@@ -13,12 +13,10 @@ const (
 	StreamTriggers    = "TRIGGERS"
 	StreamJobsPending = "JOBS_PENDING"
 	StreamJobStatus   = "JOB_STATUS"
-	StreamPublish     = "PUBLISH"
 
 	SubjectTriggersPattern = "bsgo.triggers.>"
 	SubjectJobsPending     = "bsgo.jobs.pending"
 	SubjectJobStatus       = "bsgo.status"
-	SubjectPublishPattern  = "bsgo.publish.>"
 	SubjectEventsPublished = "bsgo.events.published"
 	// SubjectEventsRepoChanged announces new binaries in a build repository.
 	SubjectEventsRepoChanged = "bsgo.events.repo.changed"
@@ -59,13 +57,6 @@ func SetupStreams(ctx context.Context, js jetstream.JetStream) error {
 			Subjects:  []string{SubjectJobStatus},
 			Retention: jetstream.LimitsPolicy,
 			MaxAge:    30 * 24 * time.Hour,
-			Storage:   jetstream.FileStorage,
-		},
-		{
-			Name:      StreamPublish,
-			Subjects:  []string{SubjectPublishPattern},
-			Retention: jetstream.WorkQueuePolicy,
-			MaxAge:    3 * 24 * time.Hour,
 			Storage:   jetstream.FileStorage,
 		},
 	}

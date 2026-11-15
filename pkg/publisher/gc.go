@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 )
@@ -28,61 +27,47 @@ type RepomdLocation struct {
 
 // MetadataGarbageCollector removes superseded historical repodata files from S3.
 type MetadataGarbageCollector struct {
-	s3Client S3Client
-	workDir  string
+	store ObjectStore
 }
 
 // NewMetadataGarbageCollector creates a new S3 metadata cleaner.
-func NewMetadataGarbageCollector(s3 S3Client, workDir string) *MetadataGarbageCollector {
-	return &MetadataGarbageCollector{
-		s3Client: s3,
-		workDir:  workDir,
-	}
+func NewMetadataGarbageCollector(store ObjectStore) *MetadataGarbageCollector {
+	return &MetadataGarbageCollector{store: store}
 }
 
 // CollectGarbage removes unreferenced hash-prefixed XML files older than maxAge for all subrepos.
 func (g *MetadataGarbageCollector) CollectGarbage(ctx context.Context, project, target, arch string, maxAge time.Duration) (int, error) {
-	if g.s3Client == nil {
+	if g.store == nil {
 		return 0, nil
 	}
-
-	subRepos := []SubRepoType{SubRepoStandard, SubRepoDebug, SubRepoSource}
 	totalDeleted := 0
-
-	for _, sr := range subRepos {
+	for _, sr := range []SubRepoType{SubRepoStandard, SubRepoDebug, SubRepoSource} {
 		deleted, err := g.cleanSubRepoMetadata(ctx, project, target, arch, sr, maxAge)
 		if err != nil {
 			return totalDeleted, err
 		}
 		totalDeleted += deleted
 	}
-
 	return totalDeleted, nil
 }
 
 func (g *MetadataGarbageCollector) cleanSubRepoMetadata(ctx context.Context, project, target, arch string, sr SubRepoType, maxAge time.Duration) (int, error) {
-	s3Prefix := SubRepoS3Prefix(project, target, arch, sr)
-	repodataPrefix := s3Prefix + "repodata/"
-
-	objects, err := g.s3Client.ListObjects(ctx, repodataPrefix)
-	if err != nil || len(objects) == 0 {
-		return 0, err
-	}
-
-	tmpMetaDir := filepath.Join(g.workDir, "gc", project, target, string(sr))
-	_ = os.MkdirAll(tmpMetaDir, 0750)
-	defer func() { _ = os.RemoveAll(tmpMetaDir) }()
-
-	if err := g.s3Client.DownloadMetadata(ctx, repodataPrefix, tmpMetaDir); err != nil {
-		return 0, nil // Nothing downloaded or error accessing metadata
-	}
-
-	repomdPath := filepath.Join(tmpMetaDir, "repomd.xml")
-	data, err := os.ReadFile(repomdPath)
+	repodataPrefix := SubRepoS3Prefix(project, target, arch, sr) + "repodata/"
+	objects, err := g.store.ListObjects(ctx, repodataPrefix)
 	if err != nil {
-		return 0, nil // No active repomd.xml found, do not GC
+		return 0, fmt.Errorf("listing %s: %w", repodataPrefix, err)
 	}
-
+	hasRepomd := false
+	for _, obj := range objects {
+		hasRepomd = hasRepomd || obj.Key == repodataPrefix+"repomd.xml"
+	}
+	if !hasRepomd {
+		return 0, nil // no active repomd.xml found, do not GC
+	}
+	data, err := g.store.ReadObject(ctx, repodataPrefix+"repomd.xml")
+	if err != nil {
+		return 0, fmt.Errorf("reading active repomd.xml: %w", err)
+	}
 	keepSet, err := ExtractReferencedFiles(data)
 	if err != nil {
 		return 0, fmt.Errorf("failed parsing active repomd.xml: %w", err)
@@ -90,21 +75,15 @@ func (g *MetadataGarbageCollector) cleanSubRepoMetadata(ctx context.Context, pro
 
 	deletedCount := 0
 	now := time.Now()
-
 	for _, obj := range objects {
-		baseName := filepath.Base(obj.Key)
-		if keepSet[baseName] {
+		if keepSet[filepath.Base(obj.Key)] || (maxAge > 0 && now.Sub(obj.LastModified) < maxAge) {
 			continue
 		}
-		if maxAge > 0 && now.Sub(obj.LastModified) < maxAge {
-			continue
+		if err := g.store.DeleteObject(ctx, obj.Key); err != nil {
+			return deletedCount, fmt.Errorf("deleting %s: %w", obj.Key, err)
 		}
-
-		if err := g.s3Client.DeleteObject(ctx, obj.Key); err == nil {
-			deletedCount++
-		}
+		deletedCount++
 	}
-
 	return deletedCount, nil
 }
 

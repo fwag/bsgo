@@ -1,7 +1,6 @@
 package publisher_test
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/openSUSE/bsgo/pkg/publisher"
@@ -43,27 +42,10 @@ func TestSubRepoS3Prefix(t *testing.T) {
 	if p := publisher.SubRepoS3Prefix(prj, target, arch, publisher.SubRepoStandard); p != "repos/openSUSE:Factory/standard/x86_64/" {
 		t.Errorf("unexpected standard S3 prefix: %q", p)
 	}
-	if p := publisher.SubRepoS3Prefix(prj, target, arch, publisher.SubRepoDebug); p != "repos/openSUSE:Factory/standard/debug/" {
+	if p := publisher.SubRepoS3Prefix(prj, target, arch, publisher.SubRepoDebug); p != "repos/openSUSE:Factory/standard/debug/x86_64/" {
 		t.Errorf("unexpected debug S3 prefix: %q", p)
 	}
 	if p := publisher.SubRepoS3Prefix(prj, target, arch, publisher.SubRepoSource); p != "repos/openSUSE:Factory/standard/src/" {
 		t.Errorf("unexpected source S3 prefix: %q", p)
-	}
-}
-
-func TestSubRepoWorkDir(t *testing.T) {
-	base := "/tmp/work"
-	prj := "openSUSE:Factory"
-	target := "standard"
-	arch := "x86_64"
-
-	if d := publisher.SubRepoWorkDir(base, prj, target, arch, publisher.SubRepoStandard); d != filepath.Join(base, prj, target, arch) {
-		t.Errorf("unexpected standard work dir: %q", d)
-	}
-	if d := publisher.SubRepoWorkDir(base, prj, target, arch, publisher.SubRepoDebug); d != filepath.Join(base, prj, target, "debug") {
-		t.Errorf("unexpected debug work dir: %q", d)
-	}
-	if d := publisher.SubRepoWorkDir(base, prj, target, arch, publisher.SubRepoSource); d != filepath.Join(base, prj, target, "src") {
-		t.Errorf("unexpected source work dir: %q", d)
 	}
 }

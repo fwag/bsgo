@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -54,6 +53,10 @@ type ServerConfig struct {
 	CheckerWorkers int
 	// CheckerResync marks every prpa dirty at this interval (0 disables).
 	CheckerResync time.Duration
+	// PublisherDebounce is how long a prpa must stay unchanged before it is published.
+	PublisherDebounce time.Duration
+	// PublisherGC removes superseded repodata files older than this (0 disables).
+	PublisherGC time.Duration
 }
 
 func parseServerConfig() ServerConfig {
@@ -70,7 +73,7 @@ func parseServerConfig() ServerConfig {
 	flag.StringVar(&cfg.DBURL, "db-url", getEnv("DATABASE_URL", "postgres://bsgo:password@localhost:5432/bsgodb?sslmode=disable"), "PostgreSQL URL")
 	flag.StringVar(&cfg.S3Endpoint, "s3-endpoint", getEnv("S3_ENDPOINT", "http://127.0.0.1:3900"), "S3 storage endpoint")
 	flag.StringVar(&cfg.S3Bucket, "s3-bucket", getEnv("S3_BUCKET", "bsgo-artifacts"), "S3 bucket for published repositories")
-	flag.StringVar(&cfg.WorkDir, "work-dir", "/tmp/bsgo-publisher-work", "Working directory for metadata staging")
+	flag.StringVar(&cfg.WorkDir, "work-dir", "", "Parent directory of the per-publish temp dirs (system temp dir if empty); nothing is kept there between publishes")
 	flag.StringVar(&cfg.SignerType, "signer-type", getEnv("SIGNER_TYPE", "signd"), "Signer backend: 'signd' or 'memory'")
 	flag.StringVar(&cfg.SigndAddr, "signd-addr", getEnv("SIGND_ADDR", "127.0.0.1:5167"), "bsgo-signd network address")
 	flag.StringVar(&cfg.TLSCert, "signd-tls-cert", getEnv("SIGND_TLS_CERT", ""), "Client certificate for mTLS connection to bsgo-signd")
@@ -81,6 +84,8 @@ func parseServerConfig() ServerConfig {
 	flag.DurationVar(&cfg.CheckerDebounce, "checker-debounce", getEnvDuration("BSGO_CHECKER_DEBOUNCE", 2*time.Second), "Quiet time of a prpa before its checker pass starts")
 	flag.IntVar(&cfg.CheckerWorkers, "checker-workers", 2, "Prpas checked concurrently by this instance")
 	flag.DurationVar(&cfg.CheckerResync, "checker-resync", getEnvDuration("BSGO_CHECKER_RESYNC", 10*time.Minute), "Interval at which every prpa is re-checked as a safety net; 0 disables")
+	flag.DurationVar(&cfg.PublisherDebounce, "publisher-debounce", getEnvDuration("BSGO_PUBLISHER_DEBOUNCE", 10*time.Second), "Quiet time of a prpa before it is published")
+	flag.DurationVar(&cfg.PublisherGC, "publisher-gc", getEnvDuration("BSGO_PUBLISHER_GC", time.Hour), "Age after which superseded repodata files are deleted; 0 disables")
 	flag.Parse()
 
 	if subcmd != "" {
@@ -119,22 +124,15 @@ func main() {
 
 func runPublisherOnly(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jetstream.JetStream, store storage.Store) {
 	fmt.Printf("Starting bsgo-server [publisher] connected to %s (S3: %s)...\n", cfg.NatsURL, cfg.S3Endpoint)
-	pubService := initPublisherService(ctx, cfg, nc, store)
-	if err := consumePublishRequests(ctx, js, pubService); err != nil {
-		fmt.Fprintf(os.Stderr, "Publisher consumer error: %v\n", err)
-		os.Exit(1)
-	}
+	startPublisher(ctx, cfg, nc, js, store)
+	<-ctx.Done()
 	fmt.Println("\nbsgo-server publisher stopped cleanly.")
 }
 
 func runControlPlane(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jetstream.JetStream, store storage.Store) {
-	var pubService *publisher.Publisher
 	if cfg.Role == "all" {
 		fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher + Publisher)...\n")
-		pubService = initPublisherService(ctx, cfg, nc, store)
-		go func() {
-			_ = consumePublishRequests(ctx, js, pubService)
-		}()
+		startPublisher(ctx, cfg, nc, js, store)
 	} else {
 		fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher)...\n")
 	}
@@ -163,35 +161,6 @@ func initControlPlaneStore(ctx context.Context, dbURL string) storage.Store {
 	return storage.NewMemoryStore()
 }
 
-func initPublisherService(ctx context.Context, cfg ServerConfig, nc *nats.Conn, store storage.Store) *publisher.Publisher {
-	var s3Client publisher.S3Client
-	if s3Storage, err := s3.NewS3Storage(ctx, cfg.S3Endpoint, "garage", cfg.S3Bucket, "", ""); err == nil {
-		s3Client = s3Storage
-	} else {
-		s3Client = NewDiskS3Client("/tmp/bsgo-artifacts")
-	}
-
-	var lockMgr publisher.LockManager
-	if pgStore, ok := store.(*postgres.PostgresStore); ok {
-		lockMgr = postgres.NewPostgresLockManager(pgStore.Pool())
-	} else {
-		lockMgr = publisher.NewLocalLockManager()
-	}
-
-	pubService := publisher.NewPublisher(
-		publisher.NewRealCreateRepoExecutor(),
-		s3Client,
-		lockMgr,
-		cfg.WorkDir,
-	)
-	pubService.SetStore(store)
-	pubService.SetEventPublisher(&eventPubAdapter{nc: nc})
-
-	signerDrv := initSignerDriver(cfg, store)
-	pubService.SetMetadataSigner(&signerAdapter{driver: signerDrv})
-	return pubService
-}
-
 func initSignerDriver(cfg ServerConfig, store storage.Store) signer.SignerDriver {
 	if cfg.SignerType == "memory" {
 		return signer.NewMemorySignDriver()
@@ -215,76 +184,12 @@ func initSignerDriver(cfg ServerConfig, store storage.Store) signer.SignerDriver
 	return signer.NewMemorySignDriver()
 }
 
-func consumePublishRequests(ctx context.Context, js jetstream.JetStream, pub *publisher.Publisher) error {
-	cons, err := js.CreateOrUpdateConsumer(ctx, natsqueue.StreamPublish, jetstream.ConsumerConfig{
-		Durable:       "bsgo-server-publisher",
-		FilterSubject: "bsgo.publish.>",
-		AckPolicy:     jetstream.AckExplicitPolicy,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create JetStream consumer: %w", err)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-			msgs, err := cons.Fetch(1, jetstream.FetchMaxWait(500*time.Millisecond))
-			if err != nil {
-				continue
-			}
-			for msg := range msgs.Messages() {
-				processPublishMessage(ctx, msg, pub)
-			}
-		}
-	}
-}
-
-func processPublishMessage(ctx context.Context, msg jetstream.Msg, pub *publisher.Publisher) {
-	var req v1.PublishRequest
-	if err := json.Unmarshal(msg.Data(), &req); err != nil {
-		_ = msg.Term()
-		return
-	}
-
-	fmt.Printf("[%s] [PUBLISHER] Ingested publish request: %s/%s (%s, %d RPMs)\n",
-		time.Now().Format("15:04:05"), req.Project, req.Package, req.Architecture, len(req.NewRPMPaths))
-
-	res, err := pub.ProcessPublishRequest(ctx, req)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[PUBLISHER] Failed publishing %s/%s: %v\n", req.Project, req.Package, err)
-		if meta, mErr := msg.Metadata(); mErr == nil && meta.NumDelivered >= 3 {
-			_ = msg.Term()
-			return
-		}
-		_ = msg.NakWithDelay(2 * time.Second)
-		return
-	}
-
-	_ = msg.Ack()
-	fmt.Printf("[%s] [PUBLISHER] Successfully committed repository: %s\n",
-		time.Now().Format("15:04:05"), res.RepomdXMLKey)
-}
-
 type s3DoDAdapter struct {
-	storage publisher.S3Client
+	storage publisher.ObjectStore
 }
 
 func (a *s3DoDAdapter) GetObject(ctx context.Context, key string) ([]byte, error) {
-	if s3Store, ok := a.storage.(*s3.S3Storage); ok {
-		rc, _, _, err := s3Store.GetObject(ctx, key)
-		if err != nil {
-			return nil, err
-		}
-		defer rc.Close()
-		return io.ReadAll(rc)
-	}
-	if diskStore, ok := a.storage.(*DiskS3Client); ok {
-		path := filepath.Clean(filepath.Join(diskStore.rootDir, key))
-		return os.ReadFile(path)
-	}
-	return nil, fmt.Errorf("unsupported s3 storage type")
+	return a.storage.ReadObject(ctx, key)
 }
 
 func (a *s3DoDAdapter) PutObject(ctx context.Context, key string, data []byte) error {
@@ -351,28 +256,25 @@ func NewDiskS3Client(rootDir string) *DiskS3Client {
 	return &DiskS3Client{rootDir: rootDir}
 }
 
-func (c *DiskS3Client) DownloadMetadata(_ context.Context, prefix, localDir string) error {
-	cleanPrefix := filepath.Clean(prefix)
-	srcDir := filepath.Clean(filepath.Join(c.rootDir, cleanPrefix))
-	if _, err := os.Stat(srcDir); os.IsNotExist(err) {
-		return nil
+// ReadObject returns the content of an object.
+func (c *DiskS3Client) ReadObject(_ context.Context, s3Key string) ([]byte, error) {
+	src := filepath.Clean(filepath.Join(c.rootDir, filepath.Clean(s3Key)))
+	// #nosec G304 -- reading from the local S3 stand-in directory
+	return os.ReadFile(src)
+}
+
+// CopyObject copies an object inside the root directory.
+func (c *DiskS3Client) CopyObject(ctx context.Context, srcKey, dstKey string) error {
+	data, err := c.ReadObject(ctx, srcKey)
+	if err != nil {
+		return err
 	}
-	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return nil
-		}
-		rel, _ := filepath.Rel(srcDir, path)
-		dest := filepath.Clean(filepath.Join(localDir, rel))
-		_ = os.MkdirAll(filepath.Dir(dest), 0750)
-		cleanPath := filepath.Clean(path)
-		// #nosec G304 G122 -- reading from sanitized metadata cache
-		data, err := os.ReadFile(cleanPath)
-		if err == nil {
-			// #nosec G703 -- writing to validated localDir
-			_ = os.WriteFile(dest, data, 0600)
-		}
-		return nil
-	})
+	dest := filepath.Clean(filepath.Join(c.rootDir, filepath.Clean(dstKey)))
+	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
+		return err
+	}
+	// #nosec G703 -- writing to a validated key below the root directory
+	return os.WriteFile(dest, data, 0o600)
 }
 
 func (c *DiskS3Client) UploadFile(_ context.Context, localPath, s3Key string) error {

@@ -72,9 +72,6 @@ func main() {
 		KVMCache:              cfg.KVMCache,
 		S3Storage:             store,
 		AllowUnisolatedChroot: cfg.AllowUnisolatedChroot,
-		PublishFunc: func(_ context.Context, subject string, data []byte) error {
-			return nc.Publish(subject, data)
-		},
 	}
 	daemon := worker.NewWorkerDaemon(cfg, nc, sandbox)
 

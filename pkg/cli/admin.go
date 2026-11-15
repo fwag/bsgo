@@ -52,7 +52,6 @@ func newAdminPurgeCmd(opts *OutputOptions) *cobra.Command {
 				natsqueue.StreamTriggers,
 				natsqueue.StreamJobStatus,
 				natsqueue.StreamJobsPending,
-				natsqueue.StreamPublish,
 			}
 
 			var purged []string

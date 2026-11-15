@@ -2,7 +2,6 @@ package publisher_test
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -45,41 +44,11 @@ func TestExtractReferencedFiles(t *testing.T) {
 	}
 }
 
-type GCMockS3Client struct {
-	*MockS3Client
-	ObjectTimes map[string]time.Time
-}
-
-func NewGCMockS3Client() *GCMockS3Client {
-	return &GCMockS3Client{
-		MockS3Client: NewMockS3Client(),
-		ObjectTimes:  make(map[string]time.Time),
-	}
-}
-
-func (g *GCMockS3Client) ListObjects(_ context.Context, prefix string) ([]publisher.S3ObjectInfo, error) {
-	var res []publisher.S3ObjectInfo
-	for k := range g.FilesOnS3 {
-		if strings.HasPrefix(k, prefix) {
-			modTime := time.Now().Add(-48 * time.Hour)
-			if t, ok := g.ObjectTimes[k]; ok {
-				modTime = t
-			}
-			res = append(res, publisher.S3ObjectInfo{
-				Key:          k,
-				LastModified: modTime,
-			})
-		}
-	}
-	return res, nil
-}
-
 func TestS3MetadataGarbageCollector(t *testing.T) {
 	ctx := context.Background()
-	tmpDir := t.TempDir()
 
-	s3 := NewGCMockS3Client()
-	gc := publisher.NewMetadataGarbageCollector(s3, tmpDir)
+	s3 := publisher.NewMemoryStore()
+	gc := publisher.NewMetadataGarbageCollector(s3)
 
 	prefix := "repos/openSUSE:Factory/standard/x86_64/repodata/"
 
@@ -90,16 +59,16 @@ func TestS3MetadataGarbageCollector(t *testing.T) {
   </data>
 </repomd>`)
 
-	s3.FilesOnS3[prefix+"repomd.xml"] = activeRepomd
-	s3.FilesOnS3[prefix+"active-primary.xml.gz"] = []byte("active-content")
-	s3.FilesOnS3[prefix+"obsolete-old-primary.xml.gz"] = []byte("old-content")
-	s3.FilesOnS3[prefix+"fresh-unreferenced-primary.xml.gz"] = []byte("fresh-content")
+	s3.Set(prefix+"repomd.xml", activeRepomd)
+	s3.Set(prefix+"active-primary.xml.gz", []byte("active-content"))
+	s3.Set(prefix+"obsolete-old-primary.xml.gz", []byte("old-content"))
+	s3.Set(prefix+"fresh-unreferenced-primary.xml.gz", []byte("fresh-content"))
 
 	// Set timestamps
-	s3.ObjectTimes[prefix+"repomd.xml"] = time.Now()
-	s3.ObjectTimes[prefix+"active-primary.xml.gz"] = time.Now().Add(-2 * time.Hour)
-	s3.ObjectTimes[prefix+"obsolete-old-primary.xml.gz"] = time.Now().Add(-72 * time.Hour)
-	s3.ObjectTimes[prefix+"fresh-unreferenced-primary.xml.gz"] = time.Now().Add(-5 * time.Minute)
+	s3.SetModTime(prefix+"repomd.xml", time.Now())
+	s3.SetModTime(prefix+"active-primary.xml.gz", time.Now().Add(-2*time.Hour))
+	s3.SetModTime(prefix+"obsolete-old-primary.xml.gz", time.Now().Add(-72*time.Hour))
+	s3.SetModTime(prefix+"fresh-unreferenced-primary.xml.gz", time.Now().Add(-5*time.Minute))
 
 	deleted, err := gc.CollectGarbage(ctx, "openSUSE:Factory", "standard", "x86_64", 24*time.Hour)
 	if err != nil {
@@ -110,16 +79,16 @@ func TestS3MetadataGarbageCollector(t *testing.T) {
 		t.Errorf("expected 1 file deleted (the 72h old obsolete file), got %d", deleted)
 	}
 
-	if _, ok := s3.FilesOnS3[prefix+"obsolete-old-primary.xml.gz"]; ok {
+	if s3.Has(prefix + "obsolete-old-primary.xml.gz") {
 		t.Errorf("obsolete file was NOT deleted")
 	}
-	if _, ok := s3.FilesOnS3[prefix+"active-primary.xml.gz"]; !ok {
+	if !s3.Has(prefix + "active-primary.xml.gz") {
 		t.Errorf("active primary file was accidentally deleted")
 	}
-	if _, ok := s3.FilesOnS3[prefix+"fresh-unreferenced-primary.xml.gz"]; !ok {
+	if !s3.Has(prefix + "fresh-unreferenced-primary.xml.gz") {
 		t.Errorf("fresh unreferenced file within grace period was accidentally deleted")
 	}
-	if _, ok := s3.FilesOnS3[prefix+"repomd.xml"]; !ok {
+	if !s3.Has(prefix + "repomd.xml") {
 		t.Errorf("repomd.xml was accidentally deleted")
 	}
 }

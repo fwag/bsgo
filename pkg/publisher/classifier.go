@@ -12,7 +12,7 @@ type SubRepoType string
 const (
 	// SubRepoStandard represents the runtime binary RPM repository (e.g. repos/<prj>/<target>/<arch>/).
 	SubRepoStandard SubRepoType = "standard"
-	// SubRepoDebug represents the debuginfo and debugsource RPM repository (e.g. repos/<prj>/<target>/debug/).
+	// SubRepoDebug represents the debuginfo and debugsource RPM repository (e.g. repos/<prj>/<target>/debug/<arch>/).
 	SubRepoDebug SubRepoType = "debug"
 	// SubRepoSource represents the source RPM repository (e.g. repos/<prj>/<target>/src/).
 	SubRepoSource SubRepoType = "src"
@@ -50,22 +50,10 @@ func isDebugRPM(filename string) bool {
 func SubRepoS3Prefix(project, target, arch string, sr SubRepoType) string {
 	switch sr {
 	case SubRepoDebug:
-		return fmt.Sprintf("repos/%s/%s/debug/", project, target)
+		return fmt.Sprintf("repos/%s/%s/debug/%s/", project, target, arch)
 	case SubRepoSource:
 		return fmt.Sprintf("repos/%s/%s/src/", project, target)
 	default:
 		return fmt.Sprintf("repos/%s/%s/%s/", project, target, arch)
-	}
-}
-
-// SubRepoWorkDir returns the local filesystem staging path for a specific sub-repository.
-func SubRepoWorkDir(baseWorkDir, project, target, arch string, sr SubRepoType) string {
-	switch sr {
-	case SubRepoDebug:
-		return filepath.Join(baseWorkDir, project, target, "debug")
-	case SubRepoSource:
-		return filepath.Join(baseWorkDir, project, target, "src")
-	default:
-		return filepath.Join(baseWorkDir, project, target, arch)
 	}
 }

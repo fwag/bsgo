@@ -81,7 +81,6 @@ type ProcessSandbox struct {
 	// mode. obs-build chroot mode has no network isolation, so the default
 	// is to refuse such jobs.
 	AllowUnisolatedChroot bool
-	PublishFunc           func(ctx context.Context, subject string, data []byte) error
 	repoMu                sync.Mutex
 }
 

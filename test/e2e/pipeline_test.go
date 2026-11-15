@@ -3,14 +3,12 @@ package e2e_test
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go/jetstream"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
-	"github.com/openSUSE/bsgo/pkg/publisher"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
 )
 
@@ -95,38 +93,5 @@ func TestE2EFullDistributionPipeline(t *testing.T) {
 	_ = json.Unmarshal(msg.Data(), &receivedJob)
 	if receivedJob.Package != "ripgrep" {
 		t.Errorf("expected job for ripgrep, got %s", receivedJob.Package)
-	}
-
-	// 6. Worker simulates completion and emits PublishRequest
-	pubReq := publisher.PublishRequest{
-		RequestID:    "pub-req-01",
-		Project:      "openSUSE:Factory",
-		Target:       "standard",
-		Architecture: "x86_64",
-		NewRPMPaths:  []string{"ripgrep-14.1.0-1.x86_64.rpm"},
-	}
-	pubData, _ := json.Marshal(pubReq)
-	_, err = js.Publish(ctx, "bsgo.publish.rpm.openSUSE:Factory.standard.x86_64", pubData)
-	if err != nil {
-		t.Fatalf("failed to publish to PUBLISH stream: %v", err)
-	}
-
-	// 7. Verify Publisher Stream receipt
-	pubCons, err := js.CreateOrUpdateConsumer(ctx, natsqueue.StreamPublish, jetstream.ConsumerConfig{
-		Durable:   "publisher-e2e-consumer",
-		AckPolicy: jetstream.AckExplicitPolicy,
-	})
-	if err != nil {
-		t.Fatalf("failed to create publish consumer: %v", err)
-	}
-
-	pubMsg, err := pubCons.Next()
-	if err != nil {
-		t.Fatalf("failed to fetch publish message: %v", err)
-	}
-	_ = pubMsg.Ack()
-
-	if !strings.Contains(pubMsg.Subject(), "openSUSE:Factory") {
-		t.Errorf("expected publish subject to contain openSUSE:Factory, got %s", pubMsg.Subject())
 	}
 }
