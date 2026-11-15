@@ -113,6 +113,13 @@ type specParser struct {
 	multiCond *string
 	include   []string
 	out       []specLine
+	// Spec mode (Build::Rpm::parse outside parsing_config): the build flavor
+	// and package name substituted for @BUILD_FLAVOR@ and @OBS_PACKAGE@, and
+	// the callback receiving every line that survived macro expansion and
+	// conditionals. A nil visit selects config mode.
+	flavor     string
+	obsPackage string
+	visit      func(line string)
 }
 
 func (p *specParser) run(src []inputLine) []specLine {
@@ -165,7 +172,10 @@ func (p *specParser) processLine(line string, record bool) {
 	if !ok {
 		return
 	}
-	line = strings.ReplaceAll(line, "@BUILD_FLAVOR@", "")
+	line = strings.ReplaceAll(line, "@BUILD_FLAVOR@", p.flavor)
+	if p.obsPackage != "" {
+		line = strings.ReplaceAll(line, "@OBS_PACKAGE@", p.obsPackage)
+	}
 	if p.handleIf(line) {
 		return
 	}
@@ -306,6 +316,10 @@ func (p *specParser) skipUnless(want bool, value, arg string) {
 }
 
 func (p *specParser) finish(line string, record bool) {
+	if p.visit != nil {
+		p.visit(line)
+		return
+	}
 	if m := lineMarkRe.FindStringSubmatch(line); m != nil {
 		if m[1] != "" {
 			p.st.file = m[1]
