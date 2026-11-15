@@ -1,0 +1,238 @@
+{
+   "alsonative" : [
+      "an-a"
+   ],
+   "arch" : "x86_64",
+   "assetsurl" : [
+      "https://assets.example.com"
+   ],
+   "binarytype" : "rpm",
+   "buildengine" : "mock",
+   "buildflags" : [
+      "nodebuginfo",
+      "clean:yes"
+   ],
+   "buildflags_h" : {
+      "clean" : "yes",
+      "nodebuginfo" : "1"
+   },
+   "cicntstart" : "100",
+   "conflict" : [
+      "conf-a",
+      "conf-b:conf-c",
+      "conf-d,conf-e"
+   ],
+   "conflicth" : {
+      ":" : [
+         "conf-a"
+      ],
+      "conf-b" : [
+         "conf-c"
+      ],
+      "conf-c" : [
+         "conf-b"
+      ],
+      "conf-d" : [
+         "conf-e"
+      ],
+      "conf-e" : [
+         "conf-d"
+      ]
+   },
+   "constraint" : [
+      "hardware:cpu:flag sse4",
+      "hardware:memory:size unit=G 8"
+   ],
+   "expandflags" : [
+      "module:foo",
+      "module:bar",
+      "notimestamps",
+      "preinstallexpand",
+      "keepfilerequires"
+   ],
+   "expandflags_h" : {
+      "keepfilerequires" : "1",
+      "module" : "bar",
+      "notimestamps" : "1",
+      "preinstallexpand" : "1"
+   },
+   "exportfilter" : {
+      "\\.noarch\\.rpm$" : [],
+      "\\.src\\.rpm$" : [
+         "aarch64",
+         "x86_64"
+      ]
+   },
+   "fileprovides" : {
+      "/bin/sh" : [
+         "bash"
+      ],
+      "/usr/bin/perl" : [
+         "perl"
+      ]
+   },
+   "hostarch" : "aarch64",
+   "ignore" : [
+      "ign-a",
+      "ign-b:dep1,dep2"
+   ],
+   "ignoreh" : {
+      "ign-a" : true,
+      "ign-b:dep1" : true,
+      "ign-b:dep2" : true
+   },
+   "ignorerebuild" : [
+      "ir-a",
+      "ir-b"
+   ],
+   "keep" : [
+      "keep-c"
+   ],
+   "macros" : [
+      "",
+      "%define nil",
+      "%define ix86    i386 i486 i586 i686 pentium3 pentium4 athlon geode",
+      "%define x86_64  x86_64 x86_64_v2 x86_64_v3 x86_64_v4 amd64 em64t",
+      "%define arm32   armv3l armv4b armv4l armv4tl armv5tl armv5tel armv5tejl armv6l armv6hl armv7l armv7hl armv7hnl armv8l armv8hl armv8hnl armv8hcnl",
+      "%define arm     %{arm32}",
+      "%define arml    armv3l armv4l armv5l armv5tel armv6l armv6hl armv7l armv7hl armv7hnl",
+      "%define armb    armv4b armv5b armv5teb",
+      "%define arm64   aarch64",
+      "%define mips32  mips mipsel mipsr6 mipsr6el",
+      "%define mips64  mips64 mips64el mips64r6 mips64r6el",
+      "%define mipseb  mips mipsr6 mips64 mips64r6",
+      "%define mipsel  mipsel mipsr6el mips64el mips64r6el",
+      "%define mips    %{mips32} %{mips64}",
+      "%define loongarch64 loongarch64",
+      "%define sparc   sparc sparcv8 sparcv9 sparcv9v sparc64 sparc64v",
+      "%define alpha   alpha alphaev56 alphaev6 alphaev67",
+      "%define power64 ppc64 ppc64p7 ppc64le",
+      "%define riscv32 riscv32",
+      "%define riscv64 riscv64",
+      "%define riscv128 riscv128",
+      "%define riscv   %{riscv32} %{riscv64} %{riscv128}",
+      "%define _target_cpu x86_64",
+      "%define _target_os linux",
+      "%define _target_cpu armv7hl",
+      "%define dist .test",
+      "%define lonely"
+   ],
+   "modules" : [
+      "bar",
+      "foo"
+   ],
+   "onlynative" : [
+      "on-a"
+   ],
+   "optflags" : {
+      "*" : "-O1",
+      "aarch64" : "-O2 -g",
+      "x86_64" : "-O2 -g -m64"
+   },
+   "order" : {
+      "pkg-order-a" : true,
+      "pkg-order-c" : true
+   },
+   "parse_error" : "",
+   "patterntype" : [
+      "ymp"
+   ],
+   "prefer" : [
+      "foo",
+      "baz",
+      "-blocked"
+   ],
+   "preferh" : {
+      "-blocked" : true,
+      "baz" : true,
+      "foo" : true
+   },
+   "preinstall" : [
+      "filesystem",
+      "glibc",
+      "rpm"
+   ],
+   "publishfilter" : [
+      ".*-debuginfo.*",
+      ".*-debugsource.*"
+   ],
+   "publishflags" : [
+      "create_empty_sources:1",
+      "ympdist:opensuse"
+   ],
+   "publishflags_h" : {
+      "create_empty_sources" : "1",
+      "ympdist" : "opensuse"
+   },
+   "rawmacros" : "",
+   "registryurl" : [
+      "https://registry.example.com"
+   ],
+   "release" : "3.<CI_CNT>.<B_CNT>",
+   "release@" : [
+      "3.<CI_CNT>.<B_CNT>",
+      "extra"
+   ],
+   "releaseprg" : "/usr/bin/relprg",
+   "releasesuffix" : "suffix words here",
+   "repotype" : [
+      "rpm-md",
+      "susetags"
+   ],
+   "repourl" : [
+      "http://example.com/repo"
+   ],
+   "required" : [
+      "required-a",
+      "required-b"
+   ],
+   "runscripts" : [
+      "aaa_base"
+   ],
+   "singleexport" : "yes",
+   "substitute" : {
+      "kernel-dev" : [
+         "kernel-default-devel",
+         "kernel-source"
+      ],
+      "onlykey" : [],
+      "system-packages:repo-creation" : [
+         "createrepo"
+      ],
+      "ver-sub" : [
+         "pkg-a",
+         "pkg-b",
+         "pkg-a"
+      ]
+   },
+   "substitute_vers" : {
+      "kernel-dev" : [
+         "kernel-default-devel",
+         null,
+         "kernel-source",
+         null
+      ],
+      "onlykey" : [],
+      "system-packages:repo-creation" : [
+         "createrepo",
+         null
+      ],
+      "ver-sub" : [
+         "pkg-a",
+         "=",
+         "pkg-b",
+         null,
+         "pkg-a",
+         null
+      ]
+   },
+   "support" : [
+      "supp-a",
+      "supp-b"
+   ],
+   "target" : "armv7hl-suse-linux",
+   "type" : "spec",
+   "vminstall" : [
+      "kernel-default"
+   ]
+}
