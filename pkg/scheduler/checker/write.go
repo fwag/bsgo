@@ -92,7 +92,7 @@ func (ps *pass) result() *Result {
 	res := &Result{Counts: map[string]int{}, RetryAfter: ps.retry}
 	for _, d := range ps.out.list {
 		res.Counts[d.state]++
-		if d.job != nil {
+		if d.job != nil && !d.keep {
 			res.Scheduled = append(res.Scheduled, d.unit.name)
 		}
 		if d.cancel != "" {

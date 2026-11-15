@@ -344,3 +344,21 @@ func TestRebuildPolicyLocalIgnoresDependencyChanges(t *testing.T) {
 		})
 	}
 }
+
+func TestScheduledJobsAreResentForQueueRecovery(t *testing.T) {
+	// The dispatch queue lives in memory; after a server restart the
+	// checker must hand the still scheduled jobs to the sink again.
+	w := newWorld(t, nil)
+	w.pkg("a", nil)
+	w.run()
+	first := w.wantJobs("a")[0]
+	w.run()
+	w.wantJobs() // same job ID: the idempotent sink keeps one entry
+	if w.sink.resent != 1 {
+		t.Errorf("resent %d, want 1 (the scheduled job of a)", w.sink.resent)
+	}
+	w.wantState("a", storage.StateScheduled, "new build")
+	if got := w.state("a").JobID; got != first.JobID {
+		t.Errorf("job ID changed on resend: %s -> %s", first.JobID, got)
+	}
+}

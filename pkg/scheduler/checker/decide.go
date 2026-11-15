@@ -213,6 +213,19 @@ func (ps *pass) settle(u *unit, row *storage.PackageBuildState, meta string, for
 	ps.schedule(u, row, meta, explain)
 }
 
+// resendJob rebuilds the job of a unit that is still scheduled so it can be
+// emitted again. The dispatch queue is not persistent; re-emitting on every
+// pass restores it after a server restart. The job ID and the release
+// counters are deterministic for the same meta and attempt, and the sink
+// ignores job IDs it already has, so a resend changes nothing otherwise.
+func (ps *pass) resendJob(u *unit, row *storage.PackageBuildState, meta string) *JobSpec {
+	job, v := ps.newJob(u, meta, row.Details)
+	if v != nil || job == nil || job.JobID != row.JobID {
+		return nil
+	}
+	return job
+}
+
 // settleExisting handles the cases where no new job is needed. It reports
 // whether the unit was settled.
 func (ps *pass) settleExisting(u *unit, row *storage.PackageBuildState, meta string) bool {
@@ -225,6 +238,9 @@ func (ps *pass) settleExisting(u *unit, row *storage.PackageBuildState, meta str
 		}
 	case row.Meta == meta && inFlight(row.State):
 		d := &decision{unit: u, state: row.State, details: row.Details, keep: true}
+		if row.State == storage.StateScheduled {
+			d.job = ps.resendJob(u, row, meta)
+		}
 		ps.out.add(d)
 		ps.out.notready[u] = true
 	case row.Meta == meta && row.State == storage.StateFailed:

@@ -68,15 +68,27 @@ func (f *fakeDoD) Get(_ context.Context, url string) (solv.RepoBlob, error) {
 	return f.blob, nil
 }
 
+// recordingSink records emitted jobs. Like the dispatcher it is idempotent
+// per job ID (the JobSink contract): re-emitted jobs are counted in resent.
 type recordingSink struct {
 	mu        sync.Mutex
 	jobs      []*checker.JobSpec
+	seen      map[string]bool
+	resent    int
 	cancelled []string
 }
 
 func (s *recordingSink) Emit(_ context.Context, j *checker.JobSpec) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.seen == nil {
+		s.seen = map[string]bool{}
+	}
+	if s.seen[j.JobID] {
+		s.resent++
+		return nil
+	}
+	s.seen[j.JobID] = true
 	s.jobs = append(s.jobs, j)
 	return nil
 }

@@ -111,3 +111,15 @@ func (q *PriorityQueue) sortJobs() {
 		return q.jobs[i].Priority > q.jobs[j].Priority
 	})
 }
+
+// Contains reports whether a job with the given ID is queued.
+func (q *PriorityQueue) Contains(jobID string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, j := range q.jobs {
+		if j.JobID == jobID {
+			return true
+		}
+	}
+	return false
+}

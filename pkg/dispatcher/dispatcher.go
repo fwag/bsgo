@@ -90,6 +90,11 @@ func (d *Dispatcher) EnqueueJob(job *v1.BuildJob) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	// Idempotent per job ID: the checker re-emits scheduled jobs on every
+	// pass to rebuild the queue after a restart.
+	if _, dispatched := d.dispatchedJobs[job.JobID]; dispatched || d.queue.Contains(job.JobID) {
+		return
+	}
 	buildKey := fmt.Sprintf("%s:%s:%s:%s", job.Project, job.Package, job.Target, job.Architecture)
 	if oldJobID, exists := d.activeBuilds[buildKey]; exists {
 		d.signalAbort(oldJobID, "SUPERSEDED_BY_NEW_COMMIT")
