@@ -30,7 +30,8 @@ The `bsgo` CLI is built on a strict **Dual-Mode Contract**:
 bsgo
 ├── project
 │   ├── list                            List all accessible projects
-│   └── show <project>                  Show targets, repositories, and metadata
+│   ├── show <project>                  Show targets, repositories, and metadata
+│   └── convert-obs                     Convert an OBS _meta + prjconf into project.yaml (offline)
 ├── package
 │   ├── list <project>                  List packages within a project
 │   ├── show <project/package>          Inspect manifest, git source, and shard path
@@ -74,6 +75,27 @@ A critical discovery of this prototype is how the CLI abstracts away the underly
     }
   }
   ```
+
+### 3.1 Offline OBS Conversion (`bsgo project convert-obs`)
+
+```bash
+bsgo project convert-obs --meta <_meta> --prjconf <_config> [--out project.yaml]
+                         [--verify-arch <arch>...] [--dry-run] [--force] [--no-verify] [--json]
+```
+
+Converts an OBS project (the `_meta` XML and the project configuration) into a `project.yaml` (ADR 0010). It needs no control plane and is non-interactive.
+
+- Conditionals are never flattened. `%if 0%{?_is_in_project}` maps to `protected_config`, `%if 0%{?_is_this_project}` to `private_config`, `%ifarch` to `arch_config.<arch>`, `%if "%_repository" == "<r>"` to `targets.<r>.config`, top-level `%define` to `defines` (ordered), `Macros:` bodies to `macros`. Everything else, and anything the fixed render order would reorder, stays verbatim in `raw_config`.
+- Unless `--no-verify` is given, the round-trip gate runs first (every repository, every architecture of `_meta` plus `--verify-arch`, and the consumers: the project, a subproject, a foreign project). On failure the command exits non-zero and writes nothing.
+- Output goes to `--out`, or to stdout when `--out` is omitted. `--out` is not overwritten without `--force`; `--dry-run` converts and verifies without writing.
+- With `--json`, stdout carries exactly one JSON document and nothing else: `{"out", "dry_run", "verified", "report", "manifest"}` (`manifest` only when `--out` is omitted). `report` has `structured_statements`, `raw_fragments`, `raw_lines`, `order_moves`, `raw_by_reason`, `dropped_comments`, and `raw[]` entries with `scope`, `line`, `lines`, `reason`, `excerpt`. Human summaries go to stderr, never mixed into stdout.
+
+Example:
+
+```bash
+bsgo project convert-obs --meta SUSE_SLFO_1.2.meta.xml --prjconf SUSE_SLFO_1.2.prjconf \
+  --out project.yaml --json | jq '.report.raw_by_reason'
+```
 
 ---
 

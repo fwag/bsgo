@@ -116,7 +116,7 @@ targets:
 | `protected_config` | obj | No | Build Configuration applied only to this project and its `<name>:*` subprojects (`%_is_in_project`). Deprecated read-only aliases: `protected`, `namespace_scoped`. |
 | `private_config` | obj | No | Build Configuration applied only to this project (`%_is_this_project`). Deprecated read-only alias: `private`. |
 | `arch_config.<arch>` | obj | No | Architecture overlay (`%ifarch`). Same fields as `*_config`. |
-| `*_config.build_types` | list[str] | No | Allowed build recipe types (e.g. `["spec"]`, `["kiwi"]`, `["docker"]`, `["helm"]`). Defaults to `["spec"]`. |
+| `*_config.build_types` | list[str] | No | Allowed build recipe types (e.g. `["spec"]`, `["kiwi"]`, `["docker"]`, `["helm"]`). Defaults to `["spec"]`. Renders as `Type:` with the first entry only, because obs-build honours a single `Type:` value. |
 | `*_config.build_engine` | string | No | Toolchain execution engine (`"build"`, `"podman"`, `"mock"`, `"helm"`). Defaults to `"build"`. |
 | `*_config.repo_types` | list[str] | No | Published repository index formats (`["rpm-md"]`, `["none"]`, `["helm"]`). Defaults to `["rpm-md"]`. |
 | `*_config.from_scratch` | bool | No | If `true`, stops config inheritance from dependency targets (clean OBS `FromScratch:` replacement). |
@@ -137,7 +137,7 @@ targets:
 | `*_config.build_flags` | list[str] | No | Build execution flags (e.g. `allowrootforbuild`). |
 | `*_config.publish_flags` | list[str] | No | Publication behavior flags (e.g. `archsync`). |
 | `*_config.optflags` | map[str, str] | No | Architecture-specific compiler flags (e.g. `x86_64: "-O2 -g"`). |
-| `*_config.defines` | map[str,str] | No | Top-level `%define`s evaluated by the config parser; usable in other directives (`%{name}`). |
+| `*_config.defines` | map[str,str] | No | Top-level `%define`s evaluated by the config parser; usable in other directives (`%{name}`). The mapping order is preserved on load and save and is the render order (order matters for `%define`). Names are unique within one scope. |
 | `*_config.macros` | string | No | Opaque rpm `Macros:` body passed verbatim to the build toolchain; evaluated by rpm at build time. |
 | `*_config.release` | string | No | Release scheme (`Release:` directive, e.g. `<CI_CNT>.<B_CNT>`). |
 | `*_config.raw_config` | string | No | Verbatim prjconf fragment appended after the structured fields of the same scope. Escape hatch for constructs without a structured field; importers must use it instead of flattening `%if` branches. |
@@ -182,7 +182,24 @@ targets:
 5. **Conformance.** An importer converting an OBS prjconf must pass the
    round-trip test: for every arch × repository × Consumer Project
    (self, subproject, foreign), parsing the rendered config yields the same
-   result as parsing the original prjconf through OBS `getconfig`.
+   result as parsing the original prjconf through OBS `getconfig`. All fields
+   of the parsed config are compared exactly, with these tolerances only:
+   parser warnings (they carry line numbers of the generated text); the order
+   of the set-like lists `prefer`, `ignore`, `conflict`, `support`,
+   `required`, `expandflags`, `buildflags`, `publishflags` (scopes render in
+   a fixed order, and OBS uses these lists as sets); and the hash value of
+   the multi-valued flags `excludebuild` and `dockerarg` (OBS reads all
+   values from the list). Ordered lists such as `preinstall` and `vminstall`,
+   `Macros:` text and every scalar must match exactly.
+6. **Order safety of importers.** Scopes render in the fixed order above, but a
+   prjconf interleaves its statements freely. An importer may store a
+   statement structurally only if moving it to its rendered position changes
+   nothing: statements that write the same directive, flag name, keyed entry
+   or `%define` (or read a macro that another statement defines) keep their
+   relative order. Where the fixed order would invert such a pair, the
+   importer keeps both in the public `raw_config` in source order and reports
+   them. `bsgo project convert-obs` implements this and runs the gate before it
+   writes anything.
 
 ---
 
