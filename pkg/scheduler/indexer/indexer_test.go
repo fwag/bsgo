@@ -22,7 +22,7 @@ func (r *recorder) RepoChanged(_ context.Context, p buildrepo.Prpa) error {
 }
 
 type env struct {
-	t     *testing.T
+	t     testing.TB
 	store *storage.MemoryStore
 	blobs *buildrepo.MemoryBlobs
 	rec   *recorder
@@ -30,7 +30,7 @@ type env struct {
 	prpa  buildrepo.Prpa
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t testing.TB) *env {
 	t.Helper()
 	store := storage.NewMemoryStore()
 	blobs := buildrepo.NewMemoryBlobs()
