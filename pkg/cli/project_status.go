@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/openSUSE/bsgo/pkg/storage"
@@ -24,6 +25,9 @@ type PackageStateEntry struct {
 	Details   string `json:"details,omitempty"`
 	JobID     string `json:"job_id,omitempty"`
 	UpdatedAt string `json:"updated_at"`
+	// BuildingSeconds is how long a building package has been building
+	// (since it was dispatched to a worker); 0 for other states.
+	BuildingSeconds int64 `json:"building_seconds,omitempty"`
 }
 
 // ProjectStatusResult is the machine contract of `bsgo project status --json`.
@@ -111,16 +115,18 @@ func loadProjectStatus(ctx context.Context, store storage.Store, projectName str
 		Pending:       counts[storage.StateScheduled],
 		Packages:      make([]PackageStateEntry, 0, len(states)),
 	}
+	now := time.Now()
 	for _, st := range states {
 		res.Packages = append(res.Packages, PackageStateEntry{
-			Package:   st.Package,
-			Flavor:    st.Flavor,
-			Repo:      st.Repo,
-			Arch:      st.Arch,
-			State:     st.State,
-			Details:   st.Details,
-			JobID:     st.JobID,
-			UpdatedAt: st.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			Package:         st.Package,
+			Flavor:          st.Flavor,
+			Repo:            st.Repo,
+			Arch:            st.Arch,
+			State:           st.State,
+			Details:         st.Details,
+			JobID:           st.JobID,
+			UpdatedAt:       st.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			BuildingSeconds: buildingSeconds(st, now),
 		})
 	}
 	return res, nil
@@ -134,6 +140,14 @@ func sumCounts(counts map[string]int) int {
 		n += c
 	}
 	return n
+}
+
+// buildingSeconds is the time a building package has spent building.
+func buildingSeconds(st *storage.PackageBuildState, now time.Time) int64 {
+	if st.State != storage.StateBuilding || st.UpdatedAt.IsZero() {
+		return 0
+	}
+	return int64(max(now.Sub(st.UpdatedAt), 0) / time.Second)
 }
 
 func statusLine(sb io.Writer, label string, n int, color string) {
@@ -171,7 +185,14 @@ func writeStateSample(sb *strings.Builder, res *ProjectStatusResult, state, titl
 		if e.State != state {
 			continue
 		}
-		line := fmt.Sprintf("%s (%s/%s)", e.Package, e.Repo, e.Arch)
+		name := e.Package
+		if e.Flavor != "" {
+			name += ":" + e.Flavor
+		}
+		line := fmt.Sprintf("%s (%s/%s)", name, e.Repo, e.Arch)
+		if e.State == "building" {
+			line += " for " + (time.Duration(e.BuildingSeconds) * time.Second).String()
+		}
 		if e.Details != "" {
 			line += ": " + firstLine(e.Details)
 		}
