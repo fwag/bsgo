@@ -227,7 +227,9 @@ func (p *Publisher) candidates(ctx context.Context, prpa buildrepo.Prpa, idx *bu
 	}
 	units := make([]string, 0)
 	for u := range idx.Units() {
-		units = append(units, u)
+		if !buildrepo.IsImportUnit(u) { // exported from another arch: no artifacts here
+			units = append(units, u)
+		}
 	}
 	sort.Strings(units)
 	for _, u := range units {

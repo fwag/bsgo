@@ -74,12 +74,19 @@ func (u *unit) depNames() []string {
 // buildProducers maps every binary name to the unit that produces it in this
 // prpa: first by the binaries already in the own build repository, then by the
 // subpackage names of the recipes of units that have not built yet. OBS
-// derives dep2src the same way.
+// derives dep2src the same way. Import units (baselibs exported from another
+// architecture) have no producer.
 func (ps *pass) buildProducers() {
 	ps.prod = map[string]*unit{}
 	ps.own = map[string][]string{}
 	if idx := ps.ownIndex(); idx != nil {
 		for _, e := range idx.Entries {
+			if buildrepo.IsImportUnit(e.Unit) {
+				// Exported here by a build of another architecture: no
+				// buildable unit produces it, so it counts with its sha256
+				// like a path binary.
+				continue
+			}
 			ps.own[e.Unit] = append(ps.own[e.Unit], e.Name)
 			if u := ps.byName[e.Unit]; u != nil && ps.prod[e.Name] == nil {
 				ps.prod[e.Name] = u

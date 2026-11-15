@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/openSUSE/bsgo/pkg/bininfo"
+	"github.com/openSUSE/bsgo/pkg/buildconfig"
 	"github.com/openSUSE/bsgo/pkg/scheduler/buildrepo"
 	"github.com/openSUSE/bsgo/pkg/scheduler/coord"
 	"github.com/openSUSE/bsgo/pkg/solv"
@@ -57,6 +59,9 @@ type Indexer struct {
 	Leases coord.Coordinator
 	Owner  string
 	Notify Notifier
+	// Exports routes binaries to other architectures; nil keeps every
+	// binary in the own repository.
+	Exports ExportSource
 	// Sleep waits between lease attempts; nil means time.Sleep.
 	Sleep func(time.Duration)
 }
@@ -68,40 +73,112 @@ const (
 	leaseWait     = 100 * time.Millisecond
 )
 
+// ExportPolicy is how the binaries of builds in one prpa are routed.
+type ExportPolicy struct {
+	// Router is the ExportFilter of the prpa's configuration.
+	Router *buildconfig.ExportRouter
+	// Archs are the architectures of the same project and repository; only
+	// those can receive exports.
+	Archs []string
+}
+
+// ExportSource resolves the export policy of a prpa.
+type ExportSource interface {
+	Exports(ctx context.Context, p buildrepo.Prpa) (ExportPolicy, error)
+}
+
 // Integrate replaces the binary set of f.Unit in the build repository of
-// f.Prpa with the binaries listed in the job's bininfo.json. It returns
-// whether the repository content changed.
+// f.Prpa with the binaries listed in the job's bininfo.json that the
+// ExportFilter keeps for the own architecture. Binaries exported to other
+// architectures replace the import set "<unit>:import:<arch>" in the build
+// repositories of those prpas (same project and repository). It returns
+// whether the own repository content changed.
 func (ix *Indexer) Integrate(ctx context.Context, f Finished) (bool, error) {
 	infos, keys, err := ix.readBinaries(ctx, f)
 	if err != nil {
 		return false, err
 	}
-	lease, err := ix.lease(ctx, f.Prpa)
+	own, others, archs, err := ix.route(ctx, f, infos)
+	if err != nil {
+		return false, err
+	}
+	changed, err := ix.integrateUnit(ctx, f.Prpa, f.Unit, own, keys)
+	if err != nil {
+		return changed, err
+	}
+	imp := buildrepo.ImportUnit(f.Unit, f.Prpa.Arch)
+	for _, arch := range archs {
+		target := buildrepo.Prpa{Project: f.Prpa.Project, Repo: f.Prpa.Repo, Arch: arch}
+		if _, err := ix.integrateUnit(ctx, target, imp, others[arch], keys); err != nil {
+			return changed, fmt.Errorf("export to %s: %w", target, err)
+		}
+	}
+	return changed, nil
+}
+
+// route splits infos by the ExportFilter into the binaries of the own
+// repository and those per other architecture. archs lists every other
+// architecture of the repository, including those that receive nothing now:
+// their previous import set must be emptied.
+func (ix *Indexer) route(ctx context.Context, f Finished, infos []bininfo.BinInfo) (own []bininfo.BinInfo, others map[string][]bininfo.BinInfo, archs []string, err error) {
+	if ix.Exports == nil || buildrepo.IsImportUnit(f.Unit) {
+		return infos, nil, nil, nil
+	}
+	pol, err := ix.Exports.Exports(ctx, f.Prpa)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("export policy of %s: %w", f.Prpa, err)
+	}
+	if pol.Router == nil {
+		return infos, nil, nil, nil
+	}
+	others = map[string][]bininfo.BinInfo{}
+	for _, b := range infos {
+		stay, targets := pol.Router.Route(b.Filename)
+		if stay {
+			own = append(own, b)
+		}
+		for _, t := range targets {
+			others[t] = append(others[t], b)
+		}
+	}
+	for _, a := range pol.Archs {
+		if a != f.Prpa.Arch {
+			archs = append(archs, a)
+		}
+	}
+	sort.Strings(archs)
+	return own, others, archs, nil
+}
+
+// integrateUnit replaces the entries of unit in the index of p and announces
+// the change.
+func (ix *Indexer) integrateUnit(ctx context.Context, p buildrepo.Prpa, unit string, infos []bininfo.BinInfo, keys map[string]string) (bool, error) {
+	lease, err := ix.lease(ctx, p)
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
 
-	cur, err := ix.Reader.Index(ctx, f.Prpa)
+	cur, err := ix.Reader.Index(ctx, p)
 	if err != nil {
 		return false, err
 	}
-	entries, same := replaceUnit(cur.Entries, f.Unit, infos, keys)
+	entries, same := replaceUnit(cur.Entries, unit, infos, keys)
 	if same {
 		// Equal sha256 means equal content, so the solv blob is still right.
 		return false, nil
 	}
-	blob, err := solv.UpdateSolv(f.Prpa.Arch, cur.Solv, f.Unit, infos)
+	blob, err := solv.UpdateSolv(p.Arch, cur.Solv, unit, infos)
 	if err != nil {
-		return false, fmt.Errorf("index %s: %w", f.Prpa, err)
+		return false, fmt.Errorf("index %s: %w", p, err)
 	}
-	changed, err := ix.publish(ctx, f.Prpa, cur, blob, entries)
+	changed, err := ix.publish(ctx, p, cur, blob, entries)
 	if err != nil || !changed {
 		return false, err
 	}
 	if ix.Notify != nil {
-		if err := ix.Notify.RepoChanged(ctx, f.Prpa); err != nil {
-			return true, fmt.Errorf("announce %s: %w", f.Prpa, err)
+		if err := ix.Notify.RepoChanged(ctx, p); err != nil {
+			return true, fmt.Errorf("announce %s: %w", p, err)
 		}
 	}
 	return true, nil

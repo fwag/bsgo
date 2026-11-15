@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -121,32 +120,25 @@ func classifyBinary(b bininfo.BinInfo) SubRepoType {
 	}
 }
 
-// exportedToArch applies ExportFilter for the own architecture. A binary
-// whose file name matches a rule is exported to the architectures of that
-// rule, so it stays in the own repository only if the own architecture is
-// listed; a binary that matches no rule stays. Export into the repositories
-// of other architectures is not ported.
-func exportedToArch(filter map[string][]string, filename, arch string) (bool, error) {
-	patterns := make([]string, 0, len(filter))
-	for rx := range filter {
-		patterns = append(patterns, rx)
+// exportRouter compiles ExportFilter for the own architecture with the OBS
+// semantics (first matching rule in reverse text order decides). A binary
+// stays in the own repository if the own architecture is listed in its rule
+// or no rule matches. Binaries exported to other architectures are integrated
+// into those build repositories by the indexer. An empty filter keeps all
+// (nil router).
+func exportRouter(filter map[string][]string, arch string) (*buildconfig.ExportRouter, error) {
+	if len(filter) == 0 {
+		return nil, nil
 	}
-	sort.Strings(patterns)
-	matched := false
-	for _, rx := range patterns {
-		re, err := regexp.Compile(rx)
-		if err != nil {
-			return false, fmt.Errorf("ExportFilter %q: %w", rx, err)
-		}
-		if !re.MatchString(filename) {
-			continue
-		}
-		matched = true
-		if containsString(filter[rx], arch) {
-			return true, nil
-		}
+	return buildconfig.NewExportRouter(filter, arch)
+}
+
+func exportedToArch(r *buildconfig.ExportRouter, filename string) bool {
+	if r == nil {
+		return true
 	}
-	return !matched, nil
+	own, _ := r.Route(filename)
+	return own
 }
 
 // Selection is the binary set to publish, per sub-repository, sorted by
@@ -160,6 +152,10 @@ type Selection map[SubRepoType][]Binary
 func selectBinaries(cands []Binary, pol Policy, arch string) (Selection, error) {
 	sel := Selection{}
 	seen := map[string]string{}
+	router, err := exportRouter(pol.ExportFilter, arch)
+	if err != nil {
+		return nil, err
+	}
 	for _, c := range cands {
 		sr := classifyBinary(c.BinInfo)
 		if sr == SubRepoSource || (sr == SubRepoDebug && !pol.Debuginfo) {
@@ -168,11 +164,7 @@ func selectBinaries(cands []Binary, pol Policy, arch string) (Selection, error) 
 		if !isValidPathSegment(c.Filename) || !strings.HasSuffix(c.Filename, ".rpm") {
 			return nil, fmt.Errorf("invalid binary file name %q", c.Filename)
 		}
-		ok, err := exportedToArch(pol.ExportFilter, c.Filename, arch)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
+		if !exportedToArch(router, c.Filename) {
 			continue
 		}
 		if sha, dup := seen[c.Filename]; dup {

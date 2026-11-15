@@ -55,6 +55,7 @@ func openBuildRepoFromEnv(ctx context.Context, store storage.Store) (*BuildRepoA
 		Indexer: &indexer.Indexer{
 			Pointers: store, Blobs: blobs, Reader: buildrepo.NewReader(store, blobs),
 			Leases: leases, Owner: "bsgo-cli-" + fmt.Sprint(os.Getpid()), Notify: natsNotifier{nc: nc},
+			Exports: indexer.ManifestExports{Projects: store},
 		},
 		ListKeys: blobs.ListKeys,
 		Close:    nc.Close,

@@ -61,6 +61,22 @@ func SplitUnit(unit string) (pkg, flavor string) {
 	return pkg, flavor
 }
 
+// importMarker separates the producing unit from the source architecture in
+// the name of an import unit.
+const importMarker = ":import:"
+
+// ImportUnit names the unit under which the binaries a build of unit in
+// architecture srcArch exported into another architecture's build repository
+// are kept: "<unit>:import:<srcArch>". Package names cannot contain a colon,
+// and a flavor name cannot contain "import:", so the name cannot collide with
+// a buildable unit. Every export replaces the whole previous import set of
+// that name.
+func ImportUnit(unit, srcArch string) string { return unit + importMarker + srcArch }
+
+// IsImportUnit reports whether unit is an import unit, which is not
+// buildable, has no artifact prefix of its own and is never re-exported.
+func IsImportUnit(unit string) bool { return strings.Contains(unit, importMarker) }
+
 // ArtifactPrefix is the S3 prefix the worker uploads a unit's results to.
 func ArtifactPrefix(p Prpa, unit string) string {
 	return "artifacts/" + p.Project + "/" + p.Repo + "/" + p.Arch + "/" + unit + "/"

@@ -108,7 +108,7 @@ func startChecker(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jetst
 
 	ix := &indexer.Indexer{
 		Pointers: store, Blobs: blobs, Reader: reader, Leases: coordinator, Owner: owner,
-		Notify: natsNotifier{nc: nc},
+		Notify: natsNotifier{nc: nc}, Exports: indexer.ManifestExports{Projects: store},
 	}
 	handler := &jobstatus.Handler{Store: store, Integrator: ix, Dirty: events}
 	subscribeJobFinished(ctx, nc, handler)
