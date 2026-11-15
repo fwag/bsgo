@@ -66,18 +66,18 @@ func IsValidBuildState(state string) bool {
 
 // PackageBuildState is the build state of one package/flavor in one (project, repo, arch).
 type PackageBuildState struct {
-	Project   string    `json:"project"`
-	Repo      string    `json:"repo"`
-	Arch      string    `json:"arch"`
-	Package   string    `json:"package"`
-	Flavor    string    `json:"flavor,omitempty"`
-	State     string    `json:"state"`
-	Details   string    `json:"details,omitempty"`
-	SrcMD5    string    `json:"srcmd5,omitempty"`
-	Meta      string    `json:"meta,omitempty"`
-	Bcnt      int       `json:"bcnt,omitempty"`
-	JobID     string    `json:"job_id,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Project      string    `json:"project"`
+	Repo         string    `json:"repo"`
+	Arch         string    `json:"arch"`
+	Package      string    `json:"package"`
+	Flavor       string    `json:"flavor,omitempty"`
+	State        string    `json:"state"`
+	Details      string    `json:"details,omitempty"`
+	SourceCommit string    `json:"source_commit,omitempty"`
+	Meta         string    `json:"meta,omitempty"`
+	Bcnt         int       `json:"bcnt,omitempty"`
+	JobID        string    `json:"job_id,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // BuildStateFilter narrows ListBuildStates; empty fields match everything.
@@ -331,12 +331,12 @@ func (s *MemoryStore) UpsertBuildState(_ context.Context, st *PackageBuildState)
 	return nil
 }
 
-// preserveBuildIdentity keeps srcmd5, meta and bcnt from prev when next does not
+// preserveBuildIdentity keeps source_commit, meta and bcnt from prev when next does not
 // carry them, mirroring the PostgreSQL upsert: status-only updates must not erase
 // the identity of the last build.
 func preserveBuildIdentity(next, prev *PackageBuildState) {
-	if next.SrcMD5 == "" {
-		next.SrcMD5 = prev.SrcMD5
+	if next.SourceCommit == "" {
+		next.SourceCommit = prev.SourceCommit
 	}
 	if next.Meta == "" {
 		next.Meta = prev.Meta

@@ -232,7 +232,7 @@ component needs a shared filesystem.
 Depends on: none.
 Tasks:
 1. Persist build state: migration `package_build_state(project, repo, arch,
-   package, flavor, state, details, srcmd5, meta, bcnt, job_id, updated_at)`,
+   package, flavor, state, details, source_commit, meta, bcnt, job_id, updated_at)`,
    PK `(project, repo, arch, package, flavor)`. States: `scheduled, building,
    succeeded, failed, unresolvable, blocked, broken, excluded, disabled`
    (OBS names). Writers: the scheduler (unresolvable/blocked/scheduled) and
@@ -379,7 +379,7 @@ Tasks:
    must never re-parse primary.xml. Invalidate when any repo blob hash changes.
 5. Real binary index: at upload time the worker extracts header data
    (name, epoch, version, release, arch, provides, requires, conflicts,
-   obsoletes, hdrmd5, sourcerpm) from each RPM. Use `rpm -qp --qf`, or a
+   obsoletes, sha256 of the RPM file, sourcerpm) from each RPM. Use `rpm -qp --qf`, or a
    maintained Go RPM reader that passes AGENTS §2. It uploads
    `bininfo.json` next to the binaries. The indexer (WP4) builds per-prpa
    `full.solv` from the bininfo files. Delete `ParseRPMFilename`-based
@@ -409,7 +409,7 @@ Tasks:
 2. **Pass algorithm** (port of `BSSched/Checker.pm:setup → preparepool →
    expandandsort → checkpkgs`):
    a. concatenated config (WP1) for the prpa; b. parsed recipe info (WP2)
-      for every package/flavor, cached by `(srcmd5, configHash)`;
+      for every package/flavor, cached by `(source_commit, configHash)`;
    c. path pool (WP3); d. expand every package → `unresolvable` with OBS
       text, or a bdep list; e. compute the in-prpa dependency graph (a
       package depends on a source in the same prpa that produces one of its
@@ -417,19 +417,19 @@ Tasks:
    f. per package in order: `excluded/disabled` (flags, ExclusiveArch,
       `excludebuild:`) → `blocked` if any bdep's producer in the same prpa
       is scheduled/building/blocked (respect target `block: all|local|never`)
-      → compute `meta` = sha256(srcmd5 + sorted bdep hdrmd5s), using
+      → compute `meta` = sha256(source_commit + sorted bdep sha256s), using
       genmetaalgo 1 cycle rules from `BuildJob.pm:metacheck` →
       `scheduled` only if meta differs from the last successful build's meta
       (or there is none) → else `succeeded`.
    g. Write state rows in one transaction, create jobs for newly
       `scheduled` packages, and cancel obsolete jobs (`killunwantedjobs`).
 3. **BuildInfo** in the job: concatenated worker config text, exact bdep
-   list (S3 key or DoD URL + sha256 + hdrmd5 per binary, with
+   list (S3 key or DoD URL + sha256 per binary, with
    preinstall/vminstall/runscripts/notmeta flags from the config's
    `Preinstall/VMinstall/Runscripts/Support/Required` expanded per
    `BuildJob.pm:create`), `release` (`<CI_CNT>.<B_CNT>` substitution per the
    `Release:` directive, counters in Postgres; `nextbcnt` semantics),
-   `disturl`, `flavor`, `srcmd5`, `verifymd5`, `meta`.
+   `disturl` (embeds source_commit), `flavor`, `source_commit`, `meta`.
 4. **Indexer**: on a job-finished event, atomically replace the package's
    binary set in the prpa build repo
    (`bins/<prj>/<repo>/<arch>/<pkg>[:flavor]/`), rebuild `full.solv` from
@@ -461,7 +461,7 @@ Tasks:
    (KVM `-net none` / chroot without network).
 3. Source checkout at the exact commit (`git fetch --depth 1 origin <sha>`,
    then `checkout FETCH_HEAD`). Fail the job if that fails. Run
-   `git lfs pull` with errors checked. Record `srcmd5` and commit for
+   `git lfs pull` with errors checked. Record `source_commit` for
    provenance.
 4. After the build: extract `bininfo.json` (WP3.5), upload binaries,
    logfile and `_statistics` to `artifacts/<jobid>/`, and send
@@ -559,6 +559,12 @@ contracts are merged (land the `BuildInfo` struct + spec doc first as a
 separate PR).
 
 ## 6. Guidance for implementing agents
+
+- **No MD5 identities.** OBS uses `srcmd5`, `hdrmd5`, `verifymd5` and an md5
+  `meta`. bsgo uses git-native, content-addressed ids instead: source
+  identity = git commit object id (`source_commit`, SHA-1 or SHA-256 repos,
+  stored as is); binary identity = sha256 of the RPM file; `meta` =
+  sha256(source_commit + sorted bdep sha256s). Never compute MD5.
 
 - Port **behavior**, not structure. Read the cited Perl sub, write a table of
   inputs → outputs from the oracle, then implement in Go. Keep the oracle

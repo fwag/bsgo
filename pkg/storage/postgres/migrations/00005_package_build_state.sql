@@ -7,8 +7,8 @@ CREATE TABLE IF NOT EXISTS package_build_state (
     flavor     VARCHAR(128) NOT NULL DEFAULT '',
     state      VARCHAR(32)  NOT NULL,
     details    TEXT         NOT NULL DEFAULT '',
-    srcmd5     VARCHAR(64)  NOT NULL DEFAULT '',
-    meta       VARCHAR(128) NOT NULL DEFAULT '',
+    source_commit VARCHAR(64) NOT NULL DEFAULT '', -- git object id (SHA-1 or SHA-256)
+    meta       VARCHAR(64)  NOT NULL DEFAULT '', -- sha256(source_commit + sorted bdep sha256)
     bcnt       INTEGER      NOT NULL DEFAULT 0,
     job_id     VARCHAR(128) NOT NULL DEFAULT '',
     updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),

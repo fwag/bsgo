@@ -17,18 +17,18 @@ func (s *PostgresStore) UpsertBuildState(ctx context.Context, st *storage.Packag
 	}
 	query := `
 		INSERT INTO package_build_state
-			(project, repo, arch, package, flavor, state, details, srcmd5, meta, bcnt, job_id, updated_at)
+			(project, repo, arch, package, flavor, state, details, source_commit, meta, bcnt, job_id, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
 		ON CONFLICT (project, repo, arch, package, flavor) DO UPDATE SET
 			state = EXCLUDED.state,
 			details = EXCLUDED.details,
-			srcmd5 = COALESCE(NULLIF(EXCLUDED.srcmd5, ''), package_build_state.srcmd5),
+			source_commit = COALESCE(NULLIF(EXCLUDED.source_commit, ''), package_build_state.source_commit),
 			meta = COALESCE(NULLIF(EXCLUDED.meta, ''), package_build_state.meta),
 			bcnt = GREATEST(EXCLUDED.bcnt, package_build_state.bcnt),
 			job_id = EXCLUDED.job_id,
 			updated_at = NOW()`
 	_, err := s.pool.Exec(ctx, query, st.Project, st.Repo, st.Arch, st.Package, st.Flavor,
-		st.State, st.Details, st.SrcMD5, st.Meta, st.Bcnt, st.JobID)
+		st.State, st.Details, st.SourceCommit, st.Meta, st.Bcnt, st.JobID)
 	if err != nil {
 		return fmt.Errorf("failed to upsert build state: %w", err)
 	}
@@ -44,7 +44,7 @@ const buildStateFilterClause = `
 // ListBuildStates returns the build states of a project ordered by repo, arch, package, flavor.
 func (s *PostgresStore) ListBuildStates(ctx context.Context, project string, filter storage.BuildStateFilter) ([]*storage.PackageBuildState, error) {
 	query := `
-		SELECT project, repo, arch, package, flavor, state, details, srcmd5, meta, bcnt, job_id, updated_at
+		SELECT project, repo, arch, package, flavor, state, details, source_commit, meta, bcnt, job_id, updated_at
 		FROM package_build_state` + buildStateFilterClause + `
 		ORDER BY repo, arch, package, flavor`
 	rows, err := s.pool.Query(ctx, query, project, filter.Repo, filter.Arch, filter.State)
@@ -57,7 +57,7 @@ func (s *PostgresStore) ListBuildStates(ctx context.Context, project string, fil
 	for rows.Next() {
 		var st storage.PackageBuildState
 		if err := rows.Scan(&st.Project, &st.Repo, &st.Arch, &st.Package, &st.Flavor, &st.State,
-			&st.Details, &st.SrcMD5, &st.Meta, &st.Bcnt, &st.JobID, &st.UpdatedAt); err != nil {
+			&st.Details, &st.SourceCommit, &st.Meta, &st.Bcnt, &st.JobID, &st.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan build state: %w", err)
 		}
 		list = append(list, &st)
