@@ -31,14 +31,17 @@ const procFilesystemsName = "proc-filesystems"
 //     (obsbuild.<root>); tests resolving their own hostname (cups) fail.
 //   - CAP_IPC_LOCK and RLIMIT_MEMLOCK=infinity: libgcrypt secure memory
 //     (mlock) as in a KVM guest.
-//   - the /proc/filesystems bind hides selinuxfs, which nspawn's container
-//     shares with the host, so SELinux aware test suites skip like in a VM.
+//
+// Not included: binding a filtered /proc/filesystems (to hide the host's
+// selinuxfs from SELinux-aware test suites such as coreutils). systemd-nspawn
+// sets up binds before it mounts /proc in the container, so the bind fails
+// with "Failed to clone ...: No such file or directory" and every build dies.
+// The {proc_filesystems} placeholder stays available for experiments.
 func DefaultNspawnArgs() []string {
 	return []string{
 		"--hostname=" + placeholderHostname,
 		"--capability=CAP_IPC_LOCK",
 		"--rlimit=RLIMIT_MEMLOCK=infinity",
-		"--bind-ro=" + placeholderProcFilesystems + ":/proc/filesystems",
 	}
 }
 

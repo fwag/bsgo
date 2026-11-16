@@ -19,8 +19,8 @@ func TestExpandNspawnArgs(t *testing.T) {
 	}{
 		{"defaults", DefaultNspawnArgs(), []string{
 			"--hostname=w1", "--capability=CAP_IPC_LOCK", "--rlimit=RLIMIT_MEMLOCK=infinity",
-			"--bind-ro=/w/proc-filesystems:/proc/filesystems",
 		}},
+		{"proc placeholder", []string{"--bind-ro={proc_filesystems}:/x"}, []string{"--bind-ro=/w/proc-filesystems:/x"}},
 		{"subset", []string{"--hostname={hostname}"}, []string{"--hostname=w1"}},
 		{"literal", []string{"--bind=/a:/b"}, []string{"--bind=/a:/b"}},
 		{"empty", []string{}, []string{}},
@@ -60,13 +60,19 @@ func TestPrepareNspawnArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 4 || got[0] != "--hostname="+host {
+	if len(got) != 3 || got[0] != "--hostname="+host {
 		t.Fatalf("args = %v", got)
 	}
-	file := filepath.Join(dir, procFilesystemsName)
-	if got[3] != "--bind-ro="+file+":/proc/filesystems" {
-		t.Errorf("bind arg = %q", got[3])
+	for _, a := range got {
+		if strings.Contains(a, "/proc/filesystems") {
+			t.Errorf("default args must not bind over /proc (nspawn mounts /proc after binds): %q", a)
+		}
 	}
+	// The filtered file is generated when a configured entry uses it.
+	if _, err := PrepareNspawnArgs([]string{"--bind-ro={proc_filesystems}:/x"}, dir); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, procFilesystemsName)
 	data, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)

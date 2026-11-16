@@ -38,10 +38,10 @@ sandbox:
   # delete entries to disable them individually. {hostname} is the host name as
   # `hostname` prints it (init_buildsystem writes it to the build root's
   # /etc/hosts, so the container must use it); {proc_filesystems} is a
-  # per-worker copy of /proc/filesystems without selinuxfs (SELinux aware test
-  # suites then skip as in a KVM guest).
+  # per-worker copy of /proc/filesystems without selinuxfs. Do NOT bind it over
+  # /proc/filesystems: systemd-nspawn sets up binds before mounting /proc and
+  # every build fails ("Failed to clone ...").
   # nspawn_args:
   #   - "--hostname={hostname}"
   #   - "--capability=CAP_IPC_LOCK"          # libgcrypt secure memory
   #   - "--rlimit=RLIMIT_MEMLOCK=infinity"   # libgcrypt secure memory
-  #   - "--bind-ro={proc_filesystems}:/proc/filesystems"
