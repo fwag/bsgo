@@ -53,6 +53,7 @@ func fixtureRepo(t *testing.T) (bare, first, second string) {
 	first = git(t, work, "rev-parse", "HEAD")
 	write("foo.spec", "Name: foo\nVersion: 2\n")
 	write("_constraints", "<constraints/>")
+	write("_service", "<services/>")
 	write("README", "ignored")
 	write("foo.tar.gz", strings.Repeat("x", 1<<20))
 	git(t, work, "add", ".")
@@ -82,7 +83,7 @@ func TestFetchPinnedCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got["foo.spec"]) != "Name: foo\nVersion: 2\n" || string(got["_constraints"]) != "<constraints/>" {
+	if string(got["foo.spec"]) != "Name: foo\nVersion: 2\n" || string(got["_constraints"]) != "<constraints/>" || string(got["_service"]) != "<services/>" {
 		t.Errorf("second commit: got %v", got)
 	}
 	if _, ok := got["foo.tar.gz"]; ok {

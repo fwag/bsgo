@@ -148,8 +148,25 @@ func (ps *pass) parseUnit(pkg *manifest.PackageManifest, ru recipe.Unit, files f
 		return u
 	}
 	u.info = info
+	if data, ok := files[recipe.ServiceFile]; ok {
+		if err := ps.serviceDeps(u, data); err != nil {
+			u.fixed = &verdict{storage.StateBroken, err.Error()}
+			return u
+		}
+	}
 	u.fixed = ps.exclusion(u)
 	return u
+}
+
+// serviceDeps records the packages of the buildtime services of a _service
+// file as additional build dependencies of u (BSSched::BuildJob btdeps).
+func (ps *pass) serviceDeps(u *unit, data []byte) error {
+	names, err := recipe.BuildtimeServices(data)
+	if err != nil {
+		return err
+	}
+	u.svcDeps = recipe.ServiceDeps(names, ps.exp.Substitute, ps.worker.BinaryType)
+	return nil
 }
 
 // recipeInfo parses a recipe, caching the result by (commit, recipe, flavor,

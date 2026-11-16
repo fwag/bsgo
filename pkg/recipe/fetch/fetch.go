@@ -37,7 +37,7 @@ const commitRef = "refs/bsgo/commit"
 var (
 	commitRe = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 	// recipeNameRe selects the files the scheduler reads.
-	recipeNameRe = regexp.MustCompile(`^(?:[^/\n]+\.spec|_multibuild|_constraints)$`)
+	recipeNameRe = regexp.MustCompile(`^(?:[^/\n]+\.spec|_multibuild|_constraints|_service)$`)
 )
 
 // Fetcher fetches recipe files, consulting an optional cache first.

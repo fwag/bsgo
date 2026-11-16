@@ -17,7 +17,7 @@ import (
 // runscripts/notmeta flags, allocates the release counters and assembles the
 // JobSpec. A non-nil verdict means the job cannot be created.
 func (ps *pass) newJob(u *unit, meta, explain string) (*JobSpec, *verdict) {
-	build, err := ps.pool.GetBuild(ps.exp, u.info.Subpacks, u.info.Deps)
+	build, err := ps.pool.GetBuild(ps.exp, u.info.Subpacks, u.buildDeps())
 	var ee *solv.ExpandError
 	if errors.As(err, &ee) {
 		return nil, &verdict{storage.StateUnresolvable, ee.Error()}

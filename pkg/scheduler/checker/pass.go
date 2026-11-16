@@ -25,6 +25,7 @@ type unit struct {
 	commit            string
 	recipeFile        string
 	info              *recipe.Info
+	svcDeps           []string // obs-service packages of buildtime services
 
 	// fixed is set when the state was decided before dependency expansion
 	// (excluded, disabled, broken, source unavailable).
