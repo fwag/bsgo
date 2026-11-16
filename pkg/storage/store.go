@@ -217,31 +217,40 @@ type Store interface {
 	SaveBuildRepoIndex(ctx context.Context, idx *BuildRepoIndex) error
 	// GetBuildRepoIndex returns ErrNotFound when nothing was indexed yet.
 	GetBuildRepoIndex(ctx context.Context, project, repo, arch string) (*BuildRepoIndex, error)
+
+	// SetPrpaState inserts or replaces the repository state of a prpa.
+	SetPrpaState(ctx context.Context, st *PrpaState) error
+	// GetPrpaState returns ErrNotFound when no state was recorded yet.
+	GetPrpaState(ctx context.Context, project, repo, arch string) (*PrpaState, error)
+	// ListPrpaStates returns the repository states of a project.
+	ListPrpaStates(ctx context.Context, project string) ([]*PrpaState, error)
 }
 
 type MemoryStore struct {
-	mu       sync.RWMutex
-	projects map[string]*manifest.ProjectManifest
-	packages map[string]map[string]*manifest.PackageManifest
-	keys     map[string]map[string]*ProjectSigningKey // key: project -> flavor:type -> key
-	solvs    map[string]*TargetSolv                   // key: project:target:arch -> solv
-	states   map[string]*PackageBuildState            // key: project/repo/arch/package/flavor
-	dod      map[string]*DoDRepo                      // key: url
-	counters map[CounterKey]BuildCounters
-	forced   []ForcedRebuild
-	indexes  map[string]*BuildRepoIndex // key: project/repo/arch
+	mu         sync.RWMutex
+	projects   map[string]*manifest.ProjectManifest
+	packages   map[string]map[string]*manifest.PackageManifest
+	keys       map[string]map[string]*ProjectSigningKey // key: project -> flavor:type -> key
+	solvs      map[string]*TargetSolv                   // key: project:target:arch -> solv
+	states     map[string]*PackageBuildState            // key: project/repo/arch/package/flavor
+	dod        map[string]*DoDRepo                      // key: url
+	counters   map[CounterKey]BuildCounters
+	forced     []ForcedRebuild
+	indexes    map[string]*BuildRepoIndex // key: project/repo/arch
+	prpaStates map[string]*PrpaState      // key: project/repo/arch
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		projects: make(map[string]*manifest.ProjectManifest),
-		packages: make(map[string]map[string]*manifest.PackageManifest),
-		keys:     make(map[string]map[string]*ProjectSigningKey),
-		solvs:    make(map[string]*TargetSolv),
-		states:   make(map[string]*PackageBuildState),
-		dod:      make(map[string]*DoDRepo),
-		counters: make(map[CounterKey]BuildCounters),
-		indexes:  make(map[string]*BuildRepoIndex),
+		projects:   make(map[string]*manifest.ProjectManifest),
+		packages:   make(map[string]map[string]*manifest.PackageManifest),
+		keys:       make(map[string]map[string]*ProjectSigningKey),
+		solvs:      make(map[string]*TargetSolv),
+		states:     make(map[string]*PackageBuildState),
+		dod:        make(map[string]*DoDRepo),
+		counters:   make(map[CounterKey]BuildCounters),
+		indexes:    make(map[string]*BuildRepoIndex),
+		prpaStates: make(map[string]*PrpaState),
 	}
 }
 
