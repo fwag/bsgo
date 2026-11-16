@@ -25,6 +25,9 @@ type generated struct {
 	// signature and key are the local paths of repomd.xml.asc and
 	// repomd.xml.key; empty when the repository is not signed.
 	signature, key string
+	// repoFile is the local path of <project>.repo; empty when no download
+	// URL is configured.
+	repoFile string
 }
 
 func (p *Publisher) publishSubRepo(ctx context.Context, tmp string, prpa buildrepo.Prpa, sr SubRepoType, bins []Binary) (*SubRepoResult, error) {
@@ -108,7 +111,14 @@ func (p *Publisher) generate(ctx context.Context, work string, prpa buildrepo.Pr
 	if err := verifyRepodata(repodata, want); err != nil {
 		return nil, err
 	}
-	return p.sign(ctx, repodata, prpa)
+	gen, err := p.sign(ctx, repodata, prpa)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.writeRepoFile(gen, prpa.Project, SubRepoS3Prefix(prpa.Project, prpa.Repo, prpa.Arch, sr)); err != nil {
+		return nil, err
+	}
+	return gen, nil
 }
 
 // fetchChanged downloads the RPMs whose sha256 is not in the old metadata and
@@ -254,6 +264,11 @@ func (p *Publisher) uploadRepodata(ctx context.Context, prefix string, gen *gene
 			return nil, err
 		}
 		if err := put(gen.key, prefix+"repodata/repomd.xml.key"); err != nil {
+			return nil, err
+		}
+	}
+	if gen.repoFile != "" {
+		if err := put(gen.repoFile, prefix+filepath.Base(gen.repoFile)); err != nil {
 			return nil, err
 		}
 	}

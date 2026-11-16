@@ -91,6 +91,9 @@ type Publisher struct {
 	Signer     MetadataSigner
 	Events     EventPublisher
 	Enrich     EnrichmentSource
+	// DownloadURL is the public URL of the object storage root. When set,
+	// every repository gets a <project>.repo file; empty skips it.
+	DownloadURL string
 	// TempRoot is the parent of the per-publish temp dirs; empty means the
 	// system temp dir.
 	TempRoot string
