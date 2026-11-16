@@ -116,6 +116,14 @@ Reads a superproject such as `products/SLFO` with git plumbing only (`rev-parse`
 - Packages in `.gitmodules` but not in the tree, or the reverse, are skipped with a diagnostic on stderr and listed in the JSON report (`packages.missing_in_tree`, `packages.missing_in_gitmodules`, `packages.skipped`).
 - `--json` prints one document `{"out","dry_run","project","verified","report","packages"}`; `project.yaml` is not overwritten without `--force`.
 
+### 3.2a Project Status (`bsgo project status`)
+
+```bash
+bsgo project status <project> [--repo <repo>] [--arch <arch>] [--state <state>] [--json]
+```
+
+Prints the per-state package counts (including `dispatching`), the repository state of every repository and architecture, and samples of failing packages. With `--json` stdout carries one document: `counts`, the legacy summary counters, `repositories: [{"repo", "arch", "state", "details"}]` and `packages[]`. Repository states are `broken`, `building`, `blocked`, `finished`, `publishing`, `published` and `unpublished` (see spec 02, "Repository state"); `repositories` lists only repositories for which the backend recorded a state and is `[]` otherwise.
+
 ### 3.3 Applying a Project Directory (`bsgo project apply`)
 
 ```bash
@@ -146,7 +154,7 @@ The project is required (positional, or `-p/--project`). A missing or unknown pr
 
 **Data.** The current state is read from the PostgreSQL table `package_build_state` (the same source and counts as `bsgo project status`), polled every `--interval`. One row is one package unit (`package[:flavor]`) in one repo and arch with its current or last job. NATS is only used for live build logs (`bsgo.logs.<jobid>`), worker names (heartbeats on `bsgo.workers.heartbeat` carry `active_job_ids`) and to refresh immediately when a `bsgo.status` message arrives. The TUI keeps working, without logs and worker names, if NATS is unreachable.
 
-**Default view.** Packages in state `building`: package[:flavor], repo/arch, state letter and name, elapsed time (`building_seconds`), short job id and worker, longest-building first. The header shows the counts per state, then one summary line per repository and architecture like the right column of `osc results` (`standard x86_64: .120 F1 %2`; the repository state, for example published, is shown in brackets once the backend reports it). Below the list the worker fleet panel shows every worker with all of its active jobs (package, repo/arch, elapsed time when the job is in the state table). Workers without a heartbeat for 60 s are dropped.
+**Default view.** Packages in state `building`: package[:flavor], repo/arch, state letter and name, elapsed time (`building_seconds`), short job id and worker, longest-building first. The header shows the counts per state, then one summary line per repository and architecture like the right column of `osc results` (`standard x86_64: .120 F1 %2`; the repository state from `prpa_state`, for example `[published]`, is shown in brackets once the backend recorded one). Below the list the worker fleet panel shows every worker with all of its active jobs (package, repo/arch, elapsed time when the job is in the state table). Workers without a heartbeat for 60 s are dropped.
 
 **State letters** follow OBS: `.` succeeded, space disabled (printed `_` in summaries), `U` unresolvable, `F` failed, `B` broken, `b` blocked, `%` building, `f` finished, `s` scheduled, `L` locked, `x` excluded, `d` dispatching, `S` signing, `?` no state or unknown. States are treated as data: a state the backend starts emitting later shows up in counts and summaries (as `?` until it gets a letter) without a code change. `?` in the TUI toggles the legend.
 
@@ -166,7 +174,7 @@ The project is required (positional, or `-p/--project`). A missing or unknown pr
 ```json
 {"project": "...", "repo": "...", "arch": "...", "state": "building",
  "counts": {"building": 3, "failed": 1},
- "repositories": [{"repo": "standard", "arch": "x86_64", "counts": {"building": 3, "failed": 1}}],
+ "repositories": [{"repo": "standard", "arch": "x86_64", "repo_state": "building", "counts": {"building": 3, "failed": 1}}],
  "packages": [{"package": "glibc", "repo": "standard", "arch": "x86_64", "state": "building",
                "job_id": "...", "updated_at": "...", "building_seconds": 2832}]}
 ```

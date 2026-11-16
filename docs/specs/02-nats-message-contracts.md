@@ -358,8 +358,42 @@ off, or no key and `--sign-create-keys=false`) and jobs without RPMs skip the
 stage and integrate at once. Requests and answers survive restarts and lost
 connections, so no unit stays in `signing`.
 
-Build states added by migration 00009: `signing`, `finished` and `dispatching`
-(reserved for the dispatcher). The checker treats them like `building`.
+Build states added by migration 00009: `signing`, `finished` and `dispatching`.
+The checker treats them like `building` (jobs in flight).
+
+Dispatch lifecycle. When the dispatcher hands a job to a worker it publishes
+`bsgo.status` with phase `DISPATCHING`, which sets the unit to `dispatching`.
+The worker publishes phase `BUILDING` when it actually starts the job, which sets
+`building`; `updated_at` of the row is then the build start, and the elapsed time
+shown by the CLI counts from it. A `DISPATCHING` message that arrives after the
+worker's `BUILDING` of the same job is ignored. The orphan reconciler requeues
+`dispatching` and `building` rows older than the grace period (3 minutes) that
+no worker reports in its heartbeat and the dispatcher does not track, with a
+`REQUEUED` message (back to `scheduled`).
+
+#### Repository state (`prpa_state`)
+Migration 00010 adds `prpa_state(project, repo, arch, state, details,
+index_hash, updated_at)`, the state of the repository as a whole, after the
+OBS repository states of `osc results`. `index_hash` is the content hash of the
+build repository index the row refers to.
+
+| State | Writer | Meaning |
+|-------|--------|---------|
+| `broken` | checker | The project configuration of the repository cannot be layered or parsed; `details` has the error. |
+| `building` | checker | Jobs are in flight (`scheduled`, `dispatching`, `building`, `signing`, `finished`). |
+| `blocked` | checker | No job in flight, but units are blocked (dependencies not ready, sources unavailable). |
+| `finished` | checker, publisher | All work is done and the current index is not published (also after a failed publish, with `details`). |
+| `publishing` | publisher | A publish is writing the repository. |
+| `published` | publisher | The published repository is the one built from `index_hash`. |
+| `unpublished` | checker, publisher | The target does not publish (`flags.publish` off or no rpm-md repository type). |
+
+The checker writes the state at the end of each pass with a pure function
+(`storage.DeriveRepoState`), in this precedence: configuration error (`broken`),
+jobs in flight (`building`), blocked units (`blocked`), otherwise
+`unpublished` or `finished`. It does not undo the publisher: `publishing`, and
+`published` while `index_hash` equals the current index hash, are kept, so the
+state does not flap between passes. Any new work or a changed index replaces
+them. The OBS state `scheduling` (a pass is running) is not recorded.
 
 ### 3.7. Publication (no request message)
 There is no publication request and no `PUBLISH` stream. The former

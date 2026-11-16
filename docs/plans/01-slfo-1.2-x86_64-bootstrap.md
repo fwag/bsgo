@@ -247,6 +247,11 @@ Tasks:
    succeeded, failed, unresolvable, blocked, broken, excluded, disabled`
    (OBS names). Writers: the scheduler (unresolvable/blocked/scheduled) and
    the job-status consumer (building/succeeded/failed).
+   Later additions: `dispatching` (dispatcher hand-off, `building` once the
+   worker starts the job), `signing`/`finished` (plan 02) and the repository
+   state table `prpa_state` (migration 00010: building, blocked, finished,
+   publishing, published, unpublished, broken) shown by `bsgo project status`
+   and `bsgo watch`; see spec 02.
 2. `bsgo project status` reads this table (with `--repo`, `--arch`, `--state`
    filters, `--json`, and `details` per package). Delete the stream replay in
    `pkg/cli/project.go`.
