@@ -94,18 +94,3 @@ func TestSandboxArgsNspawnVMArgs(t *testing.T) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
-
-func TestRenderRPMListNonVM(t *testing.T) {
-	bi := &v1.BuildInfo{Bdeps: []v1.Bdep{
-		{Name: "glibc", Version: "1", Release: "1", Arch: "x86_64", Preinstall: true, VMInstall: true},
-		{Name: "kernel-obs-build", Version: "1", Release: "1", Arch: "x86_64", VMInstall: true},
-		{Name: "make", Version: "1", Release: "1", Arch: "x86_64"},
-	}}
-	got := renderRPMList(bi, "/w", false)
-	if strings.Contains(got, "kernel-obs-build") || !strings.Contains(got, "vminstall: \n") || !strings.Contains(got, "glibc /w/") {
-		t.Errorf("rpmlist = %q", got)
-	}
-	if vm := renderRPMList(bi, "/w", true); !strings.Contains(vm, "vminstall: glibc kernel-obs-build\n") {
-		t.Errorf("vm rpmlist = %q", vm)
-	}
-}

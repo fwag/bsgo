@@ -120,7 +120,7 @@ message Bdep {
   int64 size = 7;
   BdepSource source = 8;      // exactly one of s3_key / url
   bool preinstall = 9;        // rpmlist "preinstall:" line
-  bool vminstall = 10;        // rpmlist "vminstall:" line (KVM workers only; nspawn/chroot workers drop these packages)
+  bool vminstall = 10;        // rpmlist "vminstall:" line
   bool runscripts = 11;       // rpmlist "runscripts:" line
   bool noinstall = 12;        // rpmlist "noinstall:" line
   bool installonly = 13;      // rpmlist "installonly:" line

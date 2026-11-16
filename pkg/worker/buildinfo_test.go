@@ -56,11 +56,11 @@ runscripts: filesystem glibc
 noinstall: gcc13
 installonly: texinfo
 `
-	if got := renderRPMList(fixtureBuildInfo(), "/w/bdeps", true); got != want {
+	if got := renderRPMList(fixtureBuildInfo(), "/w/bdeps"); got != want {
 		t.Errorf("rpmlist mismatch\n got:\n%s\nwant:\n%s", got, want)
 	}
 
-	empty := renderRPMList(&v1.BuildInfo{}, "/w/bdeps", true)
+	empty := renderRPMList(&v1.BuildInfo{}, "/w/bdeps")
 	wantEmpty := "preinstall: \nvminstall: \nrunscripts: \nnoinstall: \ninstallonly: \n"
 	if empty != wantEmpty {
 		t.Errorf("empty rpmlist = %q, want %q", empty, wantEmpty)
