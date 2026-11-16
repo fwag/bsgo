@@ -641,6 +641,18 @@ type PackageBuild struct {
 	Targets       map[string]bool `yaml:"targets,omitempty"`
 	Architectures ArchFilter      `yaml:"architectures,omitempty"`
 	Requires      []string        `yaml:"requires,omitempty"`
+	// Constraints override the build job constraints derived from the OBS
+	// _constraints file, the recipe and the project configuration.
+	Constraints BuildConstraints `yaml:"constraints,omitempty"`
+}
+
+// BuildConstraints is the bsgo-native override of the OBS build job
+// constraints of a package, applied on top of everything OBS derives.
+type BuildConstraints struct {
+	// Sandbox replaces the sandbox constraint: a space separated list of
+	// sandbox names (kvm, nspawn, chroot, secure; a leading "!" excludes one),
+	// or "none" to drop the constraint. Empty keeps the derived constraint.
+	Sandbox string `yaml:"sandbox,omitempty"`
 }
 
 type ArchFilter struct {

@@ -1,6 +1,9 @@
 package checker
 
-import "github.com/openSUSE/bsgo/pkg/manifest"
+import (
+	"github.com/openSUSE/bsgo/pkg/constraints"
+	"github.com/openSUSE/bsgo/pkg/manifest"
+)
 
 // JobSpec is the complete build contract the checker hands to a JobSink. A
 // sink maps it onto the wire format (v1.BuildJob with BuildInfo); the field
@@ -47,6 +50,9 @@ type JobSpec struct {
 	LogIdleLimit int32
 	// Resources are the manifest's resource limits, unparsed.
 	Resources manifest.ResourceLimits
+	// Constraints are the merged build job constraints (OBS _constraints,
+	// recipe, project configuration and the manifest override).
+	Constraints constraints.Constraints
 }
 
 // Bdep is one build dependency binary.

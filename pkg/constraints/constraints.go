@@ -12,6 +12,9 @@ package constraints
 
 import "strings"
 
+// File is the name of the constraints file in a package source.
+const File = "_constraints"
+
 // OverrideSandbox replaces the sandbox constraint of c with spec, the
 // bsgo-native override of the package manifest (build.constraints.sandbox).
 // spec is a space separated list of sandbox names; a leading "!" excludes a
@@ -186,4 +189,18 @@ func Resolve(src Sources) (Constraints, error) {
 		return Constraints{}, err
 	}
 	return Merge(pc, pkg), nil
+}
+
+// DescribeSandbox renders sandbox constraints for status messages, for
+// example "kvm" or "secure and not chroot".
+func DescribeSandbox(ms []Match) string {
+	parts := make([]string, 0, len(ms))
+	for _, m := range ms {
+		if m.Exclude {
+			parts = append(parts, "not "+m.Value)
+		} else {
+			parts = append(parts, m.Value)
+		}
+	}
+	return strings.Join(parts, " and ")
 }

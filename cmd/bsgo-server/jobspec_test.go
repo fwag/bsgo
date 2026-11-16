@@ -1,11 +1,14 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/openSUSE/bsgo/pkg/constraints"
 	"github.com/openSUSE/bsgo/pkg/manifest"
+	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/scheduler/checker"
 )
 
@@ -92,6 +95,45 @@ func TestJobFromSpecRejectsBadBdepSources(t *testing.T) {
 			spec := &checker.JobSpec{Package: "p", Bdeps: []checker.Bdep{{Name: "b", Source: src}}}
 			if _, err := jobFromSpec(spec, "b", time.Now()); err == nil {
 				t.Error("want an error")
+			}
+		})
+	}
+}
+
+func TestJobFromSpecConstraints(t *testing.T) {
+	tests := []struct {
+		name      string
+		in        constraints.Constraints
+		wantNil   bool
+		sandbox   []v1.SandboxConstraint
+		mem, disk int64
+		vcpus     int32
+	}{
+		{name: "none", wantNil: true, mem: 4096, disk: 20, vcpus: 2},
+		{name: "sandbox only", in: constraints.Constraints{Sandbox: []constraints.Match{{Value: "kvm"}, {Value: "chroot", Exclude: true}}},
+			sandbox: []v1.SandboxConstraint{{Value: "kvm"}, {Value: "chroot", Exclude: true}}, mem: 4096, disk: 20, vcpus: 2},
+		{name: "raises resources", in: constraints.Constraints{Hardware: constraints.Hardware{MemoryMB: 8192.5, DiskMB: 30 * 1024, Processors: 8}},
+			mem: 8193, disk: 30, vcpus: 8},
+		{name: "never lowers resources", in: constraints.Constraints{Hardware: constraints.Hardware{MemoryMB: 1024, DiskMB: 1024, Processors: 1}},
+			mem: 4096, disk: 20, vcpus: 2},
+		{name: "disk rounds up", in: constraints.Constraints{Hardware: constraints.Hardware{DiskMB: 21*1024 + 1}}, mem: 4096, disk: 22, vcpus: 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := &checker.JobSpec{Constraints: tc.in}
+			job, err := jobFromSpec(spec, "b", time.Unix(1, 0))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (job.Constraints == nil) != tc.wantNil {
+				t.Fatalf("constraints = %+v", job.Constraints)
+			}
+			if job.Constraints != nil && !reflect.DeepEqual(job.Constraints.Sandbox, tc.sandbox) {
+				t.Errorf("sandbox = %+v", job.Constraints.Sandbox)
+			}
+			r := job.Resources
+			if r.MemoryMB != tc.mem || r.DiskGB != tc.disk || r.VCPUs != tc.vcpus {
+				t.Errorf("resources = %+v", r)
 			}
 		})
 	}

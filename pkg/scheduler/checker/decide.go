@@ -3,6 +3,7 @@ package checker
 import (
 	"strings"
 
+	"github.com/openSUSE/bsgo/pkg/constraints"
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
@@ -277,7 +278,7 @@ func (ps *pass) schedule(u *unit, row *storage.PackageBuildState, meta, explain 
 		return
 	}
 	d := &decision{
-		unit: u, state: storage.StateScheduled, details: explain,
+		unit: u, state: storage.StateScheduled, details: scheduledDetails(u, explain),
 		meta: meta, commit: u.commit, job: job,
 	}
 	if row != nil && inFlight(row.State) {
@@ -285,4 +286,13 @@ func (ps *pass) schedule(u *unit, row *storage.PackageBuildState, meta, explain 
 	}
 	ps.out.add(d)
 	ps.out.notready[u] = true
+}
+
+// scheduledDetails is the status detail of a scheduled unit: the reason it is
+// built, plus the sandbox it needs when its constraints restrict the worker.
+func scheduledDetails(u *unit, explain string) string {
+	if len(u.constraints.Sandbox) == 0 {
+		return explain
+	}
+	return explain + ", needs sandbox " + constraints.DescribeSandbox(u.constraints.Sandbox)
 }

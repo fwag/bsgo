@@ -61,6 +61,7 @@ func (ps *pass) jobSpec(u *unit, meta, explain, attempt string, c storage.BuildC
 		Priority:     priorityOf(u.ndepend),
 		LogIdleLimit: ps.logIdleLimit(),
 		Resources:    u.manifest.Resources,
+		Constraints:  u.constraints,
 	}
 }
 

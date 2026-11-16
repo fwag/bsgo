@@ -63,10 +63,14 @@ type BuildJob struct {
 	// BuildInfo is the complete, pre-resolved build contract (the bs_sched
 	// "buildinfo"). When set the worker runs hermetically: it never resolves
 	// dependencies itself and never passes --repo to obs-build.
-	BuildInfo     *BuildInfo           `json:"buildinfo,omitempty"`
-	Resources     ResourceRequirements `json:"resources"`
-	Destination   ArtifactDestination  `json:"destination"`
-	CreatedAtUnix int64                `json:"created_at_unix"`
+	BuildInfo *BuildInfo           `json:"buildinfo,omitempty"`
+	Resources ResourceRequirements `json:"resources"`
+	// Constraints are the resolved build job constraints (OBS _constraints,
+	// recipe and project configuration, plus the manifest override). Nil
+	// means unconstrained.
+	Constraints   *JobConstraints     `json:"constraints,omitempty"`
+	Destination   ArtifactDestination `json:"destination"`
+	CreatedAtUnix int64               `json:"created_at_unix"`
 }
 
 // BuildInfo carries everything the worker needs for a hermetic build. It is
@@ -164,6 +168,55 @@ type ResourceRequirements struct {
 	SandboxType    string `json:"sandbox_type"`
 }
 
+// SandboxConstraint is one sandbox requirement: the worker sandbox must equal
+// Value (or, for "secure", be a hardware-isolated sandbox), or must not when
+// Exclude is set.
+type SandboxConstraint struct {
+	Value   string `json:"value"`
+	Exclude bool   `json:"exclude,omitempty"`
+}
+
+// JobConstraints is the dispatch-relevant part of the merged build
+// constraints. MemoryMB, DiskMB and Processors are already folded into
+// Resources by the scheduler and are informational here.
+type JobConstraints struct {
+	Sandbox    []SandboxConstraint `json:"sandbox,omitempty"`
+	MemoryMB   int64               `json:"memory_mb,omitempty"`
+	DiskMB     int64               `json:"disk_mb,omitempty"`
+	Processors int32               `json:"processors,omitempty"`
+}
+
+// secureSandboxes are the sandbox types the constraint "secure" accepts, like
+// BSDispatcher::Constraints (chroot and nspawn share the host kernel).
+var secureSandboxes = map[string]bool{"kvm": true, "xen": true, "zvm": true}
+
+// SandboxConstrained reports whether the job restricts the worker sandbox.
+func (c *JobConstraints) SandboxConstrained() bool {
+	return c != nil && len(c.Sandbox) > 0
+}
+
+// SandboxAllows reports whether a worker running sandbox satisfies every
+// sandbox constraint (BSDispatcher::Constraints::oracle).
+func (c *JobConstraints) SandboxAllows(sandbox string) bool {
+	if c == nil {
+		return true
+	}
+	for _, s := range c.Sandbox {
+		switch {
+		case s.Exclude && s.Value == sandbox:
+			return false
+		case s.Exclude:
+		case s.Value == "secure":
+			if !secureSandboxes[sandbox] {
+				return false
+			}
+		case s.Value != sandbox:
+			return false
+		}
+	}
+	return true
+}
+
 type ArtifactDestination struct {
 	S3Bucket string `json:"s3_bucket"`
 	S3Prefix string `json:"s3_prefix"`
@@ -189,7 +242,11 @@ type WorkerHeartbeat struct {
 	ActiveJobIDs    []string       `json:"active_job_ids,omitempty"`
 	Hardware        WorkerHardware `json:"hardware"`
 	CachedRPMHashes []string       `json:"cached_rpm_hashes"`
-	TimestampUnix   int64          `json:"timestamp_unix"`
+	// ConstrainedOnly makes the worker take only jobs with a sandbox
+	// constraint (sandbox.accept_unconstrained: false). Workers that predate
+	// the field accept every job.
+	ConstrainedOnly bool  `json:"constrained_only,omitempty"`
+	TimestampUnix   int64 `json:"timestamp_unix"`
 }
 
 // CanBuild reports whether the worker advertises arch.

@@ -44,6 +44,9 @@ func applyLine(c *Constraints, f []string) error {
 			return fmt.Errorf("unsupported element %q", p)
 		}
 	}
+	if path[0] == "overwrite" {
+		return nil // valid in the schema, but bs_dispatch never applies it to project configuration lines
+	}
 	attrs, values := splitAttrs(f[1:])
 	if len(values) == 0 {
 		return fmt.Errorf("no value for %s", f[0])

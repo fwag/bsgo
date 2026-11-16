@@ -3,6 +3,7 @@ package checker
 import (
 	"errors"
 	"fmt"
+	"github.com/openSUSE/bsgo/pkg/constraints"
 	"sort"
 	"strings"
 	"sync"
@@ -148,6 +149,10 @@ func (ps *pass) parseUnit(pkg *manifest.PackageManifest, ru recipe.Unit, files f
 		return u
 	}
 	u.info = info
+	if err := ps.resolveConstraints(u, files); err != nil {
+		u.fixed = &verdict{storage.StateBroken, err.Error()}
+		return u
+	}
 	if data, ok := files[recipe.ServiceFile]; ok {
 		if err := ps.serviceDeps(u, data); err != nil {
 			u.fixed = &verdict{storage.StateBroken, err.Error()}
@@ -156,6 +161,21 @@ func (ps *pass) parseUnit(pkg *manifest.PackageManifest, ru recipe.Unit, files f
 	}
 	u.fixed = ps.exclusion(u)
 	return u
+}
+
+// resolveConstraints merges the build job constraints of u: the _constraints
+// file, the recipe, the project configuration and finally the manifest
+// override build.constraints.
+func (ps *pass) resolveConstraints(u *unit, files fetch.Files) error {
+	c, err := constraints.Resolve(constraints.Sources{
+		XML: files[constraints.File], Recipe: u.info.Constraints, Prjconf: ps.sched.Constraint,
+		Arch: ps.prpa.Arch, Package: u.name,
+	})
+	if err != nil {
+		return err
+	}
+	u.constraints = constraints.OverrideSandbox(c, u.manifest.Build.Constraints.Sandbox)
+	return nil
 }
 
 // serviceDeps records the packages of the buildtime services of a _service

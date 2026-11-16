@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/openSUSE/bsgo/pkg/constraints"
 	"github.com/openSUSE/bsgo/pkg/manifest"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/scheduler/buildrepo"
@@ -27,6 +29,8 @@ func jobFromSpec(spec *checker.JobSpec, bucket string, now time.Time) (*v1.Build
 	if err != nil {
 		return nil, fmt.Errorf("resources of %s: %w", spec.Package, err)
 	}
+	jc := jobConstraints(spec.Constraints)
+	foldConstraints(&res, jc)
 	bdeps := make([]v1.Bdep, 0, len(spec.Bdeps))
 	for _, b := range spec.Bdeps {
 		bd, err := bdepOf(b)
@@ -56,9 +60,38 @@ func jobFromSpec(spec *checker.JobSpec, bucket string, now time.Time) (*v1.Build
 			SourceCommit: spec.SourceCommit, Meta: spec.Meta, LogIdleLimit: spec.LogIdleLimit,
 		},
 		Resources:     res,
+		Constraints:   jc,
 		Destination:   v1.ArtifactDestination{S3Bucket: bucket, S3Prefix: buildrepo.ArtifactPrefix(prpa, spec.Package)},
 		CreatedAtUnix: now.Unix(),
 	}, nil
+}
+
+// jobConstraints maps the merged constraints onto the wire message; nil when
+// no constraint is dispatch relevant.
+func jobConstraints(c constraints.Constraints) *v1.JobConstraints {
+	jc := &v1.JobConstraints{
+		MemoryMB:   int64(math.Ceil(c.Hardware.MemoryMB)),
+		DiskMB:     int64(math.Ceil(c.Hardware.DiskMB)),
+		Processors: int32(min(c.Hardware.Processors, 1<<20)),
+	}
+	for _, s := range c.Sandbox {
+		jc.Sandbox = append(jc.Sandbox, v1.SandboxConstraint{Value: s.Value, Exclude: s.Exclude})
+	}
+	if len(jc.Sandbox) == 0 && jc.MemoryMB == 0 && jc.DiskMB == 0 && jc.Processors == 0 {
+		return nil
+	}
+	return jc
+}
+
+// foldConstraints raises the resource request to what the constraints demand,
+// so the dispatcher matches workers by capacity and the VM is sized for it.
+func foldConstraints(res *v1.ResourceRequirements, jc *v1.JobConstraints) {
+	if jc == nil {
+		return
+	}
+	res.MemoryMB = max(res.MemoryMB, jc.MemoryMB)
+	res.DiskGB = max(res.DiskGB, (jc.DiskMB+1023)/1024)
+	res.VCPUs = max(res.VCPUs, jc.Processors)
 }
 
 func bdepOf(b checker.Bdep) (v1.Bdep, error) {

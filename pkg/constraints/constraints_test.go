@@ -26,6 +26,7 @@ func TestParseLines(t *testing.T) {
 		{"linux", []string{"linux:flavor default", "linux:version:min 6.0", "linux:version:max 7.0"},
 			Constraints{Linux: Linux{Flavor: "default", Min: "6.0", Max: "7.0"}}, ""},
 		{"hostlabel", []string{"hostlabel bench"}, Constraints{HostLabels: []Match{{Value: "bench"}}}, ""},
+		{"overwrite is ignored", []string{"overwrite:conditions:package foo"}, Constraints{}, ""},
 		{"blank line", []string{"  "}, Constraints{}, ""},
 		{"unknown element", []string{"frobnicate 1"}, Constraints{}, "unknown element"},
 		{"modifier", []string{"sandbox+ kvm"}, Constraints{}, "unsupported element"},

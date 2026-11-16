@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/openSUSE/bsgo/pkg/constraints"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,7 @@ type unit struct {
 	recipeFile        string
 	info              *recipe.Info
 	svcDeps           []string // obs-service packages of buildtime services
+	constraints       constraints.Constraints
 
 	// fixed is set when the state was decided before dependency expansion
 	// (excluded, disabled, broken, source unavailable).
