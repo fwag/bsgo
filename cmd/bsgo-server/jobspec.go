@@ -72,7 +72,7 @@ func jobConstraints(c constraints.Constraints) *v1.JobConstraints {
 	jc := &v1.JobConstraints{
 		MemoryMB:   int64(math.Ceil(c.Hardware.MemoryMB)),
 		DiskMB:     int64(math.Ceil(c.Hardware.DiskMB)),
-		Processors: int32(min(c.Hardware.Processors, 1<<20)),
+		Processors: clampInt32(c.Hardware.Processors),
 	}
 	for _, s := range c.Sandbox {
 		jc.Sandbox = append(jc.Sandbox, v1.SandboxConstraint{Value: s.Value, Exclude: s.Exclude})
@@ -81,6 +81,16 @@ func jobConstraints(c constraints.Constraints) *v1.JobConstraints {
 		return nil
 	}
 	return jc
+}
+
+func clampInt32(n int) int32 {
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if n < 0 {
+		return 0
+	}
+	return int32(n)
 }
 
 // foldConstraints raises the resource request to what the constraints demand,
