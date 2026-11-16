@@ -125,6 +125,11 @@ func TestWorkerLifecycleAndLiveLogs(t *testing.T) {
 		t.Fatalf("timed out waiting for live log stream")
 	}
 
+	// The worker announces the start (building) before the outcome.
+	if st := <-statusChanTimeout(t, statusChan); st["phase"] != "BUILDING" {
+		t.Fatalf("expected the first phase BUILDING, got %v", st["phase"])
+	}
+
 	// Verify job completion status
 	select {
 	case st := <-statusChan:
@@ -137,6 +142,20 @@ func TestWorkerLifecycleAndLiveLogs(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for job status update")
 	}
+}
+
+// statusChanTimeout returns a channel with the next status of ch, failing the
+// test when none arrives in time.
+func statusChanTimeout(t *testing.T, ch <-chan map[string]any) <-chan map[string]any {
+	t.Helper()
+	out := make(chan map[string]any, 1)
+	select {
+	case st := <-ch:
+		out <- st
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for the start status")
+	}
+	return out
 }
 
 func TestWorkerAbortSignal(t *testing.T) {
@@ -198,6 +217,9 @@ func TestWorkerAbortSignal(t *testing.T) {
 	_ = nc.Publish("bsgo.jobs."+jobID+".control", ctrlData)
 	_ = nc.Flush()
 
+	if st := <-statusChanTimeout(t, statusChan); st["phase"] != "BUILDING" {
+		t.Fatalf("expected the first phase BUILDING, got %v", st["phase"])
+	}
 	select {
 	case st := <-statusChan:
 		if st["phase"] != "ABORTED" {
