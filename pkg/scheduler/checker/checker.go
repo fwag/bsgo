@@ -38,6 +38,8 @@ type Store interface {
 	UpsertBuildStates(ctx context.Context, states []*storage.PackageBuildState) error
 	NextBuildCounters(ctx context.Context, key storage.CounterKey) (storage.BuildCounters, error)
 	ListForcedRebuilds(ctx context.Context, project string) ([]storage.ForcedRebuild, error)
+	GetPrpaState(ctx context.Context, project, repo, arch string) (*storage.PrpaState, error)
+	SetPrpaState(ctx context.Context, st *storage.PrpaState) error
 	ClearForcedRebuilds(ctx context.Context, project, repo, arch string, units []storage.UnitRef) error
 }
 
@@ -127,7 +129,7 @@ func (c *Checker) Run(ctx context.Context, p Prpa) (*Result, error) {
 		return nil, err
 	}
 	if err := ps.prepare(); err != nil {
-		return nil, err
+		return nil, ps.recordBroken(err)
 	}
 	ps.decideAll()
 	return ps.finish()
@@ -160,5 +162,9 @@ func (ps *pass) finish() (*Result, error) {
 	if err := ps.emitAndStore(); err != nil {
 		return nil, fmt.Errorf("pass %s: %w", ps.prpa, err)
 	}
-	return ps.result(), nil
+	res := ps.result()
+	if err := ps.recordRepoState(res.Counts, ""); err != nil {
+		return nil, fmt.Errorf("pass %s: %w", ps.prpa, err)
+	}
+	return res, nil
 }

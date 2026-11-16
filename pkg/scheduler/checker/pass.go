@@ -125,6 +125,16 @@ func (ps *pass) loadConfig() error {
 		return fmt.Errorf("%w: %s", ErrUnknownRepository, ps.prpa)
 	}
 	ps.prj, ps.target = prj, tgt
+	if err := ps.parseConfig(); err != nil {
+		return &configError{err}
+	}
+	return nil
+}
+
+// parseConfig layers and parses the build configuration of the prpa.
+func (ps *pass) parseConfig() error {
+	prj := ps.prj
+	var err error
 	if ps.path, err = buildconfig.PathFromTarget(prj, ps.prpa.Repo); err != nil {
 		return err
 	}
@@ -145,6 +155,13 @@ func (ps *pass) loadConfig() error {
 	ps.excludeBuild, ps.onlyBuild = buildFlagSets(ps.sched.BuildFlags)
 	return nil
 }
+
+// configError marks an unusable build configuration: the repository is
+// broken, not just failing to be checked.
+type configError struct{ err error }
+
+func (e *configError) Error() string { return e.err.Error() }
+func (e *configError) Unwrap() error { return e.err }
 
 func hasArch(list []string, arch string) bool {
 	for _, a := range list {
