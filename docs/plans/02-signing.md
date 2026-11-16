@@ -1,6 +1,6 @@
 # Plan: Signing (RPMs, repository metadata, provenance)
 
-Status: S0 and S1 implemented (2026-11-15); S2-S6 proposed
+Status: S0, S1 and S2 implemented; S3-S6 proposed
 Audience: implementation agents (Sonnet) + human reviewer
 Depends on: plan 01 (scheduler, indexer, publisher, hermetic worker) — merged.
 
@@ -158,7 +158,9 @@ from the project config `BuildFlags: signflavor:<f>` selects a named key.
 Tests: table-driven; verify produced signatures with `gpg --verify` (oracle,
 build tag `oracle`) and with go-crypto's verifier (normal CI).
 
-### S2. Repository metadata signing (publisher)
+### S2. Repository metadata signing (publisher) - DONE
+
+Implemented: `signer.RepoSigner` (`pkg/signer/service.go`), server flags `--sign-repos`, `--sign-create-keys`, `--repo-download-url`, `<project>.repo` per repository (`pkg/publisher/repofile.go`). As in OBS bs_publish, only `repodata/repomd.xml.asc` and `repomd.xml.key` are published; a separate `<project>.key` is not written (the `.repo` file references `repomd.xml.key`). Verified with go-crypto in CI and with `gpg --verify` and `zypper ar --gpgcheck-strict` + `ref` (and tamper rejection) in `test/oracle/repomd_signing_test.go`.
 Files: `pkg/publisher/subrepo.go`, `pkg/signer/service.go`.
 Tasks: `repomd.xml.asc` = armored OpenPGP detached signature (sigtype binary
 document, SHA-256) from signd; `repomd.xml.key` and `<repo root>/repodata/...`

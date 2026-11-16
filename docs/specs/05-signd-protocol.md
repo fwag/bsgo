@@ -116,6 +116,14 @@ treated as absent: `pkg/signer` skips them and creates a new OpenPGP key on
 first use, which overwrites the row. No signature made with them was ever
 published.
 
+## Publisher use
+
+`signer.RepoSigner` (`pkg/signer/service.go`) implements the publisher's
+`MetadataSigner`: it signs `repomd.xml` with `SignDetachedArmored`, writes
+`repomd.xml.asc` and `repomd.xml.key` outside the repodata directory and returns
+their paths; `ErrNoKey` means unsigned. bsgo-server wiring is in
+`cmd/bsgo-server/publisher_signing.go`.
+
 ## Removed
 
 The commands `SIGN_DIGEST` and `GEN_KEY` (raw RSA PKCS#1 signatures) no longer

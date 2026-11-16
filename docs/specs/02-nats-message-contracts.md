@@ -384,3 +384,14 @@ repository index, writes only to the published prefix `repos/<project>/<repo>/<a
 (debug packages to `repos/<project>/<repo>/debug/<arch>/` when `flags.debuginfo`
 is set) and ends with the upload of `repodata/repomd.xml`; objects of binaries
 that are no longer published are deleted after that upload.
+
+Repository metadata signing (plan 02, S2; `--sign-repos`, default true): the
+publisher signs `repomd.xml` through bsgo-signd with the project key (inherited
+from the parent namespace; created on first use unless `--sign-create-keys=false`,
+in which case the project is published unsigned and a log line says so once).
+Upload order per repository: data files (`repodata/*`), then
+`repodata/repomd.xml.asc` (armored OpenPGP detached signature, binary document,
+SHA-256) and `repodata/repomd.xml.key` (armored public key), then
+`<project>.repo` in the repository root (only with `--repo-download-url`; has
+`gpgcheck=1` and `gpgkey=<baseurl>repodata/repomd.xml.key` for signed
+repositories, `gpgcheck=0` otherwise), and `repodata/repomd.xml` last.
