@@ -1,0 +1,21 @@
+📦 Project Status: p
+                    
+
+Summary:
+  • Total Packages:      4
+  • Succeeded:           2
+  • Currently Building:  0
+  • Failed:              0
+  • Unresolvable:        0
+  • Scheduled:           0
+  • Dispatching:         1
+  • Blocked:             1
+  • Broken:              0
+  • Excluded:            0
+  • Disabled:            0
+  • No state yet:        0
+
+Repositories:
+  • standard/aarch64: published
+  • standard/x86_64: building (1 jobs in flight)
+

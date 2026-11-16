@@ -22,7 +22,7 @@ type RepoArchSummary struct {
 	Repo string `json:"repo"`
 	Arch string `json:"arch"`
 	// RepoState is the state of the repository itself (published, blocked,
-	// ...). The backend does not report it yet, so it is empty.
+	// ...); empty until the backend recorded one.
 	RepoState string         `json:"repo_state,omitempty"`
 	Counts    map[string]int `json:"counts"`
 }
@@ -87,11 +87,27 @@ func (s storeStateSource) summaries(ctx context.Context, project string, filter 
 			if err != nil {
 				return nil, fmt.Errorf("failed counting build states of %s/%s: %w", repo, arch, err)
 			}
-			out = append(out, RepoArchSummary{Repo: repo, Arch: arch, Counts: counts})
+			repoState, err := s.repoState(ctx, project, repo, arch)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, RepoArchSummary{Repo: repo, Arch: arch, RepoState: repoState, Counts: counts})
 		}
 	}
 	sortSummaries(out)
 	return out, nil
+}
+
+// repoState returns the recorded repository state, empty when there is none.
+func (s storeStateSource) repoState(ctx context.Context, project, repo, arch string) (string, error) {
+	st, err := s.store.GetPrpaState(ctx, project, repo, arch)
+	if errors.Is(err, storage.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed reading repository state of %s/%s: %w", repo, arch, err)
+	}
+	return st.State, nil
 }
 
 // validateWatchProject fails unless project exists; the error lists the

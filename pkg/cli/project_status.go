@@ -35,18 +35,31 @@ type PackageStateEntry struct {
 // ProjectStatusResult is the machine contract of `bsgo project status --json`.
 // Counts always equals `SELECT state, count(*) FROM package_build_state` for the same filters.
 type ProjectStatusResult struct {
-	Project       string              `json:"project"`
-	Repo          string              `json:"repo,omitempty"`
-	Arch          string              `json:"arch,omitempty"`
-	StateFilter   string              `json:"state_filter,omitempty"`
-	TotalPackages int                 `json:"total_packages"`
-	Counts        map[string]int      `json:"counts"`
-	Succeeded     int                 `json:"succeeded"`
-	Building      int                 `json:"building"`
-	Failed        int                 `json:"failed"`
-	Unresolvable  int                 `json:"unresolvable"`
-	Pending       int                 `json:"pending"`
-	Packages      []PackageStateEntry `json:"packages"`
+	Project       string         `json:"project"`
+	Repo          string         `json:"repo,omitempty"`
+	Arch          string         `json:"arch,omitempty"`
+	StateFilter   string         `json:"state_filter,omitempty"`
+	TotalPackages int            `json:"total_packages"`
+	Counts        map[string]int `json:"counts"`
+	Succeeded     int            `json:"succeeded"`
+	Building      int            `json:"building"`
+	Failed        int            `json:"failed"`
+	Unresolvable  int            `json:"unresolvable"`
+	Pending       int            `json:"pending"`
+	Dispatching   int            `json:"dispatching"`
+	// Repositories is the repository state of every (repo, arch) the backend
+	// recorded one for, in OBS terms (building, blocked, finished, publishing,
+	// published, unpublished, broken).
+	Repositories []RepoStateEntry    `json:"repositories"`
+	Packages     []PackageStateEntry `json:"packages"`
+}
+
+// RepoStateEntry is the state of one repository and architecture.
+type RepoStateEntry struct {
+	Repo    string `json:"repo"`
+	Arch    string `json:"arch"`
+	State   string `json:"state"`
+	Details string `json:"details,omitempty"`
 }
 
 func newProjectStatusCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
@@ -60,7 +73,9 @@ control-plane database (table package_build_state).
 
 Valid values for --state: ` + strings.Join(storage.ValidBuildStates, ", ") + `.
 With --json the command prints one deterministic JSON document on stdout:
-per-state counts and one entry per package with its state and details.`,
+per-state counts, the repository state of every repository and architecture
+(repositories: repo, arch, state, details) and one entry per package with its
+state and details. Repository states: ` + strings.Join(storage.ValidRepoStates, ", ") + `.`,
 		Example: `  bsgo project status SUSE:SLFO:1.2
   bsgo project status SUSE:SLFO:1.2 --repo standard --arch x86_64 --state unresolvable --json`,
 		Args: cobra.ExactArgs(1),
@@ -103,6 +118,11 @@ func loadProjectStatus(ctx context.Context, store storage.Store, projectName str
 		return nil, fmt.Errorf("failed listing build states: %w", err)
 	}
 
+	repos, err := loadRepoStates(ctx, store, projectName, filter)
+	if err != nil {
+		return nil, err
+	}
+
 	res := &ProjectStatusResult{
 		Project:       projectName,
 		Repo:          filter.Repo,
@@ -115,6 +135,8 @@ func loadProjectStatus(ctx context.Context, store storage.Store, projectName str
 		Failed:        counts[storage.StateFailed],
 		Unresolvable:  counts[storage.StateUnresolvable],
 		Pending:       counts[storage.StateScheduled],
+		Dispatching:   counts[storage.StateDispatching],
+		Repositories:  repos,
 		Packages:      make([]PackageStateEntry, 0, len(states)),
 	}
 	now := time.Now()
@@ -122,6 +144,23 @@ func loadProjectStatus(ctx context.Context, store storage.Store, projectName str
 		res.Packages = append(res.Packages, stateEntry(st, now))
 	}
 	return res, nil
+}
+
+// loadRepoStates lists the recorded repository states matching the repo and
+// arch of filter.
+func loadRepoStates(ctx context.Context, store storage.Store, project string, filter storage.BuildStateFilter) ([]RepoStateEntry, error) {
+	rows, err := store.ListPrpaStates(ctx, project)
+	if err != nil {
+		return nil, fmt.Errorf("failed listing repository states: %w", err)
+	}
+	out := []RepoStateEntry{}
+	for _, r := range rows {
+		if (filter.Repo != "" && filter.Repo != r.Repo) || (filter.Arch != "" && filter.Arch != r.Arch) {
+			continue
+		}
+		out = append(out, RepoStateEntry{Repo: r.Repo, Arch: r.Arch, State: r.State, Details: r.Details})
+	}
+	return out, nil
 }
 
 // stateEntry converts a persisted build state row into its JSON entry.
@@ -172,18 +211,34 @@ func formatProjectStatusHuman(res *ProjectStatusResult) string {
 	statusLine(&sb, "Failed:", res.Failed, "#FF3333")
 	statusLine(&sb, "Unresolvable:", res.Unresolvable, "#E5C07B")
 	statusLine(&sb, "Scheduled:", res.Pending, "#FFA500")
+	statusLine(&sb, "Dispatching:", res.Dispatching, "#FFA500")
 	statusLine(&sb, "Blocked:", res.Counts[storage.StateBlocked], "#C678DD")
 	statusLine(&sb, "Broken:", res.Counts[storage.StateBroken], "#FF3333")
 	statusLine(&sb, "Excluded:", res.Counts[storage.StateExcluded], "#808080")
 	statusLine(&sb, "Disabled:", res.Counts[storage.StateDisabled], "#808080")
 	statusLine(&sb, "No state yet:", max(0, res.TotalPackages-sumCounts(res.Counts)), "#808080")
 
+	writeRepositories(&sb, res.Repositories)
 	writeStateSample(&sb, res, "building", "Currently Building:", "#00BFFF")
 	writeStateSample(&sb, res, "failed", "Failed Packages (Sample):", "#FF3333")
 	writeStateSample(&sb, res, "unresolvable", "Unresolvable Packages (Sample):", "#E5C07B")
 	writeStateSample(&sb, res, "blocked", "Blocked Packages (Sample):", "#C678DD")
 	writeStateSample(&sb, res, "broken", "Broken Packages (Sample):", "#FF3333")
 	return sb.String()
+}
+
+func writeRepositories(sb *strings.Builder, repos []RepoStateEntry) {
+	if len(repos) == 0 {
+		return
+	}
+	sb.WriteString("\n" + lipgloss.NewStyle().Bold(true).Render("Repositories:") + "\n")
+	for _, r := range repos {
+		line := fmt.Sprintf("%s/%s: %s", r.Repo, r.Arch, r.State)
+		if r.Details != "" {
+			line += " (" + firstLine(r.Details) + ")"
+		}
+		fmt.Fprintf(sb, "  • %s\n", line)
+	}
 }
 
 func writeStateSample(sb *strings.Builder, res *ProjectStatusResult, state, title, color string) {

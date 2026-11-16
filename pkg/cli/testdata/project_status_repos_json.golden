@@ -1,0 +1,29 @@
+{
+  "project": "p",
+  "total_packages": 4,
+  "counts": {
+    "blocked": 1,
+    "dispatching": 1,
+    "succeeded": 2
+  },
+  "succeeded": 2,
+  "building": 0,
+  "failed": 0,
+  "unresolvable": 0,
+  "pending": 0,
+  "dispatching": 1,
+  "repositories": [
+    {
+      "repo": "standard",
+      "arch": "aarch64",
+      "state": "published"
+    },
+    {
+      "repo": "standard",
+      "arch": "x86_64",
+      "state": "building",
+      "details": "1 jobs in flight"
+    }
+  ],
+  "packages": []
+}
