@@ -63,6 +63,7 @@ func startPublisher(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jet
 		Signer:      newMetadataSigner(cfg, store),
 		DownloadURL: cfg.RepoDownloadURL,
 		Events:      &eventPubAdapter{nc: nc},
+		States:      store,
 		TempRoot:    cfg.WorkDir,
 		GCGrace:     cfg.PublisherGC,
 	}

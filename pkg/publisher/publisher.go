@@ -23,6 +23,7 @@ import (
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
 	"github.com/openSUSE/bsgo/pkg/scheduler/buildrepo"
+	"github.com/openSUSE/bsgo/pkg/storage"
 	"github.com/openSUSE/bsgo/pkg/storage/s3"
 )
 
@@ -76,6 +77,11 @@ type MetadataSigner interface {
 	SignRepositoryMetadata(ctx context.Context, repodataDir string, opts SignOptions) (string, string, error)
 }
 
+// StateRecorder stores repository states; storage.Store satisfies it.
+type StateRecorder interface {
+	SetPrpaState(ctx context.Context, st *storage.PrpaState) error
+}
+
 // EnrichmentSource supplies optional updateinfo and AppStream metadata of a
 // prpa.
 type EnrichmentSource func(ctx context.Context, p buildrepo.Prpa) (Enrichment, error)
@@ -91,6 +97,9 @@ type Publisher struct {
 	Signer     MetadataSigner
 	Events     EventPublisher
 	Enrich     EnrichmentSource
+	// States, when set, receives the repository state (publishing, published,
+	// unpublished) of every publish.
+	States StateRecorder
 	// DownloadURL is the public URL of the object storage root. When set,
 	// every repository gets a <project>.repo file; empty skips it.
 	DownloadURL string
@@ -134,16 +143,22 @@ func (p *Publisher) Publish(ctx context.Context, prpa buildrepo.Prpa) (*Result, 
 	if !isValidPathSegment(prpa.Project) || !isValidPathSegment(prpa.Repo) || !isValidPathSegment(prpa.Arch) {
 		return nil, fmt.Errorf("invalid prpa %q: path traversal detected", prpa)
 	}
-	pol, sel, skipped, err := p.plan(ctx, prpa)
+	pl, err := p.plan(ctx, prpa)
 	if err != nil {
 		return nil, err
 	}
-	if skipped != "" {
-		return &Result{Prpa: prpa, Skipped: skipped}, nil
+	if pl.skipped != "" {
+		return &Result{Prpa: prpa, Skipped: pl.skipped}, p.noteSkipped(ctx, prpa, pl.skipped)
 	}
-	res, err := p.execute(ctx, prpa, pol, sel)
-	if err != nil {
+	if err := p.setState(ctx, prpa, storage.RepoPublishing, "", pl.hash); err != nil {
 		return nil, err
+	}
+	res, err := p.execute(ctx, prpa, pl.pol, pl.sel)
+	if err != nil {
+		return nil, errors.Join(err, p.setState(ctx, prpa, storage.RepoFinished, "publish failed: "+err.Error(), pl.hash))
+	}
+	if err := p.setState(ctx, prpa, storage.RepoPublished, "", pl.hash); err != nil {
+		return res, err
 	}
 	if p.GCGrace > 0 {
 		gc := NewMetadataGarbageCollector(p.Store)
@@ -157,35 +172,71 @@ func (p *Publisher) Publish(ctx context.Context, prpa buildrepo.Prpa) (*Result, 
 	return res, nil
 }
 
-// plan decides what to publish: it returns the reason when there is nothing
+// publishPlan is what a publish will do.
+type publishPlan struct {
+	pol Policy
+	sel Selection
+	// skipped is the reason when there is nothing to do.
+	skipped string
+	// hash is the content hash of the build repository index being published.
+	hash string
+}
+
+const skipPublishingDisabled = "publishing disabled"
+
+// plan decides what to publish: it records the reason when there is nothing
 // to do, otherwise the binary selection.
-func (p *Publisher) plan(ctx context.Context, prpa buildrepo.Prpa) (Policy, Selection, string, error) {
+func (p *Publisher) plan(ctx context.Context, prpa buildrepo.Prpa) (*publishPlan, error) {
 	pol, err := p.Policy.Policy(ctx, prpa)
 	if errors.Is(err, ErrUnknownTarget) {
-		return pol, nil, "unknown repository", nil
+		return &publishPlan{pol: pol, skipped: "unknown repository"}, nil
 	}
 	if err != nil {
-		return pol, nil, "", err
+		return nil, err
 	}
 	if !pol.Publish || !pol.RPMMD {
-		return pol, nil, "publishing disabled", nil
+		return &publishPlan{pol: pol, skipped: skipPublishingDisabled}, nil
 	}
 	idx, err := p.Index.Index(ctx, prpa)
 	if err != nil {
-		return pol, nil, "", err
+		return nil, err
 	}
 	if idx.Hash == "" {
-		return pol, nil, "build repository is empty", nil
+		return &publishPlan{pol: pol, skipped: "build repository is empty"}, nil
 	}
 	cands, err := p.candidates(ctx, prpa, idx, pol.Debuginfo)
 	if err != nil {
-		return pol, nil, "", err
+		return nil, err
 	}
 	sel, err := selectBinaries(cands, pol, prpa.Arch)
 	if err != nil {
-		return pol, nil, "", fmt.Errorf("selecting binaries of %s: %w", prpa, err)
+		return nil, fmt.Errorf("selecting binaries of %s: %w", prpa, err)
 	}
-	return pol, sel, "", nil
+	return &publishPlan{pol: pol, sel: sel, hash: idx.Hash}, nil
+}
+
+// setState records the repository state of prpa; it does nothing without a
+// States store.
+func (p *Publisher) setState(ctx context.Context, prpa buildrepo.Prpa, state, details, indexHash string) error {
+	if p.States == nil {
+		return nil
+	}
+	err := p.States.SetPrpaState(ctx, &storage.PrpaState{
+		Project: prpa.Project, Repo: prpa.Repo, Arch: prpa.Arch,
+		State: state, Details: details, IndexHash: indexHash,
+	})
+	if err != nil {
+		return fmt.Errorf("recording repository state %s of %s: %w", state, prpa, err)
+	}
+	return nil
+}
+
+// noteSkipped records unpublished for a target that does not publish.
+func (p *Publisher) noteSkipped(ctx context.Context, prpa buildrepo.Prpa, reason string) error {
+	if reason != skipPublishingDisabled {
+		return nil
+	}
+	return p.setState(ctx, prpa, storage.RepoUnpublished, "", "")
 }
 
 // execute publishes the selection in a temp dir that is removed afterwards,
