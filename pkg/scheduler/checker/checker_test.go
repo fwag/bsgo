@@ -381,3 +381,54 @@ func TestOnlybuildOfAFlavor(t *testing.T) {
 	w.wantJobs("p:mini")
 	w.wantState("p", storage.StateExcluded, "package whitelist")
 }
+
+func TestMissingDependencyOfStuckProducerIsUnresolvable(t *testing.T) {
+	// app needs "lib", which only the unit lib would produce. When lib
+	// cannot build (unresolvable), app must not be blocked on it: blocked is
+	// contagious and would pin every consumer (and the whole cycle) forever.
+	tests := []struct {
+		name      string
+		libDeps   []string
+		wantState string
+		wantJobs  []string
+	}{
+		{"producer unresolvable: consumer unresolvable", []string{"does-not-exist"}, storage.StateUnresolvable, nil},
+		{"producer scheduled: consumer blocked on it", nil, storage.StateBlocked, []string{"lib"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := newWorld(t, nil)
+			w.pkg("lib", tt.libDeps)
+			w.pkg("app", []string{"lib"})
+			w.run()
+			w.wantJobs(tt.wantJobs...)
+			if got := w.state("app").State; got != tt.wantState {
+				t.Errorf("app state %s (%s), want %s", got, w.state("app").Details, tt.wantState)
+			}
+		})
+	}
+}
+
+func TestForcedJobIsResentWithItsOwnID(t *testing.T) {
+	// After a forced rebuild request is consumed, the recomputed attempt of
+	// the still scheduled unit differs; the resend must keep the stored job ID
+	// (the dispatch queue is rebuilt from resends after a server restart).
+	w := newWorld(t, nil)
+	w.pkg("p", nil)
+	w.run()
+	w.wantJobs("p")
+	if err := w.store.RequestForcedRebuild(context.Background(), storage.ForcedRebuild{Project: testProject, Package: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	w.run()
+	forced := w.wantJobs("p")[0]
+	w.sink.seen = nil // a restarted dispatcher knows no job IDs
+	w.run()
+	resent := w.wantJobs("p")
+	if len(resent) != 1 || resent[0].JobID != forced.JobID {
+		t.Fatalf("resent %v, want the forced job %s again", resent, forced.JobID)
+	}
+	if got := w.state("p").JobID; got != forced.JobID {
+		t.Errorf("row job %s, want %s", got, forced.JobID)
+	}
+}

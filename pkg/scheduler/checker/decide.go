@@ -172,13 +172,18 @@ func (ps *pass) expansionVerdict(u *unit) (state, details string) {
 }
 
 // pendingProducer reports whether name is produced by another unit of the
-// prpa that has no build result yet.
+// prpa that is making progress (scheduled, building or blocked on something
+// that is). A producer that cannot build (unresolvable, failed, broken) or has
+// no decision yet must not count: "blocked" is contagious (consumers and the
+// whole dependency cycle become not ready), so blocking on a producer that
+// never builds deadlocks the prpa. The consumer is then unresolvable, as OBS
+// reports it.
 func (ps *pass) pendingProducer(u *unit, name string) bool {
 	p := ps.prod[name]
 	if p == nil || p == u {
 		return false
 	}
-	return ps.out.notready[p] || len(ps.own[p.name]) == 0
+	return ps.out.notready[p]
 }
 
 func unique(in []string) []string {
@@ -220,9 +225,14 @@ func (ps *pass) settle(u *unit, row *storage.PackageBuildState, meta string, for
 // ignores job IDs it already has, so a resend changes nothing otherwise.
 func (ps *pass) resendJob(u *unit, row *storage.PackageBuildState, meta string) *JobSpec {
 	job, v := ps.newJob(u, meta, row.Details)
-	if v != nil || job == nil || job.JobID != row.JobID {
+	if v != nil {
 		return nil
 	}
+	// The recomputed attempt can differ from the stored job's (a forced
+	// rebuild request is consumed once its job was emitted). Keep the stored
+	// job ID: the dispatcher dedupes it, a queued or running attempt is not
+	// superseded, and the worker's result still matches the row.
+	job.JobID = row.JobID
 	return job
 }
 
@@ -237,10 +247,11 @@ func (ps *pass) settleExisting(u *unit, row *storage.PackageBuildState, meta str
 			d.cancel = ""
 		}
 	case row.Meta == meta && inFlight(row.State):
-		d := &decision{unit: u, state: row.State, details: row.Details, keep: true}
+		var job *JobSpec
 		if row.State == storage.StateScheduled {
-			d.job = ps.resendJob(u, row, meta)
+			job = ps.resendJob(u, row, meta)
 		}
+		d := &decision{unit: u, state: row.State, details: row.Details, keep: true, job: job}
 		ps.out.add(d)
 		ps.out.notready[u] = true
 	case row.Meta == meta && row.State == storage.StateFailed:
