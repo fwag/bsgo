@@ -52,6 +52,9 @@ type WorkerConfig struct {
 	// KeepFailedJobs keeps the build root, rpmlist and bdeps of failed jobs
 	// for debugging. Default false: every job directory is cleaned.
 	KeepFailedJobs bool
+	// ConstrainedOnly makes the worker take only jobs with a sandbox
+	// constraint (sandbox.accept_unconstrained: false).
+	ConstrainedOnly bool
 }
 
 // BuildArchs returns the architectures the worker advertises: the explicit
@@ -103,7 +106,11 @@ type WorkerConfigFile struct {
 		NspawnArgs []string `yaml:"nspawn_args"`
 		// KeepFailedJobs keeps the build root of failed jobs for debugging.
 		KeepFailedJobs bool `yaml:"keep_failed_jobs"`
-		KVM            struct {
+		// AcceptUnconstrained says whether the worker also takes jobs
+		// without a sandbox constraint. Default true; false keeps the
+		// worker (typically the KVM one) for the jobs that require it.
+		AcceptUnconstrained *bool `yaml:"accept_unconstrained"`
+		KVM                 struct {
 			VMType    string `yaml:"vm_type"`
 			Device    string `yaml:"device"`
 			Kernel    string `yaml:"kernel"`

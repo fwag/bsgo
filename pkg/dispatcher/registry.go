@@ -315,7 +315,21 @@ func (r *WorkerRegistry) isWorkerEligible(w *WorkerRecord, job *v1.BuildJob, now
 	if r.badHosts[job.JobID] != nil && r.badHosts[job.JobID][w.WorkerID] {
 		return false // badhost: worker previously failed this job
 	}
+	if !acceptsSandbox(&w.WorkerHeartbeat, job.Constraints) {
+		return false
+	}
 	return matchesConstraints(&w.Hardware, &job.Resources)
+}
+
+// acceptsSandbox checks the sandbox constraints of a job against the sandbox
+// the worker reports. A worker that only takes constrained jobs
+// (sandbox.accept_unconstrained: false) refuses jobs without a sandbox
+// constraint, so a KVM worker is kept for the jobs that need it.
+func acceptsSandbox(w *v1.WorkerHeartbeat, c *v1.JobConstraints) bool {
+	if !c.SandboxConstrained() {
+		return !w.ConstrainedOnly
+	}
+	return c.SandboxAllows(w.Hardware.SandboxType)
 }
 
 func matchesConstraints(hw *v1.WorkerHardware, req *v1.ResourceRequirements) bool {

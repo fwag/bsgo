@@ -21,3 +21,13 @@ func ValidateSandboxMode(mode string, lookPath func(string) (string, error)) err
 func CheckSandboxMode(mode string) error {
 	return ValidateSandboxMode(mode, exec.LookPath)
 }
+
+// SandboxTypeOf maps a worker sandbox mode to the sandbox type it advertises
+// and job constraints match against, using the OBS names: the plain obs-build
+// chroot is "chroot", kvm and nspawn keep their names.
+func SandboxTypeOf(mode string) string {
+	if mode == "obs-build" {
+		return "chroot"
+	}
+	return mode
+}

@@ -1,14 +1,33 @@
 # bsgo Worker Daemon - KVM Virtual Machine Configuration
-# Modeled after Level 4 worker specifications (SUSE production fleet h01-ch3b)
-# Uses QEMU/KVM hardware virtualization for sterile VM builds
+# Runs the build in a QEMU/KVM micro-VM with the kernel from the kernel-obs-build
+# package of the build dependencies (vminstall), like OBS workers do. The VM has
+# no network (-net none), so BuildInfo (hermetic) jobs are accepted.
+#
+# Meant to run next to the nspawn worker on one host: work_dir, state_dir,
+# cache_dir and disk_dir are all separate from config/worker-nspawn.yaml, so the
+# job directories, VM disk images and build roots of the two daemons never
+# collide. Job IDs (job directories, disk images, nspawn machine names) are
+# globally unique, the worker ID differs.
+#
+# accept_unconstrained: false keeps this worker for the packages whose build
+# constraints demand a kvm sandbox (OBS _constraints "<sandbox>kvm</sandbox>",
+# prjconf "Constraint: sandbox kvm" or the manifest override build.constraints.sandbox).
+# Everything else is built by the nspawn worker. Requires /dev/kvm readable by
+# the build user, qemu-kvm and the kernel-obs-build package in the build repos.
 
 worker:
   id: "worker-kvm-01"
   arch: "x86_64"
-  work_dir: "/dev/shm/bsgo-worker"
-  state_dir: "/run/bsgo/worker"
-  cache_dir: "/var/cache/bsgo/worker/cache"
-  disk_dir: "/var/cache/bsgo/worker/disks"
+  work_dir: "/var/tmp/bsgo-worker-kvm"
+  state_dir: "/var/tmp/bsgo-worker-kvm/state"
+  cache_dir: "/var/tmp/bsgo-worker-kvm/cache"
+  disk_dir: "/var/tmp/bsgo-worker-kvm/disks"
+  # Modest capacity next to the nspawn worker: one or two VMs at a time (a job
+  # asks for 4096 MiB and 2 vCPUs unless its manifest or constraints say more).
+  total_vcpus: 4
+  total_memory_mb: 8192
+  reserve_memory_mb: 0
+  reserve_vcpus: 0
 
 nats:
   url: "nats://localhost:4222"
@@ -23,14 +42,15 @@ storage:
 # Sandbox Execution Engine
 sandbox:
   mode: "kvm"
-  obs_build_bin: "/usr/bin/build"
+  # Wrapper that runs obs-build as root (see hack/systemd/README.md).
+  obs_build_bin: "/home/ta/Devel/bsgo/bin/build-sudo"
+  # Only take jobs that constrain the sandbox (kvm, secure, ...).
+  accept_unconstrained: false
 
   # QEMU / KVM Driver Tuning
   kvm:
     vm_type: "kvm"
     device: "/dev/kvm"
-    memory_mb: 4096
-    vcpus: 4
     user: "qemu"
     vm_args: "-sandbox on -net none"
     aio: "io_uring"

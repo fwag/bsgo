@@ -172,6 +172,7 @@ func (w *WorkerDaemon) emitHeartbeat() {
 		ActiveJobIDs:    activeIDs,
 		Hardware:        w.cfg.Hardware,
 		CachedRPMHashes: w.cachedHashes,
+		ConstrainedOnly: w.cfg.ConstrainedOnly,
 		TimestampUnix:   time.Now().Unix(),
 	}
 	w.mu.Unlock()

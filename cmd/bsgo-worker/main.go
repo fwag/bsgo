@@ -100,7 +100,7 @@ func resolveWorkerConfig(configFile, flagID, flagArch, flagNats, flagBucket, fla
 		S3Bucket:    "bsgo-artifacts",
 		WorkDir:     "/tmp/bsgo-worker",
 		SandboxMode: "rpmbuild",
-		Hardware:    v1.WorkerHardware{SandboxType: "rpmbuild"},
+		Hardware:    v1.WorkerHardware{SandboxType: worker.SandboxTypeOf("rpmbuild")},
 	}
 
 	if fileCfg, err := worker.LoadConfigFile(configFile); err == nil {
@@ -154,8 +154,9 @@ func applyFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile)
 	}
 	if fileCfg.Sandbox.Mode != "" {
 		cfg.SandboxMode = fileCfg.Sandbox.Mode
-		cfg.Hardware.SandboxType = fileCfg.Sandbox.Mode
+		cfg.Hardware.SandboxType = worker.SandboxTypeOf(fileCfg.Sandbox.Mode)
 	}
+	cfg.ConstrainedOnly = fileCfg.Sandbox.AcceptUnconstrained != nil && !*fileCfg.Sandbox.AcceptUnconstrained
 	cfg.AllowUnisolatedChroot = fileCfg.Sandbox.AllowUnisolatedChroot
 	cfg.KeepFailedJobs = fileCfg.Sandbox.KeepFailedJobs
 	cfg.NspawnArgs = fileCfg.Sandbox.NspawnArgs

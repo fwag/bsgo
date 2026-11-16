@@ -29,6 +29,22 @@ For a test host (e.g. aisrv) where all bsgo services run as one user.
 `systemctl --user restart bsgo-server` / `bsgo-worker` replaces the manual
 `nohup` starts. Logs stay in `~/Devel/bsgo/server.log` and `worker.log`.
 
+## KVM worker for constrained packages
+
+Packages whose OBS `_constraints` (or prjconf `Constraint:`, or the manifest
+`build.constraints.sandbox`) require `kvm` run only on a worker with a kvm
+sandbox. `bsgo-worker-kvm` is that worker: it uses `config/worker-kvm.yaml`
+(`accept_unconstrained: false`, own work, state, cache and disk directories,
+worker ID `worker-kvm-01`) and runs next to `bsgo-worker`. It needs `/dev/kvm`,
+`qemu-kvm` and `kernel-obs-build` in the build repositories.
+
+    cp ~/Devel/bsgo/hack/systemd/bsgo-worker-kvm.service ~/.config/systemd/user/
+    systemctl --user daemon-reload
+    systemctl --user enable --now bsgo-worker-kvm
+
+A constrained job waits in state `scheduled` ("needs sandbox kvm") until this
+worker is up.
+
 ## RPM signing
 
 The signer role of `bsgo-server` needs `rpm`, `rpmsign` (package `rpm-build`

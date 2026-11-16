@@ -299,17 +299,17 @@ func TestKVMStateDirSeparation(t *testing.T) {
 	daemon.Stop()
 }
 
-func TestKVMTmpfsWorkDirConfig(t *testing.T) {
+func TestKVMWorkerConfig(t *testing.T) {
 	cfgFile, err := LoadConfigFile("../../config/worker-kvm.yaml")
 	if err != nil {
 		t.Fatalf("failed loading worker-kvm.yaml: %v", err)
 	}
 
-	if cfgFile.Worker.WorkDir != "/dev/shm/bsgo-worker" {
-		t.Errorf("expected tmpfs work_dir /dev/shm/bsgo-worker, got %s", cfgFile.Worker.WorkDir)
+	if cfgFile.Worker.WorkDir != "/var/tmp/bsgo-worker-kvm" {
+		t.Errorf("expected work_dir /var/tmp/bsgo-worker-kvm, got %s", cfgFile.Worker.WorkDir)
 	}
-	if cfgFile.Worker.StateDir != "/run/bsgo/worker" {
-		t.Errorf("expected state_dir /run/bsgo/worker, got %s", cfgFile.Worker.StateDir)
+	if cfgFile.Worker.StateDir != "/var/tmp/bsgo-worker-kvm/state" {
+		t.Errorf("expected state_dir /var/tmp/bsgo-worker-kvm/state, got %s", cfgFile.Worker.StateDir)
 	}
 	if cfgFile.Sandbox.KVM.User != "qemu" {
 		t.Errorf("expected KVM user 'qemu', got %s", cfgFile.Sandbox.KVM.User)

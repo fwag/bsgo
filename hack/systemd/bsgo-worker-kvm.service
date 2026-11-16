@@ -1,0 +1,22 @@
+[Unit]
+Description=bsgo build worker (obs-build, KVM, constrained jobs only)
+After=bsgo-server.service
+Wants=bsgo-server.service
+
+[Service]
+WorkingDirectory=%h/Devel/bsgo
+EnvironmentFile=%h/Devel/bsgo/config/s3-credentials.env
+ExecStart=%h/Devel/bsgo/bin/bsgo-worker -config %h/Devel/bsgo/config/worker-kvm.yaml
+StandardOutput=append:%h/Devel/bsgo/worker-kvm.log
+StandardError=append:%h/Devel/bsgo/worker-kvm.log
+# Runs next to bsgo-worker (nspawn) on the same host: separate directories,
+# worker ID and log (see config/worker-kvm.yaml). It takes only jobs whose
+# build constraints require a kvm sandbox. On stop the worker cancels its jobs
+# and kills their VMs through obs-build --kill.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
