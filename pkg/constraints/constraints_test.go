@@ -232,3 +232,20 @@ func TestOverrideSandbox(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateSandbox(t *testing.T) {
+	tests := []struct {
+		spec    string
+		wantErr bool
+	}{
+		{"", false}, {"kvm", false}, {"secure !chroot", false}, {"none", false},
+		{"KVM", true}, {"kvm; rm", true}, {"!", true}, {"none kvm", true}, {"a/b", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.spec, func(t *testing.T) {
+			if err := ValidateSandbox(tt.spec); (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}

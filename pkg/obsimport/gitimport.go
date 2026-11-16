@@ -49,6 +49,11 @@ type GitImportReport struct {
 	MissingInTree    []string  `json:"missing_in_tree"`
 	MissingInModules []string  `json:"missing_in_gitmodules"`
 	Skipped          []Skipped `json:"skipped"`
+	// OverridesApplied is the number of packages changed by the
+	// _bsgo/packages.yaml overrides; UnusedOverrides names the overrides
+	// whose package was not imported.
+	OverridesApplied int      `json:"overrides_applied"`
+	UnusedOverrides  []string `json:"unused_overrides"`
 }
 
 // GitSource reads a superproject (such as SLFO) with git plumbing only; it
@@ -251,7 +256,7 @@ func withGitSuffix(u string) string {
 func BuildPackages(mods []Submodule, links []Gitlink, res URLResolver, defaultBranch string) ([]*manifest.PackageManifest, *GitImportReport) {
 	rep := &GitImportReport{
 		InGitmodules: len(mods), InTree: len(links),
-		MissingInTree: []string{}, MissingInModules: []string{}, Skipped: []Skipped{},
+		MissingInTree: []string{}, MissingInModules: []string{}, Skipped: []Skipped{}, UnusedOverrides: []string{},
 	}
 	byPath := make(map[string]Submodule, len(mods))
 	for _, m := range mods {

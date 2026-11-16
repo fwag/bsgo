@@ -34,6 +34,18 @@ recipe (auto-detected), no resources (nothing in the source defines them), and b
 enabled. Packages listed in .gitmodules but absent from the tree, or the reverse, are
 skipped with a diagnostic on stderr and listed in the --json report.
 
+Package overrides: an optional file _bsgo/packages.yaml in --ref maps package names to
+manifest overrides applied to the generated package manifests, so they live in the OBS
+project git. Supported: build.constraints.sandbox (for example kvm, secure, "secure !chroot",
+none). Unknown keys are an error; overrides for packages that were not imported are
+reported (stderr, "unused_overrides" in --json).
+
+  packages:
+    util-linux:
+      build:
+        constraints:
+          sandbox: kvm
+
 Bootstrap Dependency: --bootstrap-url with --bootstrap-name and --bootstrap-targets appends
 a url dependency after the project's own path entries on each listed target. Remove it later
 with "bsgo project dependency remove". No default target is assumed.
@@ -144,6 +156,9 @@ func runImportOBSGit(cmd *cobra.Command, f *importGitFlags, opts *OutputOptions)
 	for _, p := range rep.MissingInTree {
 		fmt.Fprintf(cmd.ErrOrStderr(), "skipped %s: listed in .gitmodules but not in the tree\n", p)
 	}
+	for _, p := range rep.UnusedOverrides {
+		fmt.Fprintf(cmd.ErrOrStderr(), "ignored override for %s: package not imported\n", p)
+	}
 	for _, p := range rep.MissingInModules {
 		fmt.Fprintf(cmd.ErrOrStderr(), "skipped %s: in the tree but not in .gitmodules\n", p)
 	}
@@ -233,7 +248,28 @@ func importPackages(ctx context.Context, src *obsimport.GitSource, f *importGitF
 		return nil, nil, errors.New(".gitmodules has relative URLs but --repo has no http(s) origin remote; pass --gitea-base")
 	}
 	pkgs, rep := obsimport.BuildPackages(mods, links, res, f.defaultBranch)
+	if err := applyPackageOverrides(ctx, src, pkgs, rep); err != nil {
+		return nil, nil, err
+	}
 	return pkgs, rep, nil
+}
+
+// applyPackageOverrides applies _bsgo/packages.yaml from the ref, if present,
+// to the generated package manifests.
+func applyPackageOverrides(ctx context.Context, src *obsimport.GitSource, pkgs []*manifest.PackageManifest, rep *obsimport.GitImportReport) error {
+	data, found, err := src.File(ctx, obsimport.OverridesFile)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	ov, err := obsimport.ParseOverrides(data)
+	if err != nil {
+		return err
+	}
+	rep.OverridesApplied, rep.UnusedOverrides = ov.Apply(pkgs)
+	return nil
 }
 
 func writeImportTree(f *importGitFlags, prj *manifest.ProjectManifest, pkgs []*manifest.PackageManifest) error {

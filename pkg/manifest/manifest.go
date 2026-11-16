@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/openSUSE/bsgo/pkg/constraints"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -708,6 +709,9 @@ func ParsePackage(data []byte) (*PackageManifest, error) {
 	}
 	if pkg.Source.Git == "" {
 		return nil, errors.New("missing required field: source.git")
+	}
+	if err := constraints.ValidateSandbox(pkg.Build.Constraints.Sandbox); err != nil {
+		return nil, fmt.Errorf("build.constraints.sandbox: %w", err)
 	}
 
 	return &pkg, nil

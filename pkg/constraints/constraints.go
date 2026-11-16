@@ -10,10 +10,39 @@
 // matching facts yet, so they are ignored at dispatch time.
 package constraints
 
-import "strings"
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
 
 // File is the name of the constraints file in a package source.
 const File = "_constraints"
+
+var sandboxName = regexp.MustCompile(`^!?[a-z][a-z0-9_-]*$`)
+
+// ValidateSandbox checks an override spec as accepted by OverrideSandbox.
+func ValidateSandbox(spec string) error {
+	words := strings.Fields(spec)
+	for _, w := range words {
+		if !sandboxName.MatchString(w) {
+			return fmt.Errorf("invalid sandbox %q: want a name like kvm, secure or !chroot, or none", w)
+		}
+	}
+	if len(words) > 1 && slicesContains(words, "none") {
+		return fmt.Errorf("sandbox %q: none cannot be combined with other values", spec)
+	}
+	return nil
+}
+
+func slicesContains(l []string, s string) bool {
+	for _, e := range l {
+		if e == s {
+			return true
+		}
+	}
+	return false
+}
 
 // OverrideSandbox replaces the sandbox constraint of c with spec, the
 // bsgo-native override of the package manifest (build.constraints.sandbox).

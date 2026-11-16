@@ -331,3 +331,68 @@ func TestApplyReportsFailures(t *testing.T) {
 		t.Error("directory without project.yaml must fail")
 	}
 }
+
+func TestImportOBSGitPackageOverrides(t *testing.T) {
+	tests := []struct {
+		name        string
+		overrides   string
+		wantAlpha   string
+		wantBeta    string
+		wantUnused  string
+		wantApplied int
+		wantErr     string
+	}{
+		{name: "no file", wantApplied: 0},
+		{name: "sandbox for one package", overrides: "packages:\n  alpha:\n    build:\n      constraints:\n        sandbox: kvm\n",
+			wantAlpha: "kvm", wantApplied: 1},
+		{name: "two packages and an unknown one",
+			overrides: "packages:\n  alpha: {build: {constraints: {sandbox: secure !chroot}}}\n  beta: {build: {constraints: {sandbox: none}}}\n  zzz: {build: {constraints: {sandbox: kvm}}}\n",
+			wantAlpha: "secure !chroot", wantBeta: "none", wantApplied: 2, wantUnused: "zzz"},
+		{name: "unknown key", overrides: "packages:\n  alpha:\n    resources: {vcpus: 2}\n", wantErr: "resources"},
+		{name: "invalid sandbox", overrides: "packages:\n  alpha: {build: {constraints: {sandbox: 'kvm;x'}}}\n", wantErr: "sandbox"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := syntheticSuperproject(t)
+			if tc.overrides != "" {
+				if err := os.MkdirAll(filepath.Join(repo, "_bsgo"), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(repo, "_bsgo", "packages.yaml"), []byte(tc.overrides), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, repo, "add", "_bsgo/packages.yaml")
+				runGit(t, repo, "commit", "-q", "-m", "overrides")
+			}
+			out := filepath.Join(t.TempDir(), "out")
+			stdout, stderr, err := runCLI(t, storage.NewMemoryStore(), "import-obs-git", "--repo", repo, "--ref", "rel", "--out", out, "--json")
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want mention of %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%v\n%s", err, stderr)
+			}
+			var doc struct {
+				Packages struct {
+					Applied int      `json:"overrides_applied"`
+					Unused  []string `json:"unused_overrides"`
+				} `json:"packages"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+				t.Fatal(err)
+			}
+			if doc.Packages.Applied != tc.wantApplied || strings.Join(doc.Packages.Unused, ",") != tc.wantUnused {
+				t.Errorf("report = %+v", doc.Packages)
+			}
+			if got := readPackage(t, out, "alpha").Build.Constraints.Sandbox; got != tc.wantAlpha {
+				t.Errorf("alpha sandbox = %q, want %q", got, tc.wantAlpha)
+			}
+			if got := readPackage(t, out, "beta").Build.Constraints.Sandbox; got != tc.wantBeta {
+				t.Errorf("beta sandbox = %q, want %q", got, tc.wantBeta)
+			}
+		})
+	}
+}

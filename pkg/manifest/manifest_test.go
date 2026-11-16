@@ -569,3 +569,29 @@ targets:
 		t.Errorf("s390x expected kernel-default prefer, got %v", s390Cfg.Prefer)
 	}
 }
+
+func TestParsePackageBuildConstraints(t *testing.T) {
+	const head = "schema_version: v1\npackage: {name: util-linux}\nsource: {git: 'https://example.invalid/util-linux.git'}\nbuild:\n  enabled: true\n"
+	tests := []struct {
+		name    string
+		build   string
+		want    string
+		wantErr bool
+	}{
+		{"none set", "", "", false},
+		{"kvm", "  constraints:\n    sandbox: kvm\n", "kvm", false},
+		{"list with exclusion", "  constraints:\n    sandbox: secure !chroot\n", "secure !chroot", false},
+		{"invalid", "  constraints:\n    sandbox: 'kvm;x'\n", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pkg, err := manifest.ParsePackage([]byte(head + tt.build))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v", err)
+			}
+			if err == nil && pkg.Build.Constraints.Sandbox != tt.want {
+				t.Fatalf("sandbox = %q, want %q", pkg.Build.Constraints.Sandbox, tt.want)
+			}
+		})
+	}
+}
