@@ -75,6 +75,9 @@ type ProcessSandbox struct {
 	KVMVMArgs string
 	KVMAio    string
 	KVMCache  string
+	// NspawnArgs are the resolved systemd-nspawn options passed through
+	// obs-build --vm-args in nspawn mode (see PrepareNspawnArgs).
+	NspawnArgs []string
 	// S3Storage is the artifact store. nil disables all S3 interaction
 	// (legacy local development only; hermetic jobs require it).
 	S3Storage ObjectStore

@@ -33,3 +33,15 @@ storage:
 sandbox:
   mode: "nspawn"
   obs_build_bin: "/home/ta/Devel/bsgo/bin/build-sudo"
+  # Extra systemd-nspawn options, passed through obs-build --vm-args. Unset
+  # selects the defaults below; a list (even an empty one) replaces them, so
+  # delete entries to disable them individually. {hostname} is the host name as
+  # `hostname` prints it (init_buildsystem writes it to the build root's
+  # /etc/hosts, so the container must use it); {proc_filesystems} is a
+  # per-worker copy of /proc/filesystems without selinuxfs (SELinux aware test
+  # suites then skip as in a KVM guest).
+  # nspawn_args:
+  #   - "--hostname={hostname}"
+  #   - "--capability=CAP_IPC_LOCK"          # libgcrypt secure memory
+  #   - "--rlimit=RLIMIT_MEMLOCK=infinity"   # libgcrypt secure memory
+  #   - "--bind-ro={proc_filesystems}:/proc/filesystems"

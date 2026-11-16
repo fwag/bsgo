@@ -76,14 +76,24 @@ func validateBuildInfo(job *v1.BuildJob) error {
 // keyword, one space, nothing), as bs_worker does. bs_worker never writes a
 // "dist:" line and has no rpmlist notion of notmeta (it only affects the meta
 // digest), so neither does this function.
-func renderRPMList(bi *v1.BuildInfo, bdepsDir string) string {
+//
+// vm says the build runs in a VM, where the vminstall packages (the
+// kernel-obs-build closure) are needed to boot it. Containers and chroots
+// have no use for them: the flagged packages that are not also preinstall or
+// runscripts packages are left out of the list, and the vminstall line is
+// empty.
+func renderRPMList(bi *v1.BuildInfo, bdepsDir string, vm bool) string {
+	bdeps := bi.Bdeps
+	if !vm {
+		bdeps = withoutVMInstall(bdeps)
+	}
 	var lines []string
-	for _, b := range bi.Bdeps {
+	for _, b := range bdeps {
 		lines = append(lines, b.Name+" "+filepath.Join(bdepsDir, b.Filename()))
 	}
 	flagged := func(keyword string, pick func(v1.Bdep) bool) string {
 		var names []string
-		for _, b := range bi.Bdeps {
+		for _, b := range bdeps {
 			if pick(b) {
 				names = append(names, b.Name)
 			}
@@ -92,12 +102,24 @@ func renderRPMList(bi *v1.BuildInfo, bdepsDir string) string {
 	}
 	lines = append(lines,
 		flagged("preinstall", func(b v1.Bdep) bool { return b.Preinstall }),
-		flagged("vminstall", func(b v1.Bdep) bool { return b.VMInstall }),
+		flagged("vminstall", func(b v1.Bdep) bool { return vm && b.VMInstall }),
 		flagged("runscripts", func(b v1.Bdep) bool { return b.RunScripts }),
 		flagged("noinstall", func(b v1.Bdep) bool { return b.NoInstall }),
 		flagged("installonly", func(b v1.Bdep) bool { return b.InstallOnly }),
 	)
 	return strings.Join(lines, "\n") + "\n"
+}
+
+// withoutVMInstall drops the bdeps that exist only for booting a VM.
+func withoutVMInstall(bdeps []v1.Bdep) []v1.Bdep {
+	out := make([]v1.Bdep, 0, len(bdeps))
+	for _, b := range bdeps {
+		if b.VMInstall && !b.Preinstall && !b.RunScripts {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 // hermeticArgs are the obs-build options of a BuildInfo job that follow the
@@ -151,7 +173,7 @@ func (s *ProcessSandbox) prepareHermetic(ctx context.Context, job *v1.BuildJob, 
 		return "", "", err
 	}
 	rpmlistPath = filepath.Join(jobDir, ".build.rpmlist")
-	if err := os.WriteFile(rpmlistPath, []byte(renderRPMList(job.BuildInfo, bdepsDir)), 0o600); err != nil {
+	if err := os.WriteFile(rpmlistPath, []byte(renderRPMList(job.BuildInfo, bdepsDir, s.SandboxMode == "kvm")), 0o600); err != nil {
 		return "", "", fmt.Errorf("writing rpmlist: %w", err)
 	}
 	configPath = filepath.Join(jobDir, ".build.config")

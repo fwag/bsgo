@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/nats-io/nats.go"
@@ -73,6 +74,13 @@ func main() {
 		store = s3Storage
 	}
 	sandbox := newSandbox(cfg, store)
+	if cfg.SandboxMode == "nspawn" {
+		if sandbox.NspawnArgs, err = worker.PrepareNspawnArgs(cfg.NspawnArgs, cfg.WorkDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: nspawn arguments: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("systemd-nspawn arguments: %s\n", strings.Join(sandbox.NspawnArgs, " "))
+	}
 	daemon := worker.NewWorkerDaemon(cfg, nc, sandbox)
 
 	fmt.Printf("Starting bsgo-worker [%s] (Arch: %s, Sandbox: %s) connecting to %s...\n",
@@ -150,6 +158,7 @@ func applyFileConfig(cfg *worker.WorkerConfig, fileCfg *worker.WorkerConfigFile)
 	}
 	cfg.AllowUnisolatedChroot = fileCfg.Sandbox.AllowUnisolatedChroot
 	cfg.KeepFailedJobs = fileCfg.Sandbox.KeepFailedJobs
+	cfg.NspawnArgs = fileCfg.Sandbox.NspawnArgs
 	if fileCfg.Sandbox.ObsBuildBin != "" {
 		cfg.ObsBuildBin = fileCfg.Sandbox.ObsBuildBin
 	}

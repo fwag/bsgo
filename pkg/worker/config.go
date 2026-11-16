@@ -43,6 +43,9 @@ type WorkerConfig struct {
 	KVMVMArgs         string
 	KVMAio            string
 	KVMCache          string
+	// NspawnArgs are the configured systemd-nspawn options; nil selects
+	// DefaultNspawnArgs.
+	NspawnArgs []string
 	// AllowUnisolatedChroot lets BuildInfo jobs run in plain obs-build chroot
 	// mode, which has no network isolation. Default deny.
 	AllowUnisolatedChroot bool
@@ -94,6 +97,10 @@ type WorkerConfigFile struct {
 		// AllowUnisolatedChroot permits hermetic (BuildInfo) jobs in chroot
 		// mode, which cannot isolate the network. Default false.
 		AllowUnisolatedChroot bool `yaml:"allow_unisolated_chroot"`
+		// NspawnArgs are extra systemd-nspawn options for mode nspawn. When set
+		// (even to an empty list) they replace the defaults, see
+		// DefaultNspawnArgs; {hostname} and {proc_filesystems} are expanded.
+		NspawnArgs []string `yaml:"nspawn_args"`
 		// KeepFailedJobs keeps the build root of failed jobs for debugging.
 		KeepFailedJobs bool `yaml:"keep_failed_jobs"`
 		KVM            struct {
