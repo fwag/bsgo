@@ -40,6 +40,12 @@ type ServerConfig struct {
 	TLSCert    string
 	TLSKey     string
 	ServerCA   string
+	// SignRepos signs published repository metadata through bsgo-signd.
+	SignRepos bool
+	// SignCreateKeys creates a project key on first signing use.
+	SignCreateKeys bool
+	// RepoDownloadURL is the public URL of the object storage root, used for <project>.repo files.
+	RepoDownloadURL string
 	// DoDRepomdTTL is how often an external repository's repomd.xml is re-checked.
 	DoDRepomdTTL time.Duration
 	// Checker enables the scheduler loop (the OBS bs_sched equivalent).
@@ -75,6 +81,9 @@ func parseServerConfig() ServerConfig {
 	flag.StringVar(&cfg.TLSCert, "signd-tls-cert", getEnv("SIGND_TLS_CERT", ""), "Client certificate for mTLS connection to bsgo-signd")
 	flag.StringVar(&cfg.TLSKey, "signd-tls-key", getEnv("SIGND_TLS_KEY", ""), "Client key for mTLS connection to bsgo-signd")
 	flag.StringVar(&cfg.ServerCA, "signd-server-ca", getEnv("SIGND_SERVER_CA", ""), "Server root CA certificate for verifying bsgo-signd")
+	flag.BoolVar(&cfg.SignRepos, "sign-repos", getEnvBool("BSGO_SIGN_REPOS", true), "Sign repository metadata (repomd.xml.asc) with project keys from bsgo-signd; keys are created on first use")
+	flag.BoolVar(&cfg.SignCreateKeys, "sign-create-keys", getEnvBool("BSGO_SIGN_CREATE_KEYS", true), "Create a signing key for a project without one (or a parent namespace key) on first use; false publishes such projects unsigned")
+	flag.StringVar(&cfg.RepoDownloadURL, "repo-download-url", getEnv("BSGO_REPO_DOWNLOAD_URL", ""), "Public URL of the repository storage root; when set a <project>.repo file is published per repository")
 	flag.DurationVar(&cfg.DoDRepomdTTL, "dod-repomd-ttl", getEnvDuration("DOD_REPOMD_TTL", dod.DefaultRepomdTTL), "Interval between repomd.xml re-checks of external (DoD) repositories")
 	flag.BoolVar(&cfg.Checker, "checker", getEnvBool("BSGO_CHECKER", true), "Run the scheduler checker loop (prpa passes, job creation, indexing)")
 	flag.DurationVar(&cfg.CheckerDebounce, "checker-debounce", getEnvDuration("BSGO_CHECKER_DEBOUNCE", 2*time.Second), "Quiet time of a prpa before its checker pass starts")
