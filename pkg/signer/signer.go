@@ -299,3 +299,16 @@ func (s *Signer) SignDetachedArmored(ctx context.Context, data []byte, project, 
 		Hash: "sha256", SigType: SigTypeBinary, Armored: true,
 	})
 }
+
+// Enabled reports whether the RPMs of project are signed: the project or a
+// parent namespace has a key, or keys are created on demand.
+func (s *Signer) Enabled(ctx context.Context, project, flavor string) (bool, error) {
+	if !s.cfg.NoAutoCreate {
+		return true, nil
+	}
+	_, err := s.findKey(ctx, project, flavorOrDefault(flavor))
+	if errors.Is(err, ErrNoKey) {
+		return false, nil
+	}
+	return err == nil, err
+}
