@@ -9,6 +9,8 @@ package recipe
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 )
 
 // Info is the result of parsing one recipe. Field semantics follow the hash
@@ -26,6 +28,11 @@ type Info struct {
 	// "-name" (or "!name" for conflicts with Options.ConflictDeps), exactly
 	// like Build::Rpm::parse emits them.
 	Deps []string `json:"deps"`
+	// Prereqs lists the names of Requires(pre), Requires(post) and PreReq
+	// tags of all (sub)packages, unversioned and deduplicated in first-seen
+	// order, with file paths kept (obs-build "prereqs" with
+	// unfilteredprereqs). Use BuildPrereqs for the build root additions.
+	Prereqs []string `json:"prereqs,omitempty"`
 	// Subpacks lists the main package followed by the %package subpackages.
 	Subpacks []string `json:"subpacks"`
 	// ExclArch and BadArch are ExclusiveArch and ExcludeArch; nil when the
@@ -51,6 +58,20 @@ type Info struct {
 	// Error is a recipe-level error as bs_srcserver reports it, for example
 	// "can not parse name from foo.spec". Info is otherwise unusable.
 	Error string `json:"error,omitempty"`
+}
+
+// BuildPrereqs returns the prereqs that OBS adds to the build root: those
+// that are neither a build dependency, nor a subpackage name nor start with
+// "%" (bs_srcserver and BSRepServer::BuildInfo).
+func (i *Info) BuildPrereqs() []string {
+	var out []string
+	for _, p := range i.Prereqs {
+		if strings.HasPrefix(p, "%") || slices.Contains(i.Deps, p) || slices.Contains(i.Subpacks, p) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // Options tune one Parse call.

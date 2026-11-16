@@ -38,6 +38,7 @@ use strict;
 use warnings;
 use JSON::PP;
 use Build;
+$Build::Rpm::unfilteredprereqs = 1;
 
 my ($arch, $cfgfile, $jobfile) = @ARGV;
 my $fh;
@@ -55,7 +56,7 @@ for my $j (@$jobs) {
   my $d;
   eval { $d = Build::parse_typed($c, $j->{path}, 'spec'); };
   my $r = { name => '', version => '', release => '', epoch => '', deps => [],
-    subpacks => [], exclarch => [], badarch => [], buildtarget => '',
+    subpacks => [], prereqs => [], exclarch => [], badarch => [], buildtarget => '',
     constraints => [], error => '' };
   if ($@) {
     ($r->{error} = $@) =~ s/\n.*//s;
@@ -66,6 +67,7 @@ for my $j (@$jobs) {
   } else {
     $r->{$_} = defined($d->{$_}) ? "$d->{$_}" : '' for qw(name version release epoch buildtarget);
     $r->{deps} = list($d->{deps});
+    $r->{prereqs} = list($d->{prereqs});
     $r->{subpacks} = list($d->{subpacks});
     $r->{exclarch} = list($d->{exclarch});
     $r->{badarch} = list($d->{badarch});

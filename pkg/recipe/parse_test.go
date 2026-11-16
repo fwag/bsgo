@@ -45,6 +45,23 @@ func TestParseSpec(t *testing.T) {
 			want: recipe.Info{Name: "foo", Deps: []string{"!x", "-y"}, Subpacks: []string{"foo"}},
 		},
 		{
+			name: "prereq tags, forms and dedup",
+			spec: "Name: foo\nPreReq: a b >= 1, c\nRequires(pre): a /bin/sh %{x}\nRequires(post): (d if e) f [x86_64] MACRO\n",
+			want: recipe.Info{Name: "foo", Deps: []string{}, Subpacks: []string{"foo"},
+				Prereqs: []string{"a", "b", "c", "/bin/sh", "%{x}", "(d if e)", "f"}},
+		},
+		{
+			name: "prereqs of subpackages, not of false conditions",
+			spec: "Name: foo\n%if 0\nPreReq: no\n%endif\n%package -n sub\nSummary: s\nPreReq: yes\nRequires(post): yes2\n%description -n sub\nx\n",
+			want: recipe.Info{Name: "foo", Deps: []string{}, Subpacks: []string{"foo", "sub"}, Prereqs: []string{"yes", "yes2"}},
+		},
+		{
+			name: "prereqs follow the build flavor",
+			spec: "Name: foo\n%if \"@BUILD_FLAVOR@\" == \"build\"\nPreReq: flavored\n%endif\n",
+			opt:  recipe.Options{Flavor: "build"},
+			want: recipe.Info{Name: "foo", Deps: []string{}, Subpacks: []string{"foo"}, Prereqs: []string{"flavored"}},
+		},
+		{
 			name: "rich dependency",
 			spec: "Name: foo\nBuildRequires: (a if b) c\n",
 			want: recipe.Info{Name: "foo", Deps: []string{"(a if b)", "c"}, Subpacks: []string{"foo"}},
@@ -134,5 +151,16 @@ func TestParseUnsupportedAndUnknown(t *testing.T) {
 	}
 	if _, err := recipe.Parse(cfg, "README", nil, recipe.Options{}); err == nil || errors.Is(err, recipe.ErrUnsupported) {
 		t.Errorf("unknown type: err = %v", err)
+	}
+}
+
+func TestBuildPrereqs(t *testing.T) {
+	info := recipe.Info{
+		Deps: []string{"a", "-b"}, Subpacks: []string{"foo", "foo-sub"},
+		Prereqs: []string{"a", "foo-sub", "%{macro}", "/bin/sh", "x"},
+	}
+	want := []string{"/bin/sh", "x"}
+	if got := info.BuildPrereqs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("BuildPrereqs() = %v, want %v", got, want)
 	}
 }

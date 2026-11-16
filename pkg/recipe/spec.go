@@ -2,6 +2,7 @@ package recipe
 
 import (
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -15,6 +16,7 @@ var (
 	sourceTagRe   = regexp.MustCompile(`(?i)^(Source|Patch)(\d*)\s*(\s+[^:]*?)?:\s*(\S+)`)
 	packageRe     = regexp.MustCompile(`^\s*%package\s+(-n\s+)?(\S+)`)
 	sectionRe     = regexp.MustCompile(`^\s*%(?:prep|generate_buildrequires|conf|build|install|check|clean|preun|postun|pretrans|posttrans|preuntrans|postuntrans|pre|post|files|changelog|description|triggerpostun|triggerprein|triggerun|triggerin|trigger|verifyscript|sepolicy|filetriggerin|filetrigger|filetriggerun|filetriggerpostun|transfiletriggerin|transfiletrigger|transfiletriggerun|transfiletriggerpostun|end|patchlist|sourcelist)\b`)
+	prereqItemRe  = regexp.MustCompile(`([^\s\[,]+)(\s+[<=>]+\s+[^\s\[,]+)?(\s+\[[^\]]+\])?[\s,]*`)
 	depItemRe     = regexp.MustCompile(`([^\s,]+)(\s+[<=>]+\s+[^\s,]+)?(\s+\[[^\]]+\])?[\s,]*`)
 	richDepRe     = regexp.MustCompile(`[\s,]\(`)
 	leadSepRe     = regexp.MustCompile(`^[\s,]+`)
@@ -122,7 +124,9 @@ func (s *specState) tagWithArg(keyword, arg string, scope *buildconfig.SpecScope
 		s.deps(keyword, arg, scope)
 	case keyword == "url":
 		scope.SetMacro("url", arg)
-	case keyword == "icon", keyword == "requires(pre)", keyword == "requires(post)", keyword == "prereq":
+	case keyword == "requires(pre)", keyword == "requires(post)", keyword == "prereq":
+		s.prereqs(arg)
+	case keyword == "icon":
 	default:
 		return false
 	}
@@ -204,6 +208,26 @@ func (s *specState) deps(keyword, arg string, scope *buildconfig.SpecScope) {
 		}
 		for _, d := range ndeps {
 			s.info.Deps = append(s.info.Deps, prefix+d)
+		}
+	}
+}
+
+// prereqs ports the requires(pre)/requires(post)/prereq handling with
+// $Build::Rpm::unfilteredprereqs set (as the OBS servers do): versions and
+// qualifiers are ignored, the MACRO placeholder is skipped and names are
+// deduplicated in first-seen order.
+func (s *specState) prereqs(arg string) {
+	var items []depItem
+	if richDepRe.MatchString(" " + arg) {
+		items = splitRichDeps(arg)
+	} else {
+		for _, m := range prereqItemRe.FindAllStringSubmatch(arg, -1) {
+			items = append(items, depItem{pack: m[1]})
+		}
+	}
+	for _, d := range items {
+		if d.pack != "MACRO" && !slices.Contains(s.info.Prereqs, d.pack) {
+			s.info.Prereqs = append(s.info.Prereqs, d.pack)
 		}
 	}
 }

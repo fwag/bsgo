@@ -58,6 +58,10 @@
    "rsync",
    "rust"
   ],
+  "prereqs": [
+   "fillup",
+   "permissions"
+  ],
   "subpacks": [
    "389-ds",
    "389-ds-devel",
@@ -86,6 +90,7 @@
   "release": "0",
   "epoch": "",
   "deps": [],
+  "prereqs": [],
   "subpacks": [
    "ALP-dummy-release"
   ],
@@ -165,6 +170,7 @@
    "ghostscript-fonts-other",
    "ghostscript-fonts-std"
   ],
+  "prereqs": [],
   "subpacks": [
    "ImageMagick",
    "perl-PerlMagick",
@@ -223,6 +229,7 @@
    "ghostscript-fonts-other",
    "ghostscript-fonts-std"
   ],
+  "prereqs": [],
   "subpacks": [
    "ImageMagick",
    "ImageMagick-config-7-upstream-limited"
@@ -273,6 +280,7 @@
    "ghostscript-fonts-other",
    "ghostscript-fonts-std"
   ],
+  "prereqs": [],
   "subpacks": [
    "ImageMagick",
    "ImageMagick-config-7-upstream-open"
@@ -323,6 +331,7 @@
    "ghostscript-fonts-other",
    "ghostscript-fonts-std"
   ],
+  "prereqs": [],
   "subpacks": [
    "ImageMagick",
    "ImageMagick-config-7-upstream-secure"
@@ -373,6 +382,7 @@
    "ghostscript-fonts-other",
    "ghostscript-fonts-std"
   ],
+  "prereqs": [],
   "subpacks": [
    "ImageMagick",
    "ImageMagick-config-7-upstream-websafe"
@@ -438,6 +448,7 @@
    "pkgconfig(wayland-protocols) \u003e= 1.38",
    "pkgconfig(wayland-server) \u003e= 1.18"
   ],
+  "prereqs": [],
   "subpacks": [
    "Mesa",
    "Mesa-devel",
@@ -548,6 +559,7 @@
    "rust",
    "rust-bindgen"
   ],
+  "prereqs": [],
   "subpacks": [
    "Mesa-drivers",
    "Mesa-drivers-devel",
@@ -600,6 +612,10 @@
   "release": "0",
   "epoch": "",
   "deps": [],
+  "prereqs": [
+   "(glibc \u003e= 2.30 if glibc)",
+   "fillup"
+  ],
   "subpacks": [
    "aaa_base",
    "aaa_base-extras",
@@ -628,6 +644,7 @@
    "user(bin)",
    "user(daemon)"
   ],
+  "prereqs": [],
   "subpacks": [
    "acl",
    "libacl1",
@@ -652,6 +669,7 @@
    "javacc",
    "javapackages-local \u003e= 6"
   ],
+  "prereqs": [],
   "subpacks": [
    "apache-commons-jexl",
    "apache-commons-jexl-javadoc"
@@ -676,6 +694,7 @@
    "-xalan-j2",
    "-xerces-j2"
   ],
+  "prereqs": [],
   "subpacks": [
    "apache-commons-lang3",
    "apache-commons-lang3-javadoc"
@@ -698,6 +717,7 @@
    "libcryptopp-devel",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware",
    "arm-trusted-firmware-tools"
@@ -725,6 +745,7 @@
    "libopenssl-devel",
    "u-boot-mvebuespressobin-88f3720"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-a3700"
   ],
@@ -748,6 +769,7 @@
    "libopenssl-devel",
    "u-boot-mvebumcbin-88f8040"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-a80x0_mcbin"
   ],
@@ -772,6 +794,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-fvp"
   ],
@@ -794,6 +817,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-imx8mm"
   ],
@@ -816,6 +840,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-imx8qm"
   ],
@@ -838,6 +863,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-imx8qx"
   ],
@@ -861,6 +887,7 @@
    "libopenssl-devel",
    "u-boot-poplar"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-poplar",
    "arm-trusted-firmware-poplar-devel"
@@ -885,6 +912,7 @@
    "libopenssl-devel",
    "qemu-uefi-aarch64"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-qemu"
   ],
@@ -907,6 +935,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-qemu_sbsa"
   ],
@@ -929,6 +958,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-rk3328"
   ],
@@ -951,6 +981,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-rk3368"
   ],
@@ -974,6 +1005,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-rk3399"
   ],
@@ -998,6 +1030,7 @@
    "raspberrypi-firmware",
    "u-boot-rpi3"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-rpi3"
   ],
@@ -1021,6 +1054,7 @@
    "libopenssl-devel",
    "raspberrypi-firmware"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-rpi4"
   ],
@@ -1043,6 +1077,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-sun50i_a64"
   ],
@@ -1065,6 +1100,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-sun50i_h6"
   ],
@@ -1087,6 +1123,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-sun50i_h616"
   ],
@@ -1109,6 +1146,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-tegra186"
   ],
@@ -1131,6 +1169,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-tegra210"
   ],
@@ -1153,6 +1192,7 @@
    "git",
    "libopenssl-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "arm-trusted-firmware-zynqmp"
   ],
@@ -1178,6 +1218,7 @@
    "python3-setuptools",
    "python3-xml"
   ],
+  "prereqs": [],
   "subpacks": [
    "asciidoc",
    "asciidoc-examples",
@@ -1204,6 +1245,7 @@
    "python3-xml",
    "asciidoc-latex-backend"
   ],
+  "prereqs": [],
   "subpacks": [
    "asciidoc-latextest",
    "asciidoc-latextest-examples",
@@ -1224,6 +1266,7 @@
    "help2man",
    "m4 \u003e= 1.4.16"
   ],
+  "prereqs": [],
   "subpacks": [
    "autoconf"
   ],
@@ -1244,6 +1287,7 @@
    "emacs-nox",
    "gcc-c++"
   ],
+  "prereqs": [],
   "subpacks": [
    "autoconf-el"
   ],
@@ -1263,6 +1307,7 @@
    "m4 \u003e= 1.4.16",
    "gcc-c++"
   ],
+  "prereqs": [],
   "subpacks": [
    "autoconf-testsuite"
   ],
@@ -1299,6 +1344,9 @@
    "( python313-dbm )",
    "( python313-dbus-python )",
    "alts"
+  ],
+  "prereqs": [
+   "coreutils"
   ],
   "subpacks": [
    "avahi",
@@ -1356,6 +1404,9 @@
    "python3-dbus-python",
    "alts"
   ],
+  "prereqs": [
+   "coreutils"
+  ],
   "subpacks": [
    "avahi-glib2",
    "libavahi-client3",
@@ -1409,6 +1460,9 @@
    "python3-dbm",
    "python3-dbus-python",
    "alts"
+  ],
+  "prereqs": [
+   "coreutils"
   ],
   "subpacks": [
    "avahi-qt5",
@@ -1468,6 +1522,9 @@
    "python3-dbus-python",
    "alts"
   ],
+  "prereqs": [
+   "coreutils"
+  ],
   "subpacks": [
    "avahi-qt6",
    "libavahi-client3",
@@ -1517,6 +1574,7 @@
    "pkgconfig(python3)",
    "pkgconfig(uuid)"
   ],
+  "prereqs": [],
   "subpacks": [
    "babeltrace",
    "python3-babeltrace",
@@ -1551,6 +1609,9 @@
    "pkgconfig(ncurses)",
    "pkgconfig(readline) \u003e= 8.2"
   ],
+  "prereqs": [
+   "bash"
+  ],
   "subpacks": [
    "bash",
    "bash-doc",
@@ -1582,6 +1643,7 @@
    "-xml-apis",
    "-xml-resolver"
   ],
+  "prereqs": [],
   "subpacks": [
    "bcel",
    "bcel-javadoc"
@@ -1608,6 +1670,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "binutils",
@@ -1640,6 +1706,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-aarch64-binutils",
@@ -1674,6 +1744,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-arm-binutils",
@@ -1724,6 +1798,10 @@
    "zlib-devel-static",
    "libzstd-devel"
   ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
+  ],
   "subpacks": [
    "cross-avr-binutils",
    "cross-avr-binutils-gold",
@@ -1757,6 +1835,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-bpf-binutils",
@@ -1792,6 +1874,10 @@
    "zlib-devel-static",
    "libzstd-devel"
   ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
+  ],
   "subpacks": [
    "cross-epiphany-binutils",
    "cross-epiphany-binutils-gold",
@@ -1825,6 +1911,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-hppa-binutils",
@@ -1860,6 +1950,10 @@
    "zlib-devel-static",
    "libzstd-devel"
   ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
+  ],
   "subpacks": [
    "cross-hppa64-binutils",
    "cross-hppa64-binutils-gold",
@@ -1893,6 +1987,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-i386-binutils",
@@ -1935,6 +2033,10 @@
    "zlib-devel-static",
    "libzstd-devel"
   ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
+  ],
   "subpacks": [
    "cross-ia64-binutils",
    "cross-ia64-binutils-gold",
@@ -1968,6 +2070,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-loongarch64-binutils",
@@ -2003,6 +2109,10 @@
    "zlib-devel-static",
    "libzstd-devel"
   ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
+  ],
   "subpacks": [
    "cross-m68k-binutils",
    "cross-m68k-binutils-gold",
@@ -2036,6 +2146,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-mips-binutils",
@@ -2071,6 +2185,10 @@
    "zlib-devel-static",
    "libzstd-devel"
   ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
+  ],
   "subpacks": [
    "cross-ppc-binutils",
    "cross-ppc-binutils-gold",
@@ -2104,6 +2222,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-ppc64-binutils",
@@ -2139,6 +2261,10 @@
    "zlib-devel-static",
    "libzstd-devel"
   ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
+  ],
   "subpacks": [
    "cross-ppc64le-binutils",
    "cross-ppc64le-binutils-gold",
@@ -2172,6 +2298,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-pru-binutils",
@@ -2207,6 +2337,10 @@
    "zlib-devel-static",
    "libzstd-devel"
   ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
+  ],
   "subpacks": [
    "cross-riscv64-binutils",
    "cross-riscv64-binutils-gold",
@@ -2240,6 +2374,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-rx-binutils",
@@ -2275,6 +2413,10 @@
    "zlib-devel-static",
    "libzstd-devel"
   ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
+  ],
   "subpacks": [
    "cross-s390-binutils",
    "cross-s390-binutils-gold",
@@ -2308,6 +2450,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-s390x-binutils",
@@ -2343,6 +2489,10 @@
    "zlib-devel-static",
    "libzstd-devel"
   ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
+  ],
   "subpacks": [
    "cross-sparc-binutils",
    "cross-sparc-binutils-gold",
@@ -2376,6 +2526,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-sparc64-binutils",
@@ -2411,6 +2565,10 @@
    "zlib-devel-static",
    "libzstd-devel"
   ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
+  ],
   "subpacks": [
    "cross-spu-binutils",
    "cross-spu-binutils-gold",
@@ -2445,6 +2603,10 @@
    "zlib-devel-static",
    "libzstd-devel"
   ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
+  ],
   "subpacks": [
    "cross-x86_64-binutils",
    "cross-x86_64-binutils-gold",
@@ -2478,6 +2640,10 @@
    "makeinfo",
    "zlib-devel-static",
    "libzstd-devel"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "update-alternatives"
   ],
   "subpacks": [
    "cross-xtensa-binutils",
@@ -2521,6 +2687,7 @@
    "glibc-devel",
    "glibc-devel-static"
   ],
+  "prereqs": [],
   "subpacks": [
    "build",
    "build-mkbaselibs",
@@ -2606,6 +2773,15 @@
    "lttng-ust-devel",
    "libexpat-devel"
   ],
+  "prereqs": [
+   "binutils",
+   "fillup",
+   "/usr/bin/mkdir",
+   "/usr/bin/touch",
+   "permissions",
+   "shadow",
+   "coreutils"
+  ],
   "subpacks": [
    "ceph",
    "ceph-base",
@@ -2689,6 +2865,7 @@
    "pkgconfig(zlib)",
    "pkgconfig(libuv) \u003e= 1.28"
   ],
+  "prereqs": [],
   "subpacks": [
    "cmake",
    "cmake-man",
@@ -2723,6 +2900,7 @@
    "pkgconfig(libarchive) \u003e= 3.3.3",
    "pkgconfig(libcurl)"
   ],
+  "prereqs": [],
   "subpacks": [
    "cmake-full",
    "cmake-man",
@@ -2764,6 +2942,7 @@
    "pkgconfig(Qt6Widgets)",
    "qt6-tools-helpgenerators"
   ],
+  "prereqs": [],
   "subpacks": [
    "cmake-ui",
    "cmake-man",
@@ -2795,6 +2974,7 @@
    "pkgconfig(zlib)",
    "pkgconfig(libuv) \u003e= 1.28"
   ],
+  "prereqs": [],
   "subpacks": [
    "cmake-mini",
    "cmake-man",
@@ -2825,6 +3005,7 @@
    "xz",
    "gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "coreutils",
    "coreutils-doc"
@@ -2853,6 +3034,7 @@
    "xz",
    "gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "coreutils-single",
    "coreutils-single-doc"
@@ -2882,6 +3064,7 @@
    "pkgconfig(libsystemd)",
    "gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "coreutils-systemd",
    "coreutils-systemd-doc"
@@ -2919,6 +3102,7 @@
    "user(bin)",
    "valgrind"
   ],
+  "prereqs": [],
   "subpacks": [
    "coreutils-testsuite",
    "coreutils-testsuite-doc"
@@ -2947,6 +3131,11 @@
    "pkgconfig(libsystemd) \u003e= 209",
    "libselinux-devel"
   ],
+  "prereqs": [
+   "libdbus-1-3",
+   "/usr/bin/cmp",
+   "permissions"
+  ],
   "subpacks": [
    "dbus-1",
    "libdbus-1-3",
@@ -2971,6 +3160,7 @@
    "libexpat-devel \u003e= 2.1.0",
    "xmlto"
   ],
+  "prereqs": [],
   "subpacks": [
    "dbus-1-devel-doc"
   ],
@@ -2996,6 +3186,7 @@
    "pkgconfig(x11)",
    "libselinux-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "dbus-1-x11"
   ],
@@ -3022,6 +3213,7 @@
    "zlib-devel",
    "zstd"
   ],
+  "prereqs": [],
   "subpacks": [
    "elfutils",
    "libasm1",
@@ -3070,6 +3262,11 @@
    "pkgconfig(sqlite3) \u003e= 3.7.17",
    "pkgconfig(systemd)"
   ],
+  "prereqs": [
+   "fillup",
+   "/usr/bin/mkdir",
+   "/usr/bin/touch"
+  ],
   "subpacks": [
    "elfutils-debuginfod",
    "libdebuginfod1",
@@ -3099,6 +3296,7 @@
    "pkgconfig(libzstd)",
    "pkgconfig(zlib)"
   ],
+  "prereqs": [],
   "subpacks": [
    "file",
    "file-magic",
@@ -3124,6 +3322,7 @@
    "python-rpm-macros",
    "pkgconfig(zlib)"
   ],
+  "prereqs": [],
   "subpacks": [
    "python-magic"
   ],
@@ -3145,6 +3344,11 @@
    "gcc15-go",
    "gcc15-ada",
    "gcc15-d"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "gcc15-info",
+   "update-alternatives"
   ],
   "subpacks": [
    "gcc",
@@ -3210,6 +3414,9 @@
    "gcc-ada",
    "gcc-d",
    "-gcc-PIE"
+  ],
+  "prereqs": [
+   "/bin/sh"
   ],
   "subpacks": [
    "gcc13",
@@ -3355,6 +3562,7 @@
    "cross-aarch64-glibc-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-aarch64-gcc13"
   ],
@@ -3385,6 +3593,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-aarch64-gcc13-bootstrap"
   ],
@@ -3423,6 +3632,7 @@
    "lld19",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-amdgcn-gcc13",
    "cross-amdgcn-newlib13-devel"
@@ -3456,6 +3666,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-arm-gcc13"
   ],
@@ -3495,6 +3706,7 @@
    "cross-arm-none-newlib-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-arm-none-gcc13"
   ],
@@ -3527,6 +3739,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-arm-none-gcc13-bootstrap"
   ],
@@ -3566,6 +3779,7 @@
    "avr-libc",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-avr-gcc13"
   ],
@@ -3598,6 +3812,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-avr-gcc13-bootstrap"
   ],
@@ -3636,6 +3851,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-bpf-gcc13"
   ],
@@ -3666,6 +3882,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-hppa-gcc13-bootstrap"
   ],
@@ -3704,6 +3921,7 @@
    "nvptx-tools",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-nvptx-gcc13",
    "cross-nvptx-newlib13-devel"
@@ -3737,6 +3955,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-ppc64-gcc13"
   ],
@@ -3775,6 +3994,7 @@
    "cross-ppc64le-glibc-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-ppc64le-gcc13"
   ],
@@ -3805,6 +4025,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-ppc64le-gcc13-bootstrap"
   ],
@@ -3843,6 +4064,7 @@
    "cross-pru-newlib-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-pru-gcc13"
   ],
@@ -3891,6 +4113,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-pru-gcc13-bootstrap"
   ],
@@ -3946,6 +4169,7 @@
    "cross-riscv64-newlib-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-riscv64-elf-gcc13"
   ],
@@ -3978,6 +4202,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-riscv64-elf-gcc13-bootstrap"
   ],
@@ -4016,6 +4241,7 @@
    "cross-riscv64-glibc-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-riscv64-gcc13"
   ],
@@ -4046,6 +4272,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-riscv64-gcc13-bootstrap"
   ],
@@ -4084,6 +4311,7 @@
    "cross-rx-newlib-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-rx-gcc13"
   ],
@@ -4116,6 +4344,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-rx-gcc13-bootstrap"
   ],
@@ -4155,6 +4384,7 @@
    "cross-s390x-glibc-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-s390x-gcc13"
   ],
@@ -4185,6 +4415,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-s390x-gcc13-bootstrap"
   ],
@@ -4222,6 +4453,7 @@
    "isl-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "cross-x86_64-gcc13"
   ],
@@ -4275,6 +4507,7 @@
    "cross-amdgcn-newlib13-devel",
    "-gcc-PIE"
   ],
+  "prereqs": [],
   "subpacks": [
    "gcc13-testresults"
   ],
@@ -4296,6 +4529,11 @@
    "gcc13-go",
    "gcc13-ada",
    "gcc13-d"
+  ],
+  "prereqs": [
+   "/bin/sh",
+   "gcc13-info",
+   "update-alternatives"
   ],
   "subpacks": [
    "gcc-build",
@@ -4355,6 +4593,10 @@
    "sysuser-tools",
    "xz"
   ],
+  "prereqs": [
+   "filesystem",
+   "/bin/sh"
+  ],
   "subpacks": [
    "glibc",
    "glibc-utils",
@@ -4399,6 +4641,7 @@
    "cross-aarch64-gcc13-bootstrap",
    "cross-aarch64-linux-glibc-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "glibc-cross-aarch64-src",
    "glibc-utils",
@@ -4434,6 +4677,7 @@
    "cross-ppc64le-gcc13-bootstrap",
    "cross-ppc64le-linux-glibc-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "glibc-cross-ppc64le-src",
    "glibc-utils",
@@ -4469,6 +4713,7 @@
    "cross-riscv64-gcc13-bootstrap",
    "cross-riscv64-linux-glibc-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "glibc-cross-riscv64-src",
    "glibc-utils",
@@ -4504,6 +4749,7 @@
    "cross-s390x-gcc13-bootstrap",
    "cross-s390x-linux-glibc-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "glibc-cross-s390x-src",
    "glibc-utils",
@@ -4536,6 +4782,10 @@
    "systemtap-headers",
    "sysuser-tools",
    "xz"
+  ],
+  "prereqs": [
+   "filesystem",
+   "/bin/sh"
   ],
   "subpacks": [
    "glibc",
@@ -4588,6 +4838,7 @@
    "libstdc++-devel",
    "python3-pexpect"
   ],
+  "prereqs": [],
   "subpacks": [
    "glibc-testsuite-src",
    "glibc-utils",
@@ -4622,6 +4873,7 @@
    "libpng-devel",
    "zlib-devel"
   ],
+  "prereqs": [],
   "subpacks": [
    "glibc-utils-src",
    "glibc-utils",
@@ -4655,6 +4907,9 @@
    "pkgconfig(expat)",
    "pkgconfig(zlib)",
    "pkgconfig(gts)"
+  ],
+  "prereqs": [
+   "graphviz"
   ],
   "subpacks": [
    "graphviz",
@@ -4737,6 +4992,9 @@
    "php8-devel",
    "swig \u003e= 4.1.0"
   ],
+  "prereqs": [
+   "graphviz"
+  ],
   "subpacks": [
    "graphviz-addons",
    "graphviz-smyrna",
@@ -4791,6 +5049,9 @@
    "pkgconfig(Qt6Core)",
    "pkgconfig(Qt6PrintSupport)",
    "pkgconfig(Qt6Widgets)"
+  ],
+  "prereqs": [
+   "graphviz"
   ],
   "subpacks": [
    "graphviz-qt6",
@@ -4868,6 +5129,9 @@
    "systemtap-sdt-devel",
    "pcsc-lite-devel"
   ],
+  "prereqs": [
+   "file"
+  ],
   "subpacks": [
    "java-17-openjdk",
    "java-17-openjdk-headless",
@@ -4896,6 +5160,7 @@
    "grep",
    "kernel-subpackage-macros"
   ],
+  "prereqs": [],
   "subpacks": [
    "kernel-default-base"
   ],
@@ -4928,6 +5193,9 @@
    "pkgconfig(udev)",
    "thin-provisioning-tools \u003e= 0.7.0"
   ],
+  "prereqs": [
+   "coreutils"
+  ],
   "subpacks": [
    "lvm2",
    "liblvm2cmd2_03",
@@ -4956,6 +5224,9 @@
    "suse-module-tools",
    "pkgconfig(libselinux)",
    "pkgconfig(libsepol)"
+  ],
+  "prereqs": [
+   "coreutils"
   ],
   "subpacks": [
    "lvm2-device-mapper",
@@ -4986,6 +5257,9 @@
    "pkgconfig(corosync)",
    "libdlm-devel \u003e= 4.0.9",
    "pkgconfig(systemd)"
+  ],
+  "prereqs": [
+   "coreutils"
   ],
   "subpacks": [
    "lvm2-lvmlockd",
@@ -5035,6 +5309,7 @@
    "maven-resources-plugin-bootstrap",
    "maven-surefire-plugin-bootstrap"
   ],
+  "prereqs": [],
   "subpacks": [
    "maven-jar-plugin",
    "maven-jar-plugin-javadoc"
@@ -5070,6 +5345,7 @@
    "mvn(org.apache.maven.plugins:maven-plugins:pom:)",
    "ant"
   ],
+  "prereqs": [],
   "subpacks": [
    "maven-jar-plugin-bootstrap"
   ],
@@ -5138,6 +5414,7 @@
    "maven-resources-plugin-bootstrap",
    "maven-surefire-plugin-bootstrap"
   ],
+  "prereqs": [],
   "subpacks": [
    "maven-javadoc-plugin",
    "maven-javadoc-plugin-javadoc"
@@ -5194,6 +5471,7 @@
    "ant",
    "modello \u003e= 2.0.0"
   ],
+  "prereqs": [],
   "subpacks": [
    "maven-javadoc-plugin-bootstrap"
   ],
@@ -5291,6 +5569,13 @@
    "usbredir-devel \u003e= 0.6",
    "xfsprogs-devel"
   ],
+  "prereqs": [
+   "acl",
+   "udev",
+   "coreutils",
+   "permissions",
+   "update-alternatives"
+  ],
   "subpacks": [
    "qemu",
    "qemu-headless",
@@ -5366,6 +5651,7 @@
    "python3-Sphinx",
    "python3-base \u003e= 3.8"
   ],
+  "prereqs": [],
   "subpacks": [
    "qemu-linux-user"
   ],
@@ -5406,6 +5692,7 @@
    "cmake(Qt6Xml) = 6.9.1",
    "pkgconfig(libzstd) \u003e= 1.3"
   ],
+  "prereqs": [],
   "subpacks": [
    "qt6-tools"
   ],
@@ -5447,6 +5734,7 @@
    "pkgconfig(libzstd) \u003e= 1.3",
    "qt6-tools"
   ],
+  "prereqs": [],
   "subpacks": [
    "qt6-tools-docs"
   ],

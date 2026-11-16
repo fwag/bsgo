@@ -3,6 +3,7 @@ package checker
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,7 +18,7 @@ import (
 // runscripts/notmeta flags, allocates the release counters and assembles the
 // JobSpec. A non-nil verdict means the job cannot be created.
 func (ps *pass) newJob(u *unit, meta, explain string) (*JobSpec, *verdict) {
-	build, err := ps.pool.GetBuild(ps.exp, u.info.Subpacks, u.buildDeps())
+	build, err := ps.pool.GetBuild(ps.exp, u.info.Subpacks, ps.jobDeps(u))
 	var ee *solv.ExpandError
 	if errors.As(err, &ee) {
 		return nil, &verdict{storage.StateUnresolvable, ee.Error()}
@@ -40,6 +41,24 @@ func (ps *pass) newJob(u *unit, meta, explain string) (*JobSpec, *verdict) {
 		return nil, &verdict{storage.StateBroken, err.Error()}
 	}
 	return ps.jobSpec(u, meta, explain, attempt, counters, bdeps), nil
+}
+
+// jobDeps returns the dependencies the job's build root is expanded from:
+// the direct ones followed by the recipe prereqs behind the
+// --directdepsend-- marker (BSSched::BuildJob::create). File path prereqs
+// need a FileProvides entry.
+func (ps *pass) jobDeps(u *unit) []string {
+	deps := u.buildDeps()
+	var pre []string
+	for _, p := range u.info.BuildPrereqs() {
+		if !strings.HasPrefix(p, "/") || len(ps.sched.FileProvides[p]) > 0 {
+			pre = append(pre, p)
+		}
+	}
+	if len(pre) == 0 {
+		return deps
+	}
+	return slices.Concat(deps, []string{"--directdepsend--"}, pre)
 }
 
 func (ps *pass) jobSpec(u *unit, meta, explain, attempt string, c storage.BuildCounters, bdeps []Bdep) *JobSpec {

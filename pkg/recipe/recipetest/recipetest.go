@@ -24,6 +24,7 @@ type Result struct {
 	Release     string   `json:"release"`
 	Epoch       string   `json:"epoch"`
 	Deps        []string `json:"deps"`
+	Prereqs     []string `json:"prereqs"`
 	Subpacks    []string `json:"subpacks"`
 	ExclArch    []string `json:"exclarch"`
 	BadArch     []string `json:"badarch"`
@@ -36,7 +37,7 @@ type Result struct {
 func FromInfo(i *recipe.Info) Result {
 	return Result{
 		Name: i.Name, Version: i.Version, Release: i.Release, Epoch: i.Epoch,
-		Deps: nz(i.Deps), Subpacks: nz(i.Subpacks), ExclArch: nz(i.ExclArch),
+		Deps: nz(i.Deps), Prereqs: nz(i.Prereqs), Subpacks: nz(i.Subpacks), ExclArch: nz(i.ExclArch),
 		BadArch: nz(i.BadArch), BuildTarget: i.BuildTarget,
 		Constraints: nz(i.Constraints), Error: i.Error,
 	}
