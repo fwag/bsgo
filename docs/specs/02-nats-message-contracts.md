@@ -94,6 +94,21 @@ message BuildJob {
   // fields (chroot_rpms, repositories, build_config, ...) and logs
   // "legacy job without buildinfo" on stderr.
   BuildInfo buildinfo = 12;
+
+  // Resolved build constraints (OBS-compatible, see below). Absent = none.
+  JobConstraints constraints = 13;
+}
+
+message JobConstraints {
+  repeated SandboxConstraint sandbox = 1;  // all must hold
+  int64 memory_mb = 2;        // informational, already folded into resources.memory_mb
+  int64 disk_mb = 3;          // informational, already folded into resources.disk_gb
+  int32 processors = 4;       // informational, already folded into resources.vcpus
+}
+
+message SandboxConstraint {
+  string value = 1;           // "kvm", "nspawn", "chroot", "xen", "zvm", or "secure"
+  bool exclude = 2;           // true: the worker sandbox must NOT be value
 }
 
 message BuildInfo {
@@ -141,6 +156,40 @@ BuildInfo jobs are refused in `obs-build` (plain chroot) sandbox mode unless
 the worker sets `sandbox.allow_unisolated_chroot: true`, because obs-build
 chroot mode has no network isolation. KVM mode runs with `-net none`.
 
+#### Build constraints (`constraints`)
+
+The scheduler resolves the constraints of every job like OBS `bs_dispatch` and
+puts the dispatch relevant part into `constraints`. Sources, lowest to highest
+precedence:
+
+1. the project configuration `Constraint:` lines (`sandbox kvm`,
+   `hardware:memory:size unit=G 16`, ...);
+2. the package `_constraints` file (XML, `<sandbox>`, `<hardware>`, ...) after
+   applying its `<overwrite><conditions>` sections: an `<arch>` list must
+   contain the build architecture, a `<package>` list the package name or its
+   short name (cut at the first `.`); the overwrite replaces list constraints
+   instead of extending them;
+3. the recipe `#!BuildConstraint:` lines;
+4. the bsgo-native override `build.constraints.sandbox` of the package manifest,
+   which replaces the sandbox constraint entirely (`none` removes it).
+
+Merging 1-3 follows `mergeconstraints`: list constraints (`sandbox`,
+`hostlabel`, cpu flags) accumulate, scalar constraints (processors, memory,
+disk, ...) are replaced by the higher source.
+
+Enforced: `sandbox` (equal to the worker's `sandbox_type`; `secure` accepts
+`kvm`, `xen`, `zvm`; `exclude` negates), and `hardware:memory`,
+`hardware:disk`, `hardware:processors`, which raise the job's `resources`
+(never lower them) so the existing capacity matching and VM sizing apply.
+Parsed and merged but not enforced (the workers do not report the facts):
+`hostlabel`, `linux`, `hardware:jobs`, `memoryperjob`, `physicalmemory`, cpu
+`flag`. Malformed constraints put the unit in state `broken`.
+
+A job whose `constraints.sandbox` is empty is unconstrained and may run on any
+worker, except workers that set `constrained_only` in their heartbeat. A job
+with a sandbox constraint stays queued until a matching worker reports; the
+package status detail reads for example `new build, needs sandbox kvm`.
+
 ```protobuf
 
 message SourceSpec {
@@ -161,7 +210,7 @@ message ResourceRequirements {
   int64 memory_mb = 2;        // e.g. 8192
   int64 disk_gb = 3;          // e.g. 50
   int32 timeout_seconds = 4;  // e.g. 14400 (4h)
-  string sandbox_type = 5;    // "kvm", "zvm", "chroot"
+  string sandbox_type = 5;    // legacy, unused; see JobConstraints
 }
 
 message ArtifactDestination {
@@ -194,16 +243,23 @@ message WorkerHeartbeat {
   WorkerHardware hardware = 5;
   repeated string cached_rpm_hashes = 6; // Hashes present in local worker SSD cache
   int64 timestamp_unix = 7;
+  bool constrained_only = 9;  // take only jobs with a sandbox constraint
 }
 
 message WorkerHardware {
   int32 total_vcpus = 1;
   int64 total_memory_mb = 2;
   int64 available_disk_gb = 3;
-  string sandbox_type = 4;    // "kvm", "zvm"
+  string sandbox_type = 4;    // "kvm", "nspawn", "chroot" (obs-build), from sandbox.mode
   repeated string cpu_features = 5; // e.g. ["avx2", "avx512"]
 }
 ```
+
+`sandbox_type` is derived from `sandbox.mode`: `kvm` and `nspawn` as is,
+`obs-build` is advertised as `chroot` (the OBS name). `constrained_only` is the
+inverse of `sandbox.accept_unconstrained` (default true): a KVM worker next to an
+nspawn worker sets it to false and then only receives jobs that constrain the
+sandbox.
 
 The heartbeat doubles as registration. `archs` lists the build architectures the
 worker offers: by default the BSCando set of the host architecture (an `x86_64`

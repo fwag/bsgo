@@ -230,6 +230,8 @@ build:
   architectures:
     exclude:
       - "s390x"
+  constraints:
+    sandbox: "kvm"       # run only on a worker with a kvm sandbox
 
 resources:
   memory: "32Gi"
@@ -253,10 +255,39 @@ resources:
 | `build.targets` | map[str, bool]| No | Per-target enable/disable overrides (e.g. `images: false`). |
 | `build.architectures.include` | list[str] | No | Whitelist of architectures to build. |
 | `build.architectures.exclude` | list[str] | No | Blacklist of architectures to skip (e.g. `[s390x]`). |
+| `build.constraints.sandbox` | string | No | Sandbox the job needs, overriding what OBS constraints derive: space separated names (`kvm`, `nspawn`, `chroot`, `secure`; a leading `!` excludes, e.g. `secure !chroot`), or `none` to drop the constraint. See below. |
 | `resources.memory` | string | No | Memory limit for worker VM (e.g. `16Gi`, default `4Gi`). |
 | `resources.vcpus` | int | No | CPU cores allocated to worker VM (default `2`). |
 | `resources.disk` | string | No | Root/swap disk size allocated to worker VM (default `20Gi`). |
 | `resources.timeout` | string | No | Max execution time before killing worker (default `2h`). |
+
+### Build Constraints (OBS compatible)
+
+Per-package constraints route jobs to suitable workers, for example packages
+whose test suite needs a real VM kernel to KVM workers (util-linux needs
+UDP-Lite, which the nspawn worker's host kernel may lack). bsgo reads the same
+sources as OBS: the `Constraint:` lines of the project configuration, the
+package `_constraints` file (including `<overwrite><conditions>` per arch and
+package) and `#!BuildConstraint:` in the recipe, merged with the OBS
+precedence (project < `_constraints` < recipe). `build.constraints.sandbox` is
+the bsgo-native override applied on top: it replaces the derived sandbox
+constraint (`none` removes it). The wire form and the enforced subset are
+specified in spec 02, section 3.2.
+
+`bsgo project import-obs-git` reads an optional `_bsgo/packages.yaml` from the
+imported ref and applies it to the generated package manifests, so overrides
+live in the OBS project git:
+
+```yaml
+packages:
+  util-linux:
+    build:
+      constraints:
+        sandbox: kvm
+```
+
+Unknown keys are rejected; entries for packages that were not imported are
+reported (stderr and `unused_overrides` in `--json`).
 
 ---
 
