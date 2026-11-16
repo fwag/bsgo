@@ -28,3 +28,14 @@ For a test host (e.g. aisrv) where all bsgo services run as one user.
 
 `systemctl --user restart bsgo-server` / `bsgo-worker` replaces the manual
 `nohup` starts. Logs stay in `~/Devel/bsgo/server.log` and `worker.log`.
+
+## RPM signing
+
+The signer role of `bsgo-server` needs `rpm`, `rpmsign` (package `rpm-build`
+or `rpm-sign`) and the helper binary, which it looks up next to `bsgo-server`
+(or `--sign-helper`, `$BSGO_SIGN_HELPER`). No sudo is needed; keys stay in
+`bsgo-signd`.
+
+    go build -o ~/Devel/bsgo/bin/bsgo-sign-helper ./cmd/bsgo-sign-helper
+
+Start the server with `--sign-rpms=false` to keep the old unsigned behaviour.

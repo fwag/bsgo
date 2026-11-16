@@ -112,6 +112,14 @@ func startChecker(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jetst
 		Notify: natsNotifier{nc: nc}, Exports: indexer.ManifestExports{Projects: store},
 	}
 	handler := &jobstatus.Handler{Store: store, Integrator: ix, Dirty: events}
+	if cfg.SignRPMs {
+		keys, err := newSigner(cfg, store)
+		if err != nil {
+			fatalf("SIGNER", "%v", err)
+		}
+		handler.Signing = signingPolicy{nc: nc, keys: keys}
+		subscribeJobSigned(ctx, nc, handler.HandleSigned)
+	}
 	subscribeJobFinished(ctx, nc, handler)
 	subscribeRepoChanged(ctx, nc, events)
 	subscribeTriggers(ctx, nc, store, events)

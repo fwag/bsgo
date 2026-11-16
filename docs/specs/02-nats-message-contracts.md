@@ -23,6 +23,9 @@ bsgo.
 │       └── job                        [Core NATS] Direct job assignment from Dispatcher
 ├── logs.
 │   └── <job_id>                       [Core NATS] Live log line streaming
+├── signing.
+│   ├── finished                       [Core NATS, queue group bsgo-signer] Job built, RPMs to sign (job-finished)
+│   └── signed                         [Core NATS] Signed artifacts or signing failure (job-signed)
 └── events.
     ├── repo.changed                   [Core NATS] Build repository of a prpa changed (indexer -> checker, publisher)
     └── published                      [Core NATS] A prpa was published (publisher)
@@ -312,6 +315,42 @@ list holds the binaries plus `bininfo.json`, `_slsa_provenance.json`,
 `artifacts/<project>/<target>/<arch>/<package[:flavor]>/`, with `s3_key` set to
 the real object key. The worker does not emit a publication request for
 BuildInfo jobs; the indexer integrates the binaries from this message.
+
+#### Signing stage (plan 02, S3): `bsgo.signing.finished` and `bsgo.signing.signed`
+With signing on (`--sign-rpms`, default true) a `SUCCEEDED` status of a job that
+uploaded RPMs does not integrate: the state handler sets the unit to `signing`
+and publishes the job on `bsgo.signing.finished` (job-finished). Signer replicas
+(`--role signer`, part of `all`) consume it through the queue group
+`bsgo-signer`, so each job goes to one replica. Both subjects carry the same
+JSON object:
+
+```json
+{"job_id": "...", "project": "home:bot", "package": "foo:mini", "target": "standard",
+ "architecture": "x86_64", "meta": "...", "source_commit": "...",
+ "artifacts": [{"filename": "...", "s3_key": "...", "sha256": "...", "size_bytes": 0}],
+ "error": ""}
+```
+
+The request lists the artifacts as the worker reported them (unsigned sha256).
+The signer processes it only while the unit is in state `signing` with the same
+`job_id` (a redelivered or superseded request is dropped). It downloads the RPMs
+(verifying the worker's sha256), runs `rpmsign --delsign` and `--addsign` with
+`bsgo-sign-helper`, verifies with `rpm -K` against the project public key,
+re-extracts `bininfo.json`, uploads RPMs and `bininfo.json` over the unsigned
+objects (same keys) and publishes the answer on `bsgo.signing.signed`
+(job-signed): the same job with the artifact list after signing (new sha256 and
+size) or, after the retries (4 attempts, backoff 2 s doubling), `error` set.
+The state handler consumes job-signed: unit state `signing` (or `finished`) with
+a matching `job_id` becomes `finished`, the signed artifacts are integrated
+(3.9) and the unit becomes `succeeded`; with `error` the unit becomes `failed`
+with details `signing failed: <error>`. Answers for other jobs or for units that
+are no longer `signing`/`finished` are ignored. Projects without signing (flag
+off, or no key and `--sign-auto-create=false`) and jobs without RPMs skip the
+stage and integrate at once. The subjects are not persisted: a lost request
+leaves the unit in `signing` until the next forced rebuild.
+
+Build states added by migration 00009: `signing`, `finished` and `dispatching`
+(reserved for the dispatcher). The checker treats them like `building`.
 
 ### 3.7. Publication (no request message)
 There is no publication request and no `PUBLISH` stream. The former

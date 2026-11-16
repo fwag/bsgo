@@ -106,6 +106,23 @@ with `Config.NoAutoCreate`). A key that expires in less than 30 days
 (`Config.ExtendBefore`) is extended by `Config.KeyDays` on use, like
 `getsignkey autoextend=1`.
 
+## RPM signing helper
+
+`cmd/bsgo-sign-helper` is the gpg stand-in behind rpm's `%__gpg` (rpm 4.20: the
+default `%__gpg_sign_cmd` runs `gpg --no-verbose --no-armor --no-secmem-warning
+[--digest-algo=H] [-u NAME] -sbo SIGFILE -- PLAINTEXT`, where PLAINTEXT is `-`
+for stdin). The signing stage calls `rpmsign --addsign --define '__gpg
+<helper>' --define '_gpg_name <fingerprint>'`. The helper hashes the plaintext
+plus trailer (`Signer.SignStream`), has signd sign the digest and writes the
+binary signature packet to SIGFILE. Environment (set on the rpmsign process
+only): `BSGO_SIGND_ADDR`, `BSGO_SIGN_PROJECT`, `BSGO_SIGN_FLAVOR`,
+`BSGO_SIGN_ENCKEY` (encrypted key blob), `BSGO_SIGN_CREATED` (signature time),
+optional `BSGO_SIGND_TLS_CERT/KEY`, `BSGO_SIGND_SERVER_CA`. The signature time
+is the RPM build time (OBS `-T buildtime`), or the key creation time when that
+is later (rpm rejects a signature older than its key), so signing is
+reproducible. Armored output ends with a newline after the END line: rpm 4.20
+refuses a key import without it.
+
 ## Storage
 
 `project_signing_keys` (migration `00008_signing_keys_openpgp.sql`): the

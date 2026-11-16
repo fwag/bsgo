@@ -1,6 +1,6 @@
 # Plan: Signing (RPMs, repository metadata, provenance)
 
-Status: S0, S1 and S2 implemented; S3-S6 proposed
+Status: S0-S3 implemented; S4-S6 proposed
 Audience: implementation agents (Sonnet) + human reviewer
 Depends on: plan 01 (scheduler, indexer, publisher, hermetic worker) — merged.
 
@@ -171,7 +171,19 @@ Acceptance (integration, podman): `zypper --root /tmp/t ar --gpgcheck-strict
 makes `zypper ref` fail. Same with `dnf --setopt=gpgcheck=1 makecache` if
 available.
 
-### S3. RPM signing stage (SD2)
+### S3. RPM signing stage (SD2) - DONE (provenance signing is S4)
+
+Implemented: `pkg/signing` (stage, `RPMTool`, helper logic), `cmd/bsgo-sign-helper`,
+server role `signer` (`cmd/bsgo-server/signing.go`, part of `all`, flags
+`--sign-rpms`, `--sign-auto-create`, `--sign-helper`, `--sign-workers`),
+migration 00009 (`signing`, `finished`, `dispatching`), `jobstatus.HandleSigned`.
+Contract in docs/specs/02 (signing stage) and docs/specs/05 (helper). rpm 4.20
+interface: `%__gpg` override, plaintext `-` is stdin. Signature time =
+max(RPM build time, key creation). Open: sign flavor from prjconf (always
+`default` for now), non-RPM artifacts (ISO, checksums) are passed through
+unsigned, the signing messages are core NATS (a lost request needs a rebuild).
+
+Original work package text:
 Files: new `pkg/signing` (stage logic), new `cmd/bsgo-sign-helper` (gpg
 replacement for rpm's `%__gpg_sign_cmd`; reads data on stdin, hashes,
 calls signd `SIGN`, writes the signature), `cmd/bsgo-server` (role `signer`,

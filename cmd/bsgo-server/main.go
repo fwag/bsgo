@@ -60,6 +60,16 @@ type ServerConfig struct {
 	PublisherDebounce time.Duration
 	// PublisherGC removes superseded repodata files older than this (0 disables).
 	PublisherGC time.Duration
+	// SignRPMs sends built RPMs through the signing stage before they enter
+	// the build repository.
+	SignRPMs bool
+	// SignAutoCreate lets the signing stage create a key for a project that
+	// has none; without it such projects are not signed.
+	SignAutoCreate bool
+	// SignHelper is the path of the bsgo-sign-helper binary.
+	SignHelper string
+	// SignWorkers bounds the jobs this instance signs concurrently.
+	SignWorkers int
 }
 
 func parseServerConfig() ServerConfig {
@@ -70,7 +80,7 @@ func parseServerConfig() ServerConfig {
 	}
 
 	var cfg ServerConfig
-	flag.StringVar(&cfg.Role, "role", "all", "Server role: 'all' (API+Scheduler+Publisher), 'api', or 'publisher'")
+	flag.StringVar(&cfg.Role, "role", "all", "Server role: 'all' (API+Scheduler+Publisher+Signer), 'api', 'publisher' or 'signer'")
 	flag.StringVar(&cfg.NatsURL, "nats-url", getEnv("NATS_URL", "nats://localhost:4222"), "NATS JetStream connection URL")
 	flag.IntVar(&cfg.HTTPPort, "http-port", 8080, "HTTP API gateway listening port")
 	flag.StringVar(&cfg.DBURL, "db-url", getEnv("DATABASE_URL", "postgres://bsgo:password@localhost:5432/bsgodb?sslmode=disable"), "PostgreSQL URL")
@@ -91,6 +101,10 @@ func parseServerConfig() ServerConfig {
 	flag.DurationVar(&cfg.CheckerResync, "checker-resync", getEnvDuration("BSGO_CHECKER_RESYNC", 10*time.Minute), "Interval at which every prpa is re-checked as a safety net; 0 disables")
 	flag.DurationVar(&cfg.PublisherDebounce, "publisher-debounce", getEnvDuration("BSGO_PUBLISHER_DEBOUNCE", 10*time.Second), "Quiet time of a prpa before it is published")
 	flag.DurationVar(&cfg.PublisherGC, "publisher-gc", getEnvDuration("BSGO_PUBLISHER_GC", time.Hour), "Age after which superseded repodata files are deleted; 0 disables")
+	flag.BoolVar(&cfg.SignRPMs, "sign-rpms", getEnvBool("BSGO_SIGN_RPMS", true), "Sign built RPMs with the project key before they enter the build repository")
+	flag.BoolVar(&cfg.SignAutoCreate, "sign-auto-create", getEnvBool("BSGO_SIGN_AUTO_CREATE", true), "Create a signing key for projects that have none (else their RPMs stay unsigned)")
+	flag.StringVar(&cfg.SignHelper, "sign-helper", getEnv("BSGO_SIGN_HELPER", ""), "Path of bsgo-sign-helper (default: next to this binary, then $PATH)")
+	flag.IntVar(&cfg.SignWorkers, "sign-workers", 2, "Jobs signed concurrently by this instance")
 	flag.Parse()
 
 	if subcmd != "" {
@@ -119,8 +133,12 @@ func main() {
 
 	store := initControlPlaneStore(ctx, cfg.DBURL)
 
-	if cfg.Role == "publisher" {
+	switch cfg.Role {
+	case "publisher":
 		runPublisherOnly(ctx, cfg, nc, js, store)
+		return
+	case "signer":
+		runSignerOnly(ctx, cfg, nc, store)
 		return
 	}
 
@@ -136,8 +154,9 @@ func runPublisherOnly(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js j
 
 func runControlPlane(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jetstream.JetStream, store storage.Store) {
 	if cfg.Role == "all" {
-		fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher + Publisher)...\n")
+		fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher + Publisher + Signer)...\n")
 		startPublisher(ctx, cfg, nc, js, store)
+		startSigner(ctx, cfg, nc, store)
 	} else {
 		fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher)...\n")
 	}
