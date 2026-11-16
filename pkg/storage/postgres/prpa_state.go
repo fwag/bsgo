@@ -2,10 +2,7 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
@@ -32,18 +29,16 @@ func (s *PostgresStore) SetPrpaState(ctx context.Context, st *storage.PrpaState)
 
 // GetPrpaState returns the repository state of one prpa or storage.ErrNotFound.
 func (s *PostgresStore) GetPrpaState(ctx context.Context, project, repo, arch string) (*storage.PrpaState, error) {
-	var st storage.PrpaState
-	err := s.pool.QueryRow(ctx, `
-		SELECT project, repo, arch, state, details, index_hash, updated_at
-		FROM prpa_state WHERE project = $1 AND repo = $2 AND arch = $3`, project, repo, arch).
-		Scan(&st.Project, &st.Repo, &st.Arch, &st.State, &st.Details, &st.IndexHash, &st.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, storage.ErrNotFound
-	}
+	rows, err := s.ListPrpaStates(ctx, project)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read prpa state: %w", err)
+		return nil, err
 	}
-	return &st, nil
+	for _, st := range rows {
+		if st.Repo == repo && st.Arch == arch {
+			return st, nil
+		}
+	}
+	return nil, storage.ErrNotFound
 }
 
 // ListPrpaStates returns the repository states of a project ordered by repo and arch.
