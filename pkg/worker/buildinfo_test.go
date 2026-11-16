@@ -145,7 +145,7 @@ func TestBuildArgsForHermeticHasNoRepo(t *testing.T) {
 				t.Fatalf("--repo present in %v", args)
 			}
 			joined := strings.Join(args, " ")
-			if mode == "kvm" && !strings.Contains(joined, "--vm-args -sandbox on -net none") {
+			if mode == "kvm" && !strings.Contains(joined, "--vm-args=-sandbox on -net none") {
 				t.Errorf("kvm args lost -net none: %s", joined)
 			}
 			if mode == "obs-build" && strings.Contains(joined, "--vm-type") {

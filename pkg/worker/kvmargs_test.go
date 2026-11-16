@@ -31,6 +31,12 @@ func TestKVMSandboxArgs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			args := tc.s.sandboxArgs(&v1.BuildJob{Resources: tc.res}, "/root", "/d.img", "/d.swap", "/cache")
 			for flag, want := range tc.wantKV {
+				if flag == "--vm-args" {
+					if !slices.Contains(args, "--vm-args="+want) {
+						t.Errorf("%s: got %v, want %q", flag, args, "--vm-args="+want)
+					}
+					continue
+				}
 				i := slices.Index(args, flag)
 				if i < 0 || i+1 >= len(args) || args[i+1] != want {
 					t.Errorf("%s: got %v, want value %q", flag, args, want)

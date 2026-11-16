@@ -62,7 +62,9 @@ func (s *ProcessSandbox) sandboxArgs(job *v1.BuildJob, buildRoot, vmDisk, vmSwap
 		"--vm-memory", strconv.FormatInt(memMB, 10),
 		"--vm-disk-size", strconv.FormatInt(diskMB, 10),
 		"--vm-user", kvmUser,
-		"--vm-args", vmArgs,
+		// obs-build drops a separate argument starting with "-" ("needs an
+		// agrument"); the --opt=value form keeps it.
+		"--vm-args=" + vmArgs,
 	}
 }
 

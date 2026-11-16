@@ -103,7 +103,7 @@ func TestKVMDiskAndSourceIsolation(t *testing.T) {
 		if a == "--vm-user" && i+1 < len(args) && args[i+1] == "qemu" {
 			hasUserArg = true
 		}
-		if a == "--vm-args" && i+1 < len(args) && args[i+1] == "-sandbox on -net none" {
+		if a == "--vm-args=-sandbox on -net none" {
 			hasVMArgsArg = true
 		}
 	}
