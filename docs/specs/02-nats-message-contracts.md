@@ -24,8 +24,8 @@ bsgo.
 ├── logs.
 │   └── <job_id>                       [Core NATS] Live log line streaming
 ├── signing.
-│   ├── finished                       [Core NATS, queue group bsgo-signer] Job built, RPMs to sign (job-finished)
-│   └── signed                         [Core NATS] Signed artifacts or signing failure (job-signed)
+│   ├── finished                       [JetStream: SIGN_REQUESTS] Job built, RPMs to sign (job-finished)
+│   └── signed                         [JetStream: SIGN_RESULTS] Signed artifacts or signing failure (job-signed)
 └── events.
     ├── repo.changed                   [Core NATS] Build repository of a prpa changed (indexer -> checker, publisher)
     └── published                      [Core NATS] A prpa was published (publisher)
@@ -319,10 +319,17 @@ BuildInfo jobs; the indexer integrates the binaries from this message.
 #### Signing stage (plan 02, S3): `bsgo.signing.finished` and `bsgo.signing.signed`
 With signing on (`--sign-rpms`, default true) a `SUCCEEDED` status of a job that
 uploaded RPMs does not integrate: the state handler sets the unit to `signing`
-and publishes the job on `bsgo.signing.finished` (job-finished). Signer replicas
-(`--role signer`, part of `all`) consume it through the queue group
-`bsgo-signer`, so each job goes to one replica. Both subjects carry the same
-JSON object:
+and stores the job on `bsgo.signing.finished` (job-finished). Both subjects are
+JetStream work-queue streams (`SIGN_REQUESTS`, `SIGN_RESULTS`, retention
+`WorkQueuePolicy`, file storage, 14 days); the job ID is the dedup message ID.
+Signer replicas (`--role signer`, part of `all`) share the durable pull consumer
+`bsgo-signer` (explicit ack, `AckWait` `--sign-ack-wait`, default 30 m, sized
+for large RPM sets; the signer sends `InProgress` at a third of it while a job
+runs; `MaxDeliver` `--sign-max-deliver`, default 5). A request is acknowledged
+only after the signed objects are uploaded and the answer is stored. A request
+that still fails on its last delivery gets a failure answer (`error` set), so
+the unit ends `failed`; a malformed request is terminated. Both subjects carry
+the same JSON object:
 
 ```json
 {"job_id": "...", "project": "home:bot", "package": "foo:mini", "target": "standard",
@@ -340,14 +347,16 @@ re-extracts `bininfo.json`, uploads RPMs and `bininfo.json` over the unsigned
 objects (same keys) and publishes the answer on `bsgo.signing.signed`
 (job-signed): the same job with the artifact list after signing (new sha256 and
 size) or, after the retries (4 attempts, backoff 2 s doubling), `error` set.
+The state handlers share the durable pull consumer `bsgo-jobstatus-signed`
+(unlimited redelivery with a 10 s delay, acknowledged after the integration).
 The state handler consumes job-signed: unit state `signing` (or `finished`) with
 a matching `job_id` becomes `finished`, the signed artifacts are integrated
 (3.9) and the unit becomes `succeeded`; with `error` the unit becomes `failed`
 with details `signing failed: <error>`. Answers for other jobs or for units that
 are no longer `signing`/`finished` are ignored. Projects without signing (flag
-off, or no key and `--sign-auto-create=false`) and jobs without RPMs skip the
-stage and integrate at once. The subjects are not persisted: a lost request
-leaves the unit in `signing` until the next forced rebuild.
+off, or no key and `--sign-create-keys=false`) and jobs without RPMs skip the
+stage and integrate at once. Requests and answers survive restarts and lost
+connections, so no unit stays in `signing`.
 
 Build states added by migration 00009: `signing`, `finished` and `dispatching`
 (reserved for the dispatcher). The checker treats them like `building`.

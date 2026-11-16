@@ -63,26 +63,51 @@ type Stage struct {
 	Sleep func(ctx context.Context, d time.Duration)
 }
 
+// pending reports whether the job still waits for its signatures: its unit is
+// in state signing with the same job ID. Answered, superseded and unknown jobs
+// are not pending, which makes redelivery harmless.
+func (s *Stage) pending(ctx context.Context, j Job) (bool, error) {
+	pkg, flavor := buildrepo.SplitUnit(j.Package)
+	cur, err := s.States.GetBuildState(ctx, j.Project, j.Target, j.Architecture, pkg, flavor)
+	if errors.Is(err, storage.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read build state of job %s: %w", j.JobID, err)
+	}
+	return cur.JobID == j.JobID && cur.State == storage.StateSigning, nil
+}
+
 // Handle processes one job-finished message and publishes the answer. A job
-// that is not in state signing any more (already answered, superseded) is
-// skipped, which makes redelivery harmless.
+// that is not in state signing any more is skipped.
 func (s *Stage) Handle(ctx context.Context, data []byte) error {
 	j, err := Decode(data)
 	if err != nil {
 		return err
 	}
-	pkg, flavor := buildrepo.SplitUnit(j.Package)
-	cur, err := s.States.GetBuildState(ctx, j.Project, j.Target, j.Architecture, pkg, flavor)
-	if errors.Is(err, storage.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("read build state of job %s: %w", j.JobID, err)
-	}
-	if cur.JobID != j.JobID || cur.State != storage.StateSigning {
-		return nil
+	if ok, err := s.pending(ctx, j); err != nil || !ok {
+		return err
 	}
 	answer, err := Encode(s.Process(ctx, j))
+	if err != nil {
+		return err
+	}
+	return s.Publish(ctx, answer)
+}
+
+// Fail publishes a terminal failure answer for a request that could not be
+// processed (for example after its last delivery), so the unit does not stay
+// in state signing.
+func (s *Stage) Fail(ctx context.Context, data []byte, cause error) error {
+	j, err := Decode(data)
+	if err != nil {
+		return err
+	}
+	if ok, err := s.pending(ctx, j); err != nil || !ok {
+		return err
+	}
+	j.Error = cause.Error()
+	answer, err := Encode(j)
 	if err != nil {
 		return err
 	}

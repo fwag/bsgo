@@ -23,6 +23,7 @@ import (
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/publisher"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
+	"github.com/openSUSE/bsgo/pkg/signing"
 	"github.com/openSUSE/bsgo/pkg/storage"
 	"github.com/openSUSE/bsgo/pkg/storage/postgres"
 	"github.com/openSUSE/bsgo/pkg/storage/s3"
@@ -63,9 +64,12 @@ type ServerConfig struct {
 	// SignRPMs sends built RPMs through the signing stage before they enter
 	// the build repository.
 	SignRPMs bool
-	// SignAutoCreate lets the signing stage create a key for a project that
-	// has none; without it such projects are not signed.
-	SignAutoCreate bool
+	// SignAckWait is how long a signing request may run without a heartbeat
+	// before another signer replica gets it.
+	SignAckWait time.Duration
+	// SignMaxDeliver is the number of tries of a signing request before the
+	// job fails.
+	SignMaxDeliver int
 	// SignHelper is the path of the bsgo-sign-helper binary.
 	SignHelper string
 	// SignWorkers bounds the jobs this instance signs concurrently.
@@ -102,7 +106,8 @@ func parseServerConfig() ServerConfig {
 	flag.DurationVar(&cfg.PublisherDebounce, "publisher-debounce", getEnvDuration("BSGO_PUBLISHER_DEBOUNCE", 10*time.Second), "Quiet time of a prpa before it is published")
 	flag.DurationVar(&cfg.PublisherGC, "publisher-gc", getEnvDuration("BSGO_PUBLISHER_GC", time.Hour), "Age after which superseded repodata files are deleted; 0 disables")
 	flag.BoolVar(&cfg.SignRPMs, "sign-rpms", getEnvBool("BSGO_SIGN_RPMS", true), "Sign built RPMs with the project key before they enter the build repository")
-	flag.BoolVar(&cfg.SignAutoCreate, "sign-auto-create", getEnvBool("BSGO_SIGN_AUTO_CREATE", true), "Create a signing key for projects that have none (else their RPMs stay unsigned)")
+	flag.DurationVar(&cfg.SignAckWait, "sign-ack-wait", getEnvDuration("BSGO_SIGN_ACK_WAIT", signing.DefaultAckWait), "Time a signing request may run without heartbeat before it is redelivered")
+	flag.IntVar(&cfg.SignMaxDeliver, "sign-max-deliver", signing.DefaultMaxDeliver, "Deliveries of a signing request before the job fails")
 	flag.StringVar(&cfg.SignHelper, "sign-helper", getEnv("BSGO_SIGN_HELPER", ""), "Path of bsgo-sign-helper (default: next to this binary, then $PATH)")
 	flag.IntVar(&cfg.SignWorkers, "sign-workers", 2, "Jobs signed concurrently by this instance")
 	flag.Parse()
@@ -138,7 +143,7 @@ func main() {
 		runPublisherOnly(ctx, cfg, nc, js, store)
 		return
 	case "signer":
-		runSignerOnly(ctx, cfg, nc, store)
+		runSignerOnly(ctx, cfg, js, store)
 		return
 	}
 
@@ -156,7 +161,7 @@ func runControlPlane(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js je
 	if cfg.Role == "all" {
 		fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher + Publisher + Signer)...\n")
 		startPublisher(ctx, cfg, nc, js, store)
-		startSigner(ctx, cfg, nc, store)
+		startSigner(ctx, cfg, js, store)
 	} else {
 		fmt.Printf("Starting bsgo Control Plane (API + Scheduler + Dispatcher)...\n")
 	}

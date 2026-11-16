@@ -8,6 +8,7 @@ package signing
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/openSUSE/bsgo/pkg/scheduler/indexer"
@@ -29,14 +30,18 @@ type Job struct {
 	Error string `json:"error,omitempty"`
 }
 
+// ErrMalformed marks a message that can never be processed; it is dropped,
+// not retried.
+var ErrMalformed = errors.New("malformed signing message")
+
 // Decode parses a signing message.
 func Decode(data []byte) (Job, error) {
 	var j Job
 	if err := json.Unmarshal(data, &j); err != nil {
-		return Job{}, fmt.Errorf("malformed signing message: %w", err)
+		return Job{}, fmt.Errorf("%w: %w", ErrMalformed, err)
 	}
 	if j.JobID == "" || j.Project == "" || j.Package == "" || j.Target == "" || j.Architecture == "" {
-		return Job{}, fmt.Errorf("signing message of job %q lacks identity", j.JobID)
+		return Job{}, fmt.Errorf("%w: job %q lacks identity", ErrMalformed, j.JobID)
 	}
 	return j, nil
 }

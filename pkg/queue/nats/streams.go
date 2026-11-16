@@ -22,13 +22,20 @@ const (
 	SubjectEventsRepoChanged = "bsgo.events.repo.changed"
 
 	// SubjectJobFinished carries a successfully built job to the signer
-	// (job-finished); it is consumed through a queue group.
+	// (job-finished). Work-queue stream SIGN_REQUESTS, durable pull consumer
+	// ConsumerSigner shared by the signer replicas.
 	SubjectJobFinished = "bsgo.signing.finished"
 	// SubjectJobSigned carries the signed job (or the signing failure) back
-	// to the state handler (job-signed).
+	// to the state handler (job-signed). Work-queue stream SIGN_RESULTS,
+	// durable pull consumer ConsumerSignResults.
 	SubjectJobSigned = "bsgo.signing.signed"
-	// QueueSigner is the queue group of the signer replicas.
-	QueueSigner = "bsgo-signer"
+
+	StreamSignRequests = "SIGN_REQUESTS"
+	StreamSignResults  = "SIGN_RESULTS"
+	// ConsumerSigner is the durable consumer of the signer replicas.
+	ConsumerSigner = "bsgo-signer"
+	// ConsumerSignResults is the durable consumer of the state handlers.
+	ConsumerSignResults = "bsgo-jobstatus-signed"
 
 	PriorityHigh = "high"
 	PriorityMed  = "med"
@@ -66,6 +73,20 @@ func SetupStreams(ctx context.Context, js jetstream.JetStream) error {
 			Subjects:  []string{SubjectJobStatus},
 			Retention: jetstream.LimitsPolicy,
 			MaxAge:    30 * 24 * time.Hour,
+			Storage:   jetstream.FileStorage,
+		},
+		{
+			Name:      StreamSignRequests,
+			Subjects:  []string{SubjectJobFinished},
+			Retention: jetstream.WorkQueuePolicy,
+			MaxAge:    14 * 24 * time.Hour,
+			Storage:   jetstream.FileStorage,
+		},
+		{
+			Name:      StreamSignResults,
+			Subjects:  []string{SubjectJobSigned},
+			Retention: jetstream.WorkQueuePolicy,
+			MaxAge:    14 * 24 * time.Hour,
 			Storage:   jetstream.FileStorage,
 		},
 	}

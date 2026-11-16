@@ -113,12 +113,15 @@ func startChecker(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jetst
 	}
 	handler := &jobstatus.Handler{Store: store, Integrator: ix, Dirty: events}
 	if cfg.SignRPMs {
-		keys, err := newSigner(cfg, store)
+		keys, err := sharedSigner(cfg, store)
 		if err != nil {
 			fatalf("SIGNER", "%v", err)
 		}
-		handler.Signing = signingPolicy{nc: nc, keys: keys}
-		subscribeJobSigned(ctx, nc, handler.HandleSigned)
+		queue := newSigningQueue(cfg, js)
+		handler.Signing = signingPolicy{queue: queue, keys: keys}
+		if err := queue.StartResults(ctx, handler.HandleSigned); err != nil {
+			fatalf("STATE", "%v", err)
+		}
 	}
 	subscribeJobFinished(ctx, nc, handler)
 	subscribeRepoChanged(ctx, nc, events)

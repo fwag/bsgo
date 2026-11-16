@@ -175,13 +175,15 @@ available.
 
 Implemented: `pkg/signing` (stage, `RPMTool`, helper logic), `cmd/bsgo-sign-helper`,
 server role `signer` (`cmd/bsgo-server/signing.go`, part of `all`, flags
-`--sign-rpms`, `--sign-auto-create`, `--sign-helper`, `--sign-workers`),
+`--sign-rpms`, `--sign-create-keys` (shared with S2), `--sign-helper`,
+`--sign-workers`, `--sign-ack-wait`, `--sign-max-deliver`),
 migration 00009 (`signing`, `finished`, `dispatching`), `jobstatus.HandleSigned`.
 Contract in docs/specs/02 (signing stage) and docs/specs/05 (helper). rpm 4.20
 interface: `%__gpg` override, plaintext `-` is stdin. Signature time =
 max(RPM build time, key creation). Open: sign flavor from prjconf (always
 `default` for now), non-RPM artifacts (ISO, checksums) are passed through
-unsigned, the signing messages are core NATS (a lost request needs a rebuild).
+unsigned. Requests and results are JetStream work queues with durable
+consumers (ack after upload and publish, heartbeats, MaxDeliver then failed).
 
 Original work package text:
 Files: new `pkg/signing` (stage logic), new `cmd/bsgo-sign-helper` (gpg
