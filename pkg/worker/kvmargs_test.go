@@ -12,18 +12,18 @@ import (
 func TestKVMSandboxArgs(t *testing.T) {
 	tests := []struct {
 		name   string
-		s      ProcessSandbox
+		s      *ProcessSandbox
 		res    v1.ResourceRequirements
 		wantKV map[string]string
 	}{
-		{"defaults", ProcessSandbox{SandboxMode: "kvm"}, v1.ResourceRequirements{}, map[string]string{
+		{"defaults", &ProcessSandbox{SandboxMode: "kvm"}, v1.ResourceRequirements{}, map[string]string{
 			"--vm-type": "kvm", "--vm-memory": "4096", "--vm-disk-size": "10240", "--vm-user": "qemu",
 			"--vm-args": "-sandbox on -net none", "--vm-disk": "/d.img", "--vm-swap": "/d.swap", "--root": "/root", "--cachedir": "/cache",
 		}},
-		{"job resources", ProcessSandbox{SandboxMode: "kvm"}, v1.ResourceRequirements{MemoryMB: 16384, DiskGB: 40}, map[string]string{
+		{"job resources", &ProcessSandbox{SandboxMode: "kvm"}, v1.ResourceRequirements{MemoryMB: 16384, DiskGB: 40}, map[string]string{
 			"--vm-memory": "16384", "--vm-disk-size": "40960",
 		}},
-		{"configured user and vm args", ProcessSandbox{SandboxMode: "kvm", KVMUser: "builder", KVMVMArgs: "-net none"}, v1.ResourceRequirements{}, map[string]string{
+		{"configured user and vm args", &ProcessSandbox{SandboxMode: "kvm", KVMUser: "builder", KVMVMArgs: "-net none"}, v1.ResourceRequirements{}, map[string]string{
 			"--vm-user": "builder", "--vm-args": "-net none",
 		}},
 	}
