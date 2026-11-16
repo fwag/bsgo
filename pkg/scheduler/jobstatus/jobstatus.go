@@ -1,7 +1,12 @@
 // Package jobstatus turns the bsgo.status messages of workers into build
 // state rows, and integrates the binaries of successful jobs into the build
 // repository before the success becomes visible. The checker owns every other
-// state transition; this is the only writer of building, succeeded and failed.
+// state transition; this is the only writer of building, signing, finished,
+// succeeded and failed.
+//
+// Projects that sign their RPMs take a detour: a successful job goes to state
+// signing and is sent to the signer; the signer's answer (job-signed) makes it
+// finished, integrates the signed binaries and then marks it succeeded.
 package jobstatus
 
 import (
@@ -12,6 +17,7 @@ import (
 
 	"github.com/openSUSE/bsgo/pkg/scheduler/buildrepo"
 	"github.com/openSUSE/bsgo/pkg/scheduler/indexer"
+	"github.com/openSUSE/bsgo/pkg/signing"
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
@@ -46,11 +52,22 @@ type Dirtier interface {
 	JobFinished(ctx context.Context, p buildrepo.Prpa) error
 }
 
+// Signing routes successful jobs through the signing stage.
+type Signing interface {
+	// Enabled reports whether the RPMs of project are signed.
+	Enabled(ctx context.Context, project string) (bool, error)
+	// Request sends the job to the signer (job-finished message).
+	Request(ctx context.Context, j signing.Job) error
+}
+
 // Handler processes status messages.
 type Handler struct {
 	Store      Store
 	Integrator Integrator
 	Dirty      Dirtier
+	// Signing is nil when no signing stage runs: successful jobs are then
+	// integrated directly.
+	Signing Signing
 }
 
 // Handle processes one raw status message. Messages that do not concern the
@@ -82,7 +99,10 @@ func (h *Handler) Handle(ctx context.Context, data []byte) error {
 	if err := h.Store.UpsertBuildState(ctx, row); err != nil {
 		return fmt.Errorf("store build state of %s/%s: %w", p, m.Package, err)
 	}
-	if row.State == storage.StateBuilding || row.State == storage.StateScheduled {
+	switch row.State {
+	case storage.StateSigning:
+		return h.requestSigning(ctx, &m, p, pkg, flavor)
+	case storage.StateBuilding, storage.StateScheduled:
 		return nil
 	}
 	return h.Dirty.JobFinished(ctx, p)
@@ -97,9 +117,7 @@ func relevant(phase string) bool {
 }
 
 func (h *Handler) nextRow(ctx context.Context, m *Message, p buildrepo.Prpa, pkg, flavor string) *storage.PackageBuildState {
-	row := &storage.PackageBuildState{
-		Project: p.Project, Repo: p.Repo, Arch: p.Arch, Package: pkg, Flavor: flavor, JobID: m.JobID,
-	}
+	row := rowOf(p, pkg, flavor, m.JobID)
 	switch m.Phase {
 	case "BUILDING":
 		row.State = storage.StateBuilding
@@ -109,12 +127,7 @@ func (h *Handler) nextRow(ctx context.Context, m *Message, p buildrepo.Prpa, pkg
 		row.State = storage.StateScheduled
 		row.Details = "requeued: " + m.Reason
 	case "SUCCEEDED":
-		row.State, row.Meta, row.SourceCommit = storage.StateSucceeded, m.Meta, m.SourceCommit
-		fin := indexer.Finished{Prpa: p, Unit: m.Package, Artifacts: m.Artifacts}
-		if _, err := h.Integrator.Integrate(ctx, fin); err != nil {
-			row.State, row.Meta, row.SourceCommit = storage.StateFailed, "", ""
-			row.Details = "indexing failed: " + err.Error()
-		}
+		h.succeeded(ctx, row, m, p)
 	case "ABORTED":
 		row.State = storage.StateFailed
 		row.Details = "aborted"
@@ -126,6 +139,110 @@ func (h *Handler) nextRow(ctx context.Context, m *Message, p buildrepo.Prpa, pkg
 		row.Details = failureDetails(m)
 	}
 	return row
+}
+
+func rowOf(p buildrepo.Prpa, pkg, flavor, jobID string) *storage.PackageBuildState {
+	return &storage.PackageBuildState{
+		Project: p.Project, Repo: p.Repo, Arch: p.Arch, Package: pkg, Flavor: flavor, JobID: jobID,
+	}
+}
+
+// succeeded integrates the binaries at once, or leaves the row in state
+// signing when the project signs its RPMs.
+func (h *Handler) succeeded(ctx context.Context, row *storage.PackageBuildState, m *Message, p buildrepo.Prpa) {
+	if h.Signing != nil && signing.HasRPMs(m.Artifacts) {
+		on, err := h.Signing.Enabled(ctx, p.Project)
+		if err != nil {
+			row.State, row.Details = storage.StateFailed, "signing failed: "+err.Error()
+			return
+		}
+		if on {
+			row.State = storage.StateSigning
+			return
+		}
+	}
+	j := signing.Job{Package: m.Package, Meta: m.Meta, SourceCommit: m.SourceCommit, Artifacts: m.Artifacts}
+	h.integrate(ctx, row, p, j)
+}
+
+// integrate puts the binaries of j into the build repository and sets the
+// final state of row.
+func (h *Handler) integrate(ctx context.Context, row *storage.PackageBuildState, p buildrepo.Prpa, j signing.Job) {
+	row.State, row.Meta, row.SourceCommit = storage.StateSucceeded, j.Meta, j.SourceCommit
+	fin := indexer.Finished{Prpa: p, Unit: j.Package, Artifacts: j.Artifacts}
+	if _, err := h.Integrator.Integrate(ctx, fin); err != nil {
+		row.State, row.Meta, row.SourceCommit = storage.StateFailed, "", ""
+		row.Details = "indexing failed: " + err.Error()
+	}
+}
+
+// requestSigning sends the built job to the signer. When that fails the job
+// cannot be signed and fails.
+func (h *Handler) requestSigning(ctx context.Context, m *Message, p buildrepo.Prpa, pkg, flavor string) error {
+	j := signing.Job{
+		JobID: m.JobID, Project: p.Project, Package: m.Package, Target: p.Repo, Architecture: p.Arch,
+		Meta: m.Meta, SourceCommit: m.SourceCommit, Artifacts: m.Artifacts,
+	}
+	err := h.Signing.Request(ctx, j)
+	if err == nil {
+		return nil
+	}
+	row := rowOf(p, pkg, flavor, m.JobID)
+	row.State, row.Details = storage.StateFailed, "signing failed: "+err.Error()
+	if uerr := h.Store.UpsertBuildState(ctx, row); uerr != nil {
+		return fmt.Errorf("store build state of %s/%s: %w", p, m.Package, uerr)
+	}
+	return h.Dirty.JobFinished(ctx, p)
+}
+
+// HandleSigned processes one job-signed message: the signer's answer moves a
+// job in state signing to finished, integrates the signed binaries and then
+// marks the job succeeded, or fails the job when signing failed. Answers for
+// superseded jobs and for jobs that are already done are ignored, so a
+// redelivered message does no harm.
+func (h *Handler) HandleSigned(ctx context.Context, data []byte) error {
+	j, err := signing.Decode(data)
+	if err != nil {
+		return err
+	}
+	p := buildrepo.Prpa{Project: j.Project, Repo: j.Target, Arch: j.Architecture}
+	pkg, flavor := buildrepo.SplitUnit(j.Package)
+	cur, err := h.Store.GetBuildState(ctx, p.Project, p.Repo, p.Arch, pkg, flavor)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read build state of %s/%s: %w", p, j.Package, err)
+	}
+	if cur.JobID != j.JobID || (cur.State != storage.StateSigning && cur.State != storage.StateFinished) {
+		return nil
+	}
+	row, err := h.finish(ctx, p, pkg, flavor, j)
+	if err != nil {
+		return err
+	}
+	if err := h.Store.UpsertBuildState(ctx, row); err != nil {
+		return fmt.Errorf("store build state of %s/%s: %w", p, j.Package, err)
+	}
+	return h.Dirty.JobFinished(ctx, p)
+}
+
+// finish returns the final row of a signed job: failed when signing failed,
+// otherwise the result of the integration after the intermediate finished
+// state was stored.
+func (h *Handler) finish(ctx context.Context, p buildrepo.Prpa, pkg, flavor string, j signing.Job) (*storage.PackageBuildState, error) {
+	row := rowOf(p, pkg, flavor, j.JobID)
+	if j.Error != "" {
+		row.State, row.Details = storage.StateFailed, "signing failed: "+j.Error
+		return row, nil
+	}
+	row.State = storage.StateFinished
+	if err := h.Store.UpsertBuildState(ctx, row); err != nil {
+		return nil, fmt.Errorf("store finished state of %s/%s: %w", p, j.Package, err)
+	}
+	final := rowOf(p, pkg, flavor, j.JobID)
+	h.integrate(ctx, final, p, j)
+	return final, nil
 }
 
 func failureDetails(m *Message) string {
