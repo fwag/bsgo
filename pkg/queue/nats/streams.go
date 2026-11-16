@@ -21,6 +21,15 @@ const (
 	// SubjectEventsRepoChanged announces new binaries in a build repository.
 	SubjectEventsRepoChanged = "bsgo.events.repo.changed"
 
+	// SubjectJobFinished carries a successfully built job to the signer
+	// (job-finished); it is consumed through a queue group.
+	SubjectJobFinished = "bsgo.signing.finished"
+	// SubjectJobSigned carries the signed job (or the signing failure) back
+	// to the state handler (job-signed).
+	SubjectJobSigned = "bsgo.signing.signed"
+	// QueueSigner is the queue group of the signer replicas.
+	QueueSigner = "bsgo-signer"
+
 	PriorityHigh = "high"
 	PriorityMed  = "med"
 	PriorityLow  = "low"

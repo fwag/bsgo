@@ -35,7 +35,12 @@ func newOutcomes() *outcomes { return &outcomes{notready: map[*unit]bool{}} }
 func (o *outcomes) add(d *decision) { o.list = append(o.list, d) }
 
 func inFlight(state string) bool {
-	return state == storage.StateScheduled || state == storage.StateBuilding
+	switch state {
+	case storage.StateScheduled, storage.StateDispatching, storage.StateBuilding,
+		storage.StateSigning, storage.StateFinished:
+		return true
+	}
+	return false
 }
 
 // decideAll decides every unit: fixed verdicts first, then the dependency

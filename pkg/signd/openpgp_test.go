@@ -129,6 +129,10 @@ func TestSignDigestVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// rpm 4.20 refuses armor that lacks the newline after the END line.
+	if !strings.HasSuffix(m.PublicKeyArmored, "-----END PGP PUBLIC KEY BLOCK-----\n") {
+		t.Errorf("armored public key must end with a newline")
+	}
 	ring := keyring(t, m.PublicKeyArmored)
 	created := time.Now().Add(-time.Hour).Truncate(time.Second)
 	data := []byte("<repomd>\r\n</repomd>\r\n")
@@ -159,6 +163,9 @@ func TestSignDigestVerifies(t *testing.T) {
 			}
 			if tt.armored != bytes.HasPrefix(sig, []byte("-----BEGIN PGP SIGNATURE-----")) {
 				t.Errorf("armor mismatch: %.40q", sig)
+			}
+			if tt.armored && !bytes.HasSuffix(sig, []byte("-----END PGP SIGNATURE-----\n")) {
+				t.Errorf("armored signature must end with a newline")
 			}
 			if err := verifyDetached(ring, data, sig, tt.armored); err != nil {
 				t.Fatalf("verify: %v", err)

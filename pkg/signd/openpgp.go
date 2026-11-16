@@ -160,7 +160,7 @@ func armoredPublic(e *openpgp.Entity) (string, error) {
 	if err := w.Close(); err != nil {
 		return "", err
 	}
-	return buf.String(), nil
+	return buf.String() + "\n", nil // rpm 4.20 rejects armor without a newline after the END line
 }
 
 func keyExpiry(e *openpgp.Entity) time.Time {
@@ -383,5 +383,5 @@ func (e *SignEngine) SignDigest(enc string, p SignParams, digest []byte, armored
 	if err := w.Close(); err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	return append(buf.Bytes(), '\n'), nil
 }

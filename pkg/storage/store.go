@@ -55,7 +55,10 @@ type DoDRepo struct {
 // Build states persisted in package_build_state (OBS names).
 const (
 	StateScheduled    = "scheduled"
+	StateDispatching  = "dispatching"
 	StateBuilding     = "building"
+	StateSigning      = "signing"
+	StateFinished     = "finished"
 	StateSucceeded    = "succeeded"
 	StateFailed       = "failed"
 	StateUnresolvable = "unresolvable"
@@ -67,8 +70,8 @@ const (
 
 // ValidBuildStates lists every state accepted by the package_build_state table.
 var ValidBuildStates = []string{
-	StateScheduled, StateBuilding, StateSucceeded, StateFailed, StateUnresolvable,
-	StateBlocked, StateBroken, StateExcluded, StateDisabled,
+	StateScheduled, StateDispatching, StateBuilding, StateSigning, StateFinished, StateSucceeded,
+	StateFailed, StateUnresolvable, StateBlocked, StateBroken, StateExcluded, StateDisabled,
 }
 
 // IsValidBuildState reports whether state is a known build state.
