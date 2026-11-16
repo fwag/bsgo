@@ -16,7 +16,7 @@ import (
 
 const (
 	reconcileInterval = time.Minute
-	// orphanGrace is how long a building row may go without its job being
+	// orphanGrace is how long a dispatching or building row may go without its job being
 	// reported by any worker before it is requeued. It covers the gap
 	// between dispatch and the worker's first heartbeat with the job.
 	orphanGrace = 3 * time.Minute
@@ -66,7 +66,7 @@ func requeueOrphans(ctx context.Context, store storage.Store, disp *dispatcher.D
 	return nil
 }
 
-// orphanedBuilds lists building rows older than orphanGrace whose job is
+// orphanedBuilds lists dispatching and building rows older than orphanGrace whose job is
 // neither reported by a worker nor tracked as dispatched.
 func orphanedBuilds(ctx context.Context, store storage.Store, disp *dispatcher.Dispatcher, now time.Time) []*storage.PackageBuildState {
 	prjs, err := store.ListProjects(ctx)
@@ -76,20 +76,28 @@ func orphanedBuilds(ctx context.Context, store storage.Store, disp *dispatcher.D
 	}
 	var out []*storage.PackageBuildState
 	for _, p := range prjs {
-		rows, err := store.ListBuildStates(ctx, p.Project.Name, storage.BuildStateFilter{State: storage.StateBuilding})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] [RECONCILE] list building rows of %s: %v\n", now.Format("15:04:05"), p.Project.Name, err)
-			continue
-		}
-		for _, st := range rows {
-			if st.JobID == "" || now.Sub(st.UpdatedAt) < orphanGrace {
+		for _, state := range []string{storage.StateDispatching, storage.StateBuilding} {
+			rows, err := store.ListBuildStates(ctx, p.Project.Name, storage.BuildStateFilter{State: state})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] [RECONCILE] list %s rows of %s: %v\n", now.Format("15:04:05"), state, p.Project.Name, err)
 				continue
 			}
-			if disp.IsRunning(st.JobID) || disp.IsDispatched(st.JobID) {
-				continue
+			for _, st := range rows {
+				if isOrphan(st, disp, now) {
+					out = append(out, st)
+				}
 			}
-			out = append(out, st)
 		}
 	}
 	return out
+}
+
+// isOrphan reports whether a dispatching or building row is older than
+// orphanGrace and its job is neither reported by a worker nor tracked as
+// dispatched.
+func isOrphan(st *storage.PackageBuildState, disp *dispatcher.Dispatcher, now time.Time) bool {
+	if st.JobID == "" || now.Sub(st.UpdatedAt) < orphanGrace {
+		return false
+	}
+	return !disp.IsRunning(st.JobID) && !disp.IsDispatched(st.JobID)
 }

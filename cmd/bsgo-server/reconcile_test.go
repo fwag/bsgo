@@ -13,13 +13,18 @@ import (
 func TestOrphanedBuilds(t *testing.T) {
 	tests := []struct {
 		name      string
+		state     string
 		running   []string // job IDs reported by a worker heartbeat
 		age       time.Duration
 		wantOrphn bool
 	}{
-		{"recent build is not touched", nil, time.Minute, false},
-		{"old build reported by a worker is kept", []string{"j1"}, time.Hour, false},
-		{"old build nobody runs is orphaned", nil, time.Hour, true},
+		{"recent build is not touched", storage.StateBuilding, nil, time.Minute, false},
+		{"old build reported by a worker is kept", storage.StateBuilding, []string{"j1"}, time.Hour, false},
+		{"old build nobody runs is orphaned", storage.StateBuilding, nil, time.Hour, true},
+		{"recent dispatch is not touched", storage.StateDispatching, nil, time.Minute, false},
+		{"old dispatch reported by a worker is kept", storage.StateDispatching, []string{"j1"}, time.Hour, false},
+		{"old dispatch nobody runs is orphaned", storage.StateDispatching, nil, time.Hour, true},
+		{"old scheduled row is left to the checker", storage.StateScheduled, nil, time.Hour, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -31,7 +36,7 @@ func TestOrphanedBuilds(t *testing.T) {
 				t.Fatal(err)
 			}
 			row := &storage.PackageBuildState{Project: "p", Repo: "std", Arch: "x86_64", Package: "a",
-				State: storage.StateBuilding, JobID: "j1"}
+				State: tt.state, JobID: "j1"}
 			if err := store.UpsertBuildState(ctx, row); err != nil {
 				t.Fatal(err)
 			}

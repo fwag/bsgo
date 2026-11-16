@@ -376,7 +376,7 @@ func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nat
 						"project":      dispatchedJob.Project,
 						"package":      dispatchedJob.Package,
 						"target":       dispatchedJob.Target,
-						"phase":        "BUILDING",
+						"phase":        "DISPATCHING",
 						"worker_id":    assignedWorker,
 						"architecture": dispatchedJob.Architecture,
 					})

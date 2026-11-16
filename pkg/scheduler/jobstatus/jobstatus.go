@@ -1,7 +1,7 @@
 // Package jobstatus turns the bsgo.status messages of workers into build
 // state rows, and integrates the binaries of successful jobs into the build
 // repository before the success becomes visible. The checker owns every other
-// state transition; this is the only writer of building, signing, finished,
+// state transition; this is the only writer of dispatching, building, signing, finished,
 // succeeded and failed.
 //
 // Projects that sign their RPMs take a detour: a successful job goes to state
@@ -95,6 +95,9 @@ func (h *Handler) Handle(ctx context.Context, data []byte) error {
 	if cur.JobID != "" && cur.JobID != m.JobID {
 		return nil // superseded job
 	}
+	if m.Phase == "DISPATCHING" && cur.JobID == m.JobID && cur.State == storage.StateBuilding {
+		return nil // the worker's start overtook the dispatcher's message
+	}
 	row := h.nextRow(ctx, &m, p, pkg, flavor)
 	if err := h.Store.UpsertBuildState(ctx, row); err != nil {
 		return fmt.Errorf("store build state of %s/%s: %w", p, m.Package, err)
@@ -102,7 +105,7 @@ func (h *Handler) Handle(ctx context.Context, data []byte) error {
 	switch row.State {
 	case storage.StateSigning:
 		return h.requestSigning(ctx, &m, p, pkg, flavor)
-	case storage.StateBuilding, storage.StateScheduled:
+	case storage.StateDispatching, storage.StateBuilding, storage.StateScheduled:
 		return nil
 	}
 	return h.Dirty.JobFinished(ctx, p)
@@ -110,7 +113,7 @@ func (h *Handler) Handle(ctx context.Context, data []byte) error {
 
 func relevant(phase string) bool {
 	switch phase {
-	case "BUILDING", "SUCCEEDED", "FAILED", "ABORTED", "REQUEUED":
+	case "DISPATCHING", "BUILDING", "SUCCEEDED", "FAILED", "ABORTED", "REQUEUED":
 		return true
 	}
 	return false
@@ -119,7 +122,11 @@ func relevant(phase string) bool {
 func (h *Handler) nextRow(ctx context.Context, m *Message, p buildrepo.Prpa, pkg, flavor string) *storage.PackageBuildState {
 	row := rowOf(p, pkg, flavor, m.JobID)
 	switch m.Phase {
+	case "DISPATCHING":
+		// The dispatcher handed the job to a worker that has not started it.
+		row.State = storage.StateDispatching
 	case "BUILDING":
+		// The worker started the job; updated_at is the build start.
 		row.State = storage.StateBuilding
 	case "REQUEUED":
 		// The dispatcher put the job back into its queue after losing the

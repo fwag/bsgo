@@ -197,6 +197,8 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 		defer func() { _ = ctrlSub.Unsubscribe() }()
 	}
 
+	w.publishStatusUpdate(job, "BUILDING", 0, nil, nil)
+
 	natsLog := &natsLogWriter{nc: w.nc, jobID: job.JobID}
 	res, execErr := w.sandbox.Execute(jobCtx, job, natsLog)
 
