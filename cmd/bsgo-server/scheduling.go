@@ -34,6 +34,7 @@ func startSchedulerAndDispatcher(ctx context.Context, cfg ServerConfig, nc *nats
 	disp := dispatcher.NewDispatcher(dispatcher.NewFuncPublisher(func(subj string, data []byte) {
 		_ = nc.Publish(subj, data)
 	}), 30*time.Second)
+	disp.SetReserveAfter(cfg.DispatchReserveAfter)
 	subscribeWorkerHeartbeats(nc, disp)
 	subscribeDispatcherResults(nc, disp)
 	startDispatchLoop(ctx, disp, nc)

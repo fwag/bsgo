@@ -270,6 +270,24 @@ means "only `architecture`". For architectures with a personality helper in the
 cando table (`i586` on `x86_64`), the worker runs obs-build under `linux32`, like
 `bs_worker`; obs-build itself does not switch the personality.
 
+Reservation (starvation guard). Workers run several jobs at once, so the
+dispatcher backfills small jobs behind a large one that does not fit the free
+resources. A job that fits a worker by capacity (when idle: total vCPUs and
+memory, arch, sandbox constraints, not badhost, worker neither draining nor
+quarantined) but not on free resources, and has waited longer than
+`--dispatch-reserve-after` (env `BSGO_DISPATCH_RESERVE_AFTER`, default `15m`,
+`0` disables), reserves one such worker: the one running the fewest jobs, then
+with the most free vCPUs. A reserved worker receives no other job until the
+reserved one fits; other workers keep backfilling. There is at most one
+reservation per worker, granted in queue priority order. The reservation is
+released when the job is dispatched or leaves the queue, or when the worker
+disappears or stops fitting (the job then reserves another worker on the next
+pass). A job that fits no worker by capacity reserves nothing. The wait is
+measured from the first enqueue of the job ID (re-enqueueing a queued job does
+not reset it); it is held in memory, so after a server restart the queue is
+rebuilt and waiting starts again. The dispatcher logs `[DISPATCHER] reserved`
+and `released` lines.
+
 ### 3.4. Job Control (Superseded Abort): `bsgo.jobs.<job_id>.control`
 Emitted by `bsgo-dispatcher` to terminate builds superseded by new commits.
 

@@ -265,6 +265,12 @@ func (r *WorkerRegistry) FindStaleOrResetWorkers(now time.Time) (deadWorkers, id
 }
 
 func (r *WorkerRegistry) FindBestIdleWorker(job *v1.BuildJob) (*v1.WorkerHeartbeat, float64) {
+	return r.FindBestIdleWorkerExcluding(job, nil)
+}
+
+// FindBestIdleWorkerExcluding is FindBestIdleWorker that never returns a
+// worker in the excluded set (workers held for a reserved job).
+func (r *WorkerRegistry) FindBestIdleWorkerExcluding(job *v1.BuildJob, excluded map[string]bool) (*v1.WorkerHeartbeat, float64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -273,7 +279,7 @@ func (r *WorkerRegistry) FindBestIdleWorker(job *v1.BuildJob) (*v1.WorkerHeartbe
 	bestScore := -1.0
 
 	for _, w := range r.workers {
-		if !r.isWorkerEligible(w, job, now) {
+		if excluded[w.WorkerID] || !r.isWorkerEligible(w, job, now) {
 			continue
 		}
 
@@ -289,6 +295,18 @@ func (r *WorkerRegistry) FindBestIdleWorker(job *v1.BuildJob) (*v1.WorkerHeartbe
 }
 
 func (r *WorkerRegistry) isWorkerEligible(w *WorkerRecord, job *v1.BuildJob, now time.Time) bool {
+	if !r.isWorkerUsable(w, job, now) {
+		return false
+	}
+	if w.Status == "BUSY" && (w.Hardware.AvailableMemoryMB < 1024 || w.Hardware.AvailableVCPUs < 1) {
+		return false
+	}
+	return matchesConstraints(&w.Hardware, &job.Resources)
+}
+
+// isWorkerUsable checks everything but free resources: liveness, health,
+// architecture, badhost and sandbox constraints.
+func (r *WorkerRegistry) isWorkerUsable(w *WorkerRecord, job *v1.BuildJob, now time.Time) bool {
 	if now.Sub(w.LastSeen) > r.ttl {
 		return false // Dead or timed out worker
 	}
@@ -306,19 +324,68 @@ func (r *WorkerRegistry) isWorkerEligible(w *WorkerRecord, job *v1.BuildJob, now
 	if w.Status == "DRAINING" || w.Status == "BADHOST" {
 		return false
 	}
-	if w.Status == "BUSY" && (w.Hardware.AvailableMemoryMB < 1024 || w.Hardware.AvailableVCPUs < 1) {
-		return false
-	}
 	if !w.CanBuild(job.Architecture) {
 		return false
 	}
 	if r.badHosts[job.JobID] != nil && r.badHosts[job.JobID][w.WorkerID] {
 		return false // badhost: worker previously failed this job
 	}
-	if !acceptsSandbox(&w.WorkerHeartbeat, job.Constraints) {
+	return acceptsSandbox(&w.WorkerHeartbeat, job.Constraints)
+}
+
+// fitsWhenIdle reports whether the job would fit the worker with all of its
+// resources free.
+func (r *WorkerRegistry) fitsWhenIdle(w *WorkerRecord, job *v1.BuildJob, now time.Time) bool {
+	if !r.isWorkerUsable(w, job, now) {
 		return false
 	}
-	return matchesConstraints(&w.Hardware, &job.Resources)
+	hw := w.Hardware
+	hw.AvailableMemoryMB = hw.TotalMemoryMB
+	hw.AvailableVCPUs = hw.TotalVCPUs
+	return matchesConstraints(&hw, &job.Resources)
+}
+
+// CanEverFit reports whether the job fits the worker by capacity, that is
+// when the worker is idle.
+func (r *WorkerRegistry) CanEverFit(workerID string, job *v1.BuildJob) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	w, ok := r.workers[workerID]
+	return ok && r.fitsWhenIdle(w, job, time.Now())
+}
+
+// FindReservableWorker picks the worker to hold for a job that does not fit
+// the free resources anywhere: among the workers the job fits when idle (and
+// that are not excluded) the one running the fewest jobs, then the one with
+// the most free vCPUs, then the lowest ID. It returns "" when none exists.
+func (r *WorkerRegistry) FindReservableWorker(job *v1.BuildJob, excluded map[string]bool) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	var best *WorkerRecord
+	for _, w := range r.workers {
+		if excluded[w.WorkerID] || !r.fitsWhenIdle(w, job, now) {
+			continue
+		}
+		if best == nil || reservePreferred(w, best) {
+			best = w
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	return best.WorkerID
+}
+
+func reservePreferred(a, b *WorkerRecord) bool {
+	if len(a.ActiveJobIDs) != len(b.ActiveJobIDs) {
+		return len(a.ActiveJobIDs) < len(b.ActiveJobIDs)
+	}
+	if a.Hardware.AvailableVCPUs != b.Hardware.AvailableVCPUs {
+		return a.Hardware.AvailableVCPUs > b.Hardware.AvailableVCPUs
+	}
+	return a.WorkerID < b.WorkerID
 }
 
 // acceptsSandbox checks the sandbox constraints of a job against the sandbox

@@ -26,6 +26,13 @@ type Dispatcher struct {
 	reportedAt   map[string]time.Time // workerID -> time of its last report
 	workerTTL    time.Duration
 	abortHandler func(jobID, reason string)
+
+	// reservations maps a worker held for a starving job to that job.
+	reservations map[string]string
+	// enqueuedAt is when each queued job first entered the queue.
+	enqueuedAt   map[string]time.Time
+	reserveAfter time.Duration
+	now          func() time.Time
 }
 
 func NewDispatcher(pub Publisher, workerTTL time.Duration) *Dispatcher {
@@ -40,6 +47,10 @@ func NewDispatcher(pub Publisher, workerTTL time.Duration) *Dispatcher {
 		running:        make(map[string]string),
 		reportedAt:     make(map[string]time.Time),
 		workerTTL:      workerTTL,
+		reservations:   make(map[string]string),
+		enqueuedAt:     make(map[string]time.Time),
+		reserveAfter:   DefaultReserveAfter,
+		now:            time.Now,
 	}
 }
 
@@ -147,6 +158,7 @@ func (d *Dispatcher) EnqueueJob(job *v1.BuildJob) {
 
 	d.queue.RemoveByBuildKey(job.Project, job.Package, job.Target, job.Architecture)
 	d.queue.Push(job)
+	d.noteEnqueued(job.JobID)
 }
 
 func (d *Dispatcher) DispatchNext(_ context.Context) (string, *v1.BuildJob, error) {
@@ -156,13 +168,21 @@ func (d *Dispatcher) DispatchNext(_ context.Context) (string, *v1.BuildJob, erro
 	snapshot := d.queue.Snapshot()
 	d.fairShare.SortJobsFairShare(snapshot, time.Now())
 
+	queued := make(map[string]*v1.BuildJob, len(snapshot))
 	for _, job := range snapshot {
-		worker, _ := d.registry.FindBestIdleWorker(job)
+		queued[job.JobID] = job
+	}
+	d.pruneReservations(queued)
+	d.updateReservations(snapshot)
+
+	for _, job := range snapshot {
+		worker, _ := d.registry.FindBestIdleWorkerExcluding(job, d.reservedWorkers(job.JobID))
 		if worker != nil {
 			poppedJob := d.queue.RemoveJob(job.JobID)
 			if poppedJob == nil {
 				continue
 			}
+			d.releaseJobReservation(poppedJob.JobID)
 			d.registry.AllocateJobResources(worker.WorkerID, poppedJob)
 
 			buildKey := fmt.Sprintf("%s:%s:%s:%s", poppedJob.Project, poppedJob.Package, poppedJob.Target, poppedJob.Architecture)
