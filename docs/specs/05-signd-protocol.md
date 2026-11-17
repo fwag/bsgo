@@ -68,6 +68,7 @@ hex encoded. A connection may carry several commands; `QUIT` closes it.
 | `EXTEND <enckey> <days>` | key material with the new expiry |
 | `TRAILER <enckey> <hashalgo> <sigtype> <created-unix>` | trailer (hex) |
 | `SIGN <enckey> <hashalgo> <hexdigest> <sigtype> <created-unix> <armor\|binary>` | signature (hex) |
+| `RAWSIGN <enckey> <hashalgo> <hexdigest>` | signature (hex) |
 | `PING` | `PONG bsgo-signd ready` |
 | `QUIT` | `BYE` |
 
@@ -80,6 +81,14 @@ reproducible signatures (RPM `-T buildtime` in OBS). `SIGN` refuses an expired
 key (extend it first). `armor` returns an ASCII armored detached signature
 (`-----BEGIN PGP SIGNATURE-----`), `binary` the raw signature packet as used
 inside an RPM header.
+
+`RAWSIGN` returns the bare RSA PKCS#1 v1.5 signature value over a digest
+`H(message)` (no OpenPGP framing, no trailer; one phase). It exists for DSSE
+envelopes of in-toto attestations (SLSA provenance, plan 02 S4), which carry a
+raw signature like `bs_signer:dsse_sign`. `hashalgo` is `sha256`, `sha384` or
+`sha512`; expired keys are refused and non-RSA keys are rejected. As with
+`SIGN`, signd signs the digest it is given. Verification: `rsa.VerifyPKCS1v15`
+with the RSA public key inside the OpenPGP public key.
 
 Client flow for a detached signature:
 
@@ -97,6 +106,8 @@ SIGN enckey sha256 digest 0 1763200000 armor -> signature
 - `SignStream(ctx, project, flavor, reader, DigestRequest)` hashes a stream
   with the trailer and signs it (binary or armored).
 - `Trailer` and `SignDigest` are the low-level calls for `bsgo-sign-helper`.
+- `SignRaw(ctx, project, flavor, hashalgo, digest)` returns the raw RSA
+  signature and the key fingerprint (DSSE).
 - `ResolveKey`, `ExtendKey` for key management.
 
 Key inheritance follows `bs_signer:getsignkey`: the project, then its parent

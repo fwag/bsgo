@@ -38,6 +38,10 @@ func (d *localDaemon) SignatureTrailer(_ context.Context, enc string, p signd.Si
 	return d.e.SignatureTrailer(enc, p, time.Now())
 }
 
+func (d *localDaemon) SignRaw(_ context.Context, enc, hashAlgo string, digest []byte) ([]byte, error) {
+	return d.e.SignRaw(enc, hashAlgo, digest, time.Now())
+}
+
 func (d *localDaemon) SignDigest(_ context.Context, enc string, p signd.SignParams, digest []byte, armored bool) ([]byte, error) {
 	return d.e.SignDigest(enc, p, digest, armored, time.Now())
 }

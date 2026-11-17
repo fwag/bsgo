@@ -43,6 +43,7 @@ type Daemon interface {
 	ExtendKey(ctx context.Context, encryptedKey string, days int) (*signd.KeyMaterial, error)
 	SignatureTrailer(ctx context.Context, encryptedKey string, p signd.SignParams) ([]byte, error)
 	SignDigest(ctx context.Context, encryptedKey string, p signd.SignParams, digest []byte, armored bool) ([]byte, error)
+	SignRaw(ctx context.Context, encryptedKey, hashAlgo string, digest []byte) ([]byte, error)
 }
 
 // KeyStore persists project keys. storage.Store implements it.
@@ -253,6 +254,21 @@ func (s *Signer) SignDigest(ctx context.Context, project, flavor string, r Diges
 		return nil, err
 	}
 	return s.daemon.SignDigest(ctx, key.EncryptedPrivateKey, r.params(), digest, r.Armored)
+}
+
+// SignRaw signs digest = H(message) with the project key and returns the raw
+// RSA PKCS#1 v1.5 signature (DSSE envelopes) and the fingerprint of the key
+// that made it.
+func (s *Signer) SignRaw(ctx context.Context, project, flavor, hashAlgo string, digest []byte) (sig []byte, fingerprint string, err error) {
+	key, err := s.ResolveKey(ctx, project, flavor)
+	if err != nil {
+		return nil, "", err
+	}
+	sig, err = s.daemon.SignRaw(ctx, key.EncryptedPrivateKey, hashAlgo, digest)
+	if err != nil {
+		return nil, "", err
+	}
+	return sig, key.Fingerprint, nil
 }
 
 // SignStream hashes the document read from r together with the signature

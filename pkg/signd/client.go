@@ -129,3 +129,8 @@ func (c *Client) SignDigest(ctx context.Context, encryptedKey string, p SignPara
 		p.SigType, strconv.FormatInt(p.Created.Unix(), 10), format)
 	return hexResult(c.call(ctx, line))
 }
+
+// SignRaw returns a raw RSA PKCS#1 v1.5 signature over digest = H(message).
+func (c *Client) SignRaw(ctx context.Context, encryptedKey, hashAlgo string, digest []byte) ([]byte, error) {
+	return hexResult(c.call(ctx, fmt.Sprintf("RAWSIGN %s %s %s", encryptedKey, hashAlgo, hex.EncodeToString(digest))))
+}

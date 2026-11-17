@@ -28,6 +28,7 @@ var handlers = map[string]handler{
 	"PUBKEY":  {1, "PUBKEY <enckey>", runPubKey},
 	"EXTEND":  {2, "EXTEND <enckey> <days>", runExtend},
 	"TRAILER": {4, "TRAILER <enckey> <hashalgo> <sigtype> <created-unix>", runTrailer},
+	"RAWSIGN": {3, "RAWSIGN <enckey> <hashalgo> <hexdigest>", runRawSign},
 	"SIGN":    {6, "SIGN <enckey> <hashalgo> <hexdigest> <sigtype> <created-unix> <armor|binary>", runSign},
 }
 
@@ -215,6 +216,18 @@ func runSign(e *SignEngine, args []string) ([]string, error) {
 		return nil, fmt.Errorf("output format must be armor or binary, got %q", args[5])
 	}
 	sig, err := e.SignDigest(args[0], p, digest, armored, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	return []string{hex.EncodeToString(sig)}, nil
+}
+
+func runRawSign(e *SignEngine, args []string) ([]string, error) {
+	digest, err := hex.DecodeString(args[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid digest hex: %w", err)
+	}
+	sig, err := e.SignRaw(args[0], args[1], digest, time.Now())
 	if err != nil {
 		return nil, err
 	}
