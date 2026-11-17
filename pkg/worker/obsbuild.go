@@ -212,7 +212,7 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	run := runWatched(ctx, bin, runArgs, jobDir, limitsFor(job), w)
 	if run.aborted || ctx.Err() != nil {
 		// Killing sudo does not stop the root-owned build underneath.
-		s.terminateBuild(obsBin, buildRoot, w)
+		s.terminateBuild(obsBin, buildRoot, vmDisk, w)
 	}
 	if run.err != nil {
 		fmt.Fprintf(w, "[%s] bsgo-worker: KVM execution exited: %v\n", time.Now().Format("15:04:05"), run.err)
@@ -379,9 +379,21 @@ func classifyRun(parent, runCtx context.Context, err error, lim buildLimits) run
 // command ("sudo -n /usr/bin/machinectl terminate obsbuild.*").
 var machinectlCmd = []string{"sudo", "-n", "/usr/bin/machinectl", "terminate"}
 
+// killArgs is the obs-build command line that kills the build of buildRoot.
+// For a VM build obs-build finds the instance through the VM disk (vm_kill_kvm
+// runs fuser on it); with --root alone it only runs killchroot and leaves
+// qemu running.
+func killArgs(mode, buildRoot, vmDisk string) []string {
+	args := []string{"--root", buildRoot}
+	if mode == "kvm" && vmDisk != "" {
+		args = append(args, "--vm-type", "kvm", "--vm-disk", vmDisk)
+	}
+	return append(args, "--kill")
+}
+
 // terminateBuild stops the root-owned build of buildRoot after an aborted or
 // cancelled run (worker shutdown, abort request, timeout, idle limit).
-func (s *ProcessSandbox) terminateBuild(obsBin, buildRoot string, w io.Writer) {
+func (s *ProcessSandbox) terminateBuild(obsBin, buildRoot, vmDisk string, w io.Writer) {
 	tctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	var cmd *exec.Cmd
@@ -392,7 +404,7 @@ func (s *ProcessSandbox) terminateBuild(obsBin, buildRoot string, w io.Writer) {
 		cmd = exec.CommandContext(tctx, machinectlCmd[0], args...)
 	} else {
 		// #nosec G204 -- obs-build runner executes parameterized sandbox binary
-		cmd = exec.CommandContext(tctx, obsBin, "--root", buildRoot, "--kill")
+		cmd = exec.CommandContext(tctx, obsBin, killArgs(s.SandboxMode, buildRoot, vmDisk)...)
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(w, "[%s] bsgo-worker: failed to terminate build in %s: %v (%s)\n",
