@@ -24,6 +24,13 @@ type Dispatcher struct {
 	// are still running, so their jobs are not dispatched a second time.
 	running      map[string]string
 	reportedAt   map[string]time.Time // workerID -> time of its last report
+	// dispatchedAt is when each dispatched job was sent to its worker.
+	dispatchedAt map[string]time.Time
+	// dispatchGrace is how long a freshly dispatched job may be missing from
+	// the worker's reports: the job message and the heartbeats travel
+	// independently, so a heartbeat sent just before the job arrived says
+	// nothing about it.
+	dispatchGrace time.Duration
 	workerTTL    time.Duration
 	abortHandler func(jobID, reason string)
 
@@ -46,6 +53,8 @@ func NewDispatcher(pub Publisher, workerTTL time.Duration) *Dispatcher {
 		jobWorkers:     make(map[string]string),
 		running:        make(map[string]string),
 		reportedAt:     make(map[string]time.Time),
+		dispatchedAt:   make(map[string]time.Time),
+		dispatchGrace:  2 * workerTTL,
 		workerTTL:      workerTTL,
 		reservations:   make(map[string]string),
 		enqueuedAt:     make(map[string]time.Time),
@@ -83,6 +92,10 @@ func (d *Dispatcher) IsDispatched(jobID string) bool {
 func (d *Dispatcher) IsRunning(jobID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	return d.runningLocked(jobID)
+}
+
+func (d *Dispatcher) runningLocked(jobID string) bool {
 	w, ok := d.running[jobID]
 	return ok && time.Since(d.reportedAt[w]) <= 2*d.workerTTL
 }
@@ -116,6 +129,7 @@ func (d *Dispatcher) RecordJobResult(jobID, workerID, project string, exitCode i
 	}
 	delete(d.dispatchedJobs, jobID)
 	delete(d.jobWorkers, jobID)
+	delete(d.dispatchedAt, jobID)
 
 	d.registry.ReleaseJobResources(workerID, jobID, nil)
 
@@ -176,6 +190,12 @@ func (d *Dispatcher) DispatchNext(_ context.Context) (string, *v1.BuildJob, erro
 	d.updateReservations(snapshot)
 
 	for _, job := range snapshot {
+		if d.runningLocked(job.JobID) {
+			// A worker still runs this job; sending it again would make the
+			// worker kill or duplicate the build.
+			d.queue.RemoveJob(job.JobID)
+			continue
+		}
 		worker, _ := d.registry.FindBestIdleWorkerExcluding(job, d.reservedWorkers(job.JobID))
 		if worker != nil {
 			poppedJob := d.queue.RemoveJob(job.JobID)
@@ -189,11 +209,13 @@ func (d *Dispatcher) DispatchNext(_ context.Context) (string, *v1.BuildJob, erro
 			d.activeBuilds[buildKey] = poppedJob.JobID
 			d.dispatchedJobs[poppedJob.JobID] = poppedJob
 			d.jobWorkers[poppedJob.JobID] = worker.WorkerID
+			d.dispatchedAt[poppedJob.JobID] = time.Now()
 
 			if err := d.sendJobToWorker(worker.WorkerID, poppedJob); err != nil {
 				delete(d.activeBuilds, buildKey)
 				delete(d.dispatchedJobs, poppedJob.JobID)
 				delete(d.jobWorkers, poppedJob.JobID)
+				delete(d.dispatchedAt, poppedJob.JobID)
 				d.registry.ReleaseJobResources(worker.WorkerID, poppedJob.JobID, &poppedJob.Resources)
 				return "", nil, err
 			}
@@ -205,37 +227,68 @@ func (d *Dispatcher) DispatchNext(_ context.Context) (string, *v1.BuildJob, erro
 	return "", nil, nil // No idle matching worker available
 }
 
+// SetDispatchGrace sets how long a freshly dispatched job is exempt from the
+// restart check of ReapStaleJobs.
+func (d *Dispatcher) SetDispatchGrace(grace time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.dispatchGrace = grace
+}
+
+// staleJobWorkers returns the workers whose jobs are candidates for reaping:
+// those silent for longer than the TTL and those that restarted.
+func (d *Dispatcher) staleJobWorkers(now time.Time) (dead, restarted map[string]bool) {
+	deadIDs, restartedIDs := d.registry.FindStaleOrResetWorkers(now)
+	dead, restarted = make(map[string]bool), make(map[string]bool)
+	for _, wid := range deadIDs {
+		dead[wid] = true
+	}
+	for _, wid := range restartedIDs {
+		restarted[wid] = true
+	}
+	return dead, restarted
+}
+
+// worthReaping decides whether the job of a stale worker is really lost.
+// A worker that is merely slow to heartbeat (a loaded host) keeps a job it
+// reported as running until it was silent for three TTLs, and a job sent only
+// moments ago is not lost because a heartbeat predates it.
+func (d *Dispatcher) worthReaping(jobID, workerID string, dead bool, now time.Time) bool {
+	if dead {
+		if d.running[jobID] == workerID && now.Sub(d.reportedAt[workerID]) <= 3*d.workerTTL {
+			return false
+		}
+		return true
+	}
+	if _, running := d.running[jobID]; running {
+		return false
+	}
+	return now.Sub(d.dispatchedAt[jobID]) > d.dispatchGrace
+}
+
 // ReapStaleJobs checks for dead workers or restarted workers, aborts unacknowledged jobs, and re-enqueues them.
 func (d *Dispatcher) ReapStaleJobs(now time.Time) []*v1.BuildJob {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	deadWorkerIDs, idleResetWorkerIDs := d.registry.FindStaleOrResetWorkers(now)
-	if len(deadWorkerIDs) == 0 && len(idleResetWorkerIDs) == 0 {
+	dead, restarted := d.staleJobWorkers(now)
+	if len(dead) == 0 && len(restarted) == 0 {
 		return nil
-	}
-
-	staleWorkers := make(map[string]bool)
-	for _, wid := range deadWorkerIDs {
-		staleWorkers[wid] = true
-	}
-	for _, wid := range idleResetWorkerIDs {
-		staleWorkers[wid] = true
 	}
 
 	var reaped []*v1.BuildJob
 	for jobID, wid := range d.jobWorkers {
-		if !staleWorkers[wid] {
+		if !dead[wid] && !restarted[wid] {
 			continue
 		}
-
 		job := d.dispatchedJobs[jobID]
-		if job == nil {
+		if job == nil || !d.worthReaping(jobID, wid, dead[wid], now) {
 			continue
 		}
 
 		delete(d.dispatchedJobs, jobID)
 		delete(d.jobWorkers, jobID)
+		delete(d.dispatchedAt, jobID)
 		buildKey := fmt.Sprintf("%s:%s:%s:%s", job.Project, job.Package, job.Target, job.Architecture)
 		delete(d.activeBuilds, buildKey)
 

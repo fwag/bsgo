@@ -406,6 +406,7 @@ func TestDispatcherReapStaleJobs(t *testing.T) {
 
 	// Case B: Worker restarts and sends IDLE heartbeat with active allocations
 	disp2 := dispatcher.NewDispatcher(pub, 10*time.Second)
+	disp2.SetDispatchGrace(0)
 	disp2.Registry().UpdateHeartbeat(v1.WorkerHeartbeat{
 		WorkerID:     "worker-restart-01",
 		Architecture: "x86_64",
