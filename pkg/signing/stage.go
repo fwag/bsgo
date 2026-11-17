@@ -51,6 +51,9 @@ type Stage struct {
 	Objects Objects
 	States  States
 	Tool    Tool
+	// Raw signs the SLSA provenance envelope; required for jobs that carry
+	// a _slsa_provenance.json.
+	Raw RawSigner
 	// Publish sends the encoded answer (job-signed message).
 	Publish func(ctx context.Context, data []byte) error
 	// TempRoot is the parent of the per-job working directories.
@@ -163,7 +166,8 @@ func safeName(name string) error {
 	return nil
 }
 
-// Sign is one attempt: download, sign, verify, re-index, upload. It returns
+// Sign is one attempt: download, sign, verify, re-index, upload, then sign the
+// SLSA provenance over the signed RPMs. It returns
 // the artifact list after signing. Every step is safe to repeat: RPMs that
 // already verify against the project key (a previous attempt uploaded them)
 // are kept as they are, and signing is deterministic.
@@ -198,7 +202,11 @@ func (s *Stage) Sign(ctx context.Context, j Job) ([]indexer.Artifact, error) {
 	if err := s.signAll(ctx, key.PublicKeyArmored, ref, rpms); err != nil {
 		return nil, err
 	}
-	return s.publish(ctx, dir, j, rpms)
+	arts, err := s.publish(ctx, dir, j, rpms)
+	if err != nil {
+		return nil, err
+	}
+	return s.signProvenance(ctx, dir, j, arts, ref, rpms)
 }
 
 // keyCreated reads the creation time of an armored OpenPGP public key.

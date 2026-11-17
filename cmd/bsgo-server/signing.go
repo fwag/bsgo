@@ -94,7 +94,7 @@ func startSigner(ctx context.Context, cfg ServerConfig, js jetstream.JetStream, 
 		fatalf("SIGNER", "%v", err)
 	}
 	stage := &signing.Stage{
-		Keys: keys, Objects: objectStore(ctx, cfg), States: store, TempRoot: cfg.WorkDir,
+		Keys: keys, Raw: keys, Objects: objectStore(ctx, cfg), States: store, TempRoot: cfg.WorkDir,
 		Tool: signing.RPMTool{Helper: helper, Signd: signing.SigndEndpoint{
 			Addr: cfg.SigndAddr, TLSCert: cfg.TLSCert, TLSKey: cfg.TLSKey, ServerCA: cfg.ServerCA,
 		}},
