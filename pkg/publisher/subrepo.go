@@ -11,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"golang.org/x/sync/errgroup"
@@ -47,6 +48,9 @@ func (p *Publisher) publishSubRepo(ctx context.Context, tmp string, prpa buildre
 	}
 	res := &SubRepoResult{Prefix: prefix, Packages: len(bins)}
 	if res.Transferred, err = p.transfer(ctx, prefix, bins, listing, old); err != nil {
+		return nil, err
+	}
+	if res.Provenance, err = p.exportProvenance(ctx, prefix, bins, listing, res.Transferred); err != nil {
 		return nil, err
 	}
 	if res.Uploaded, err = p.uploadRepodata(ctx, prefix, gen); err != nil {
@@ -287,7 +291,7 @@ func (p *Publisher) deleteStale(ctx context.Context, prefix string, bins []Binar
 	}
 	var stale []string
 	for name := range listing.Objects {
-		if path.Ext(name) == ".rpm" && !keep[name] {
+		if isStale(name, keep) {
 			stale = append(stale, name)
 		}
 	}
@@ -298,6 +302,18 @@ func (p *Publisher) deleteStale(ctx context.Context, prefix string, bins []Binar
 		}
 	}
 	return stale, nil
+}
+
+// isStale reports whether a published file belongs to a binary that is no
+// longer published: the RPM itself or its exported provenance.
+func isStale(name string, keep map[string]bool) bool {
+	if path.Ext(name) == ".rpm" {
+		return !keep[name]
+	}
+	if rpm, ok := strings.CutSuffix(name, provenanceSuffix); ok {
+		return !keep[rpm+".rpm"]
+	}
+	return false
 }
 
 // forEach runs fn for 0..n-1 with bounded parallelism and returns the first

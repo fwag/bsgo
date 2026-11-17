@@ -121,6 +121,9 @@ type SubRepoResult struct {
 	Packages int
 	// Transferred are the file names copied into the repository.
 	Transferred []string
+	// Provenance are the names of the signed SLSA provenance files exported
+	// next to the transferred binaries.
+	Provenance []string
 	// Deleted are the file names of binaries that are no longer published.
 	Deleted []string
 	// Uploaded lists every key written to the repository, in write order;
