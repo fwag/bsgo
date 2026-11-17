@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,8 +9,6 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/openSUSE/bsgo/pkg/manifest"
-	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
-	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
 	"github.com/openSUSE/bsgo/pkg/storage"
 	"github.com/spf13/cobra"
 )
@@ -206,85 +203,4 @@ func newPackageSetResourcesCmd(store storage.Store, opts *OutputOptions) *cobra.
 	cmd.Flags().IntVar(&resVCPUs, "vcpus", 0, "Worker VM vCPUs (e.g. 8)")
 	cmd.Flags().StringVar(&resDisk, "disk", "", "Worker VM disk (e.g. 50Gi)")
 	return cmd
-}
-
-func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
-	var commitSHA string
-	var natsURL string
-
-	defaultNATSURL := os.Getenv("NATS_URL")
-	if defaultNATSURL == "" {
-		defaultNATSURL = "nats://localhost:4222"
-	}
-
-	cmd := &cobra.Command{
-		Use:   "trigger <project/package>",
-		Short: "Trigger a build for a package",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
-			parts := strings.SplitN(args[0], "/", 2)
-			if len(parts) != 2 {
-				return fmt.Errorf("package must be in <project>/<package> format")
-			}
-			projectName, pkgName := parts[0], parts[1]
-
-			p, err := store.GetPackage(ctx, projectName, pkgName)
-			if err != nil {
-				return fmt.Errorf("package '%s' not found: %w", args[0], err)
-			}
-
-			if commitSHA == "" {
-				commitSHA = p.Source.Commit
-				if commitSHA == "" {
-					commitSHA = "HEAD"
-				}
-			}
-
-			trigger := v1.NewTrigger(projectName, pkgName, p.Source.Git, commitSHA, p.Source.Branch, "developer")
-			trigger.ForceRebuild = true // rebuild regardless of the meta; the checker consumes the request
-			jobID := trigger.TriggerID
-			subject := natsqueue.TriggerSubject(natsqueue.PriorityHigh, projectName, pkgName)
-			result := map[string]any{
-				"status":     "TRIGGERED",
-				"job_id":     jobID,
-				"trigger_id": jobID,
-				"project":    projectName,
-				"package":    pkgName,
-				"commit_sha": commitSHA,
-				"subject":    subject,
-			}
-
-			publishPackageTrigger(ctx, natsURL, subject, trigger)
-
-			var sb strings.Builder
-			sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")).Render("✔ Build triggered successfully!") + "\n\n")
-			fmt.Fprintf(&sb, "  Job ID:     %s\n", lipgloss.NewStyle().Bold(true).Render(jobID))
-			fmt.Fprintf(&sb, "  Project:    %s\n", projectName)
-			fmt.Fprintf(&sb, "  Package:    %s\n", pkgName)
-			fmt.Fprintf(&sb, "  Commit SHA: %s\n", commitSHA)
-			fmt.Fprintf(&sb, "  Subject:    %s\n", subject)
-
-			return Render(cmd.OutOrStdout(), sb.String(), result, jobID, *opts)
-		},
-	}
-
-	cmd.Flags().StringVar(&commitSHA, "commit", "", "Optional commit SHA override to build")
-	cmd.Flags().StringVar(&natsURL, "nats-url", defaultNATSURL, "NATS JetStream connection URL")
-	return cmd
-}
-
-func publishPackageTrigger(ctx context.Context, natsURL, subject string, trigger *v1.BuildTrigger) {
-	nc, js, err := natsqueue.ConnectJetStream(natsURL)
-	if err != nil {
-		return
-	}
-	defer nc.Close()
-
-	_ = natsqueue.SetupStreams(ctx, js)
-
-	tData, _ := json.Marshal(trigger)
-	_, _ = js.Publish(ctx, subject, tData)
-
-	_ = nc.Flush()
 }

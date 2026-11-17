@@ -230,6 +230,22 @@ func subscribeRepoChanged(ctx context.Context, nc *nats.Conn, events *checker.Ev
 	})
 }
 
+// recordForce stores the force request of a forced trigger. The flavor comes
+// from the Flavor field; triggers of older clients carried "pkg:flavor" in
+// Package instead.
+func recordForce(ctx context.Context, store storage.Store, trig *v1.BuildTrigger) error {
+	if !trig.ForceRebuild {
+		return nil
+	}
+	pkg, flavor := trig.Package, trig.Flavor
+	if flavor == "" {
+		pkg, flavor, _ = strings.Cut(trig.Package, ":")
+	}
+	return store.RequestForcedRebuild(ctx, storage.ForcedRebuild{
+		Project: trig.Project, Repo: trig.Target, Arch: trig.Architecture, Package: pkg, Flavor: flavor,
+	})
+}
+
 // subscribeTriggers maps build triggers onto the checker. A trigger never
 // creates a job itself: it marks the project's prpas dirty, and a forced
 // trigger (bsgo package rebuild) first records the force request the checker
@@ -240,16 +256,10 @@ func subscribeTriggers(ctx context.Context, nc *nats.Conn, store storage.Store, 
 		if err := json.Unmarshal(msg.Data, &trig); err != nil || trig.Project == "" {
 			return
 		}
-		if trig.ForceRebuild {
-			pkg, flavor, _ := strings.Cut(trig.Package, ":")
-			err := store.RequestForcedRebuild(ctx, storage.ForcedRebuild{
-				Project: trig.Project, Repo: trig.Target, Arch: trig.Architecture, Package: pkg, Flavor: flavor,
-			})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] [SCHEDULER] force rebuild of %s/%s: %v\n",
-					time.Now().Format("15:04:05"), trig.Project, trig.Package, err)
-				return
-			}
+		if err := recordForce(ctx, store, &trig); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] [SCHEDULER] force rebuild of %s/%s: %v\n",
+				time.Now().Format("15:04:05"), trig.Project, trig.Package, err)
+			return
 		}
 		logf("SCHEDULER", "trigger for %s/%s (reason %s, force %t)", trig.Project, trig.Package, trig.Reason, trig.ForceRebuild)
 		if err := events.PackageChanged(ctx, trig.Project); err != nil {

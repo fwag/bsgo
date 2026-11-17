@@ -10,6 +10,7 @@ type BuildTrigger struct {
 	TriggerID     string `json:"trigger_id"`
 	Project       string `json:"project"`
 	Package       string `json:"package"`
+	Flavor        string `json:"flavor,omitempty"` // multibuild flavor of Package; empty for the plain package
 	SourceGitURL  string `json:"source_git_url"`
 	CommitSHA     string `json:"commit_sha"`
 	Ref           string `json:"ref"`
