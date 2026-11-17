@@ -15,6 +15,9 @@ func (ps *pass) emitAndStore() error {
 	if ps.err != nil {
 		return ps.err
 	}
+	if err := ps.saveMetas(); err != nil {
+		return err
+	}
 	sink := ps.c.d.Sink
 	for _, d := range ps.out.list {
 		if d.job == nil {
@@ -23,9 +26,6 @@ func (ps *pass) emitAndStore() error {
 		if err := sink.Emit(ps.ctx, d.job); err != nil {
 			return fmt.Errorf("emit job %s of %s: %w", d.job.JobID, d.unit.name, err)
 		}
-	}
-	if err := ps.saveMetas(); err != nil {
-		return err
 	}
 	if err := ps.c.d.Store.UpsertBuildStates(ps.ctx, ps.changedRows()); err != nil {
 		return fmt.Errorf("store build states: %w", err)

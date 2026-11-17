@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/openSUSE/bsgo/pkg/solv"
 )
 
 func TestAddMeta(t *testing.T) {
@@ -169,5 +171,32 @@ func TestShortID(t *testing.T) {
 	}
 	if got := shortID("abc"); got != "abc" {
 		t.Errorf("short id changed to %q", got)
+	}
+}
+
+func TestEvictKeepsHalf(t *testing.T) {
+	m := map[string]int{}
+	for i := range 10 {
+		m[strings.Repeat("k", i+1)] = i
+	}
+	evict(m, 20)
+	if len(m) != 10 {
+		t.Errorf("under the limit %d entries remain, want 10", len(m))
+	}
+	evict(m, 8)
+	if len(m) != 4 {
+		t.Errorf("over the limit %d entries remain, want 4", len(m))
+	}
+}
+
+func TestBinaryID(t *testing.T) {
+	if got := binaryID(solv.ResolvedPackage{Name: "a", SHA256: "abc"}); got != "abc" {
+		t.Errorf("got %q, want the sha256", got)
+	}
+	a := solv.ResolvedPackage{Name: "a", EVR: "1-1", Arch: "x86_64", Location: "x/a.rpm"}
+	b := a
+	b.EVR = "2-1"
+	if binaryID(a) == "" || binaryID(a) == binaryID(b) {
+		t.Error("fallback id must be stable and depend on the version")
 	}
 }

@@ -16,6 +16,15 @@ import (
 // jobs of one pass. It fails when the repository does not settle.
 func (w *world) rounds(limit int) [][]string {
 	w.t.Helper()
+	return w.roundsWith(limit, func(unit, tag string) []bininfo.BinInfo {
+		return []bininfo.BinInfo{binary(unit, tag)}
+	})
+}
+
+// roundsWith is rounds with the binaries a finished job produces chosen by
+// the caller.
+func (w *world) roundsWith(limit int, outputs func(unit, tag string) []bininfo.BinInfo) [][]string {
+	w.t.Helper()
 	var out [][]string
 	for i := range limit {
 		w.run()
@@ -26,7 +35,7 @@ func (w *world) rounds(limit int) [][]string {
 		var names []string
 		for _, j := range jobs {
 			names = append(names, j.Package+":"+j.Explain)
-			w.finish(j, binary(j.Package, fmt.Sprintf("%d.%d", len(out), i)))
+			w.finish(j, outputs(j.Package, fmt.Sprintf("%d.%d", len(out), i))...)
 		}
 		sort.Strings(names)
 		out = append(out, names)
@@ -186,6 +195,26 @@ func TestCycleMetaIgnoresOwnBinaries(t *testing.T) {
 			t.Errorf("%s: meta changed after an unchanged rebuild of b", u)
 		}
 	}
+}
+
+// TestCycleCutsGeneratedSubpackages: the binaries a package produces need not
+// match the subpackages its recipe declares (python singlespec, lua). The cycle
+// must be cut at the real binary names, taken from the build repository.
+func TestCycleCutsGeneratedSubpackages(t *testing.T) {
+	w := newWorld(t, []bininfo.BinInfo{binary("a-gen", "0"), binary("b-gen", "0")})
+	w.pkg("a", []string{"b-gen"})
+	w.pkg("b", []string{"a-gen"})
+	outputs := func(unit, tag string) []bininfo.BinInfo {
+		return []bininfo.BinInfo{binary(unit+"-gen", tag)}
+	}
+	w.roundsWith(10, outputs)
+	w.touch("a", []string{"b-gen"})
+	got := joinRounds(w.roundsWith(10, outputs))
+	if want := "a:source change | b:meta change"; got != want {
+		t.Errorf("rounds %q, want %q", got, want)
+	}
+	w.run()
+	w.wantJobs()
 }
 
 // TestMetaSurvivesRestart checks that the metas are read back from the store:

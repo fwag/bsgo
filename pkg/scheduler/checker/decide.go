@@ -175,11 +175,11 @@ func (ps *pass) postpone(u *unit, row *storage.PackageBuildState, m *metaResult,
 		row.SourceCommit != u.commit || row.Meta == m.hash {
 		return false
 	}
-	old := ps.c.tree(row.BuiltMeta)
+	old := ps.trees[row.BuiltMeta]
 	if old == nil {
 		return false
 	}
-	u.level = diffDepth(m.lines, old)
+	u.level = diffDepth(m.text(), old)
 	return u.level > 1
 }
 
@@ -344,7 +344,7 @@ func (ps *pass) schedule(u *unit, row *storage.PackageBuildState, m *metaResult,
 	}
 	d := &decision{
 		unit: u, state: storage.StateScheduled, details: scheduledDetails(u, explain),
-		meta: m.hash, lines: m.lines, commit: u.commit, job: job,
+		meta: m.hash, lines: m.text(), commit: u.commit, job: job,
 	}
 	if row != nil && inFlight(row.State) {
 		d.cancel = row.JobID

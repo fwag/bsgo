@@ -64,8 +64,6 @@ type metaDep struct {
 	key   string // id and last path element: the identity of the dependency
 	// head is the first path element: the direct dependency the line stems from.
 	head string
-	// elems are the path elements.
-	elems []string
 }
 
 func parseMetaDep(line string) (metaDep, error) {
@@ -74,34 +72,39 @@ func parseMetaDep(line string) (metaDep, error) {
 		return metaDep{}, fmt.Errorf("bad dependency line: %q", line)
 	}
 	path := line[i+2:]
-	elems := strings.Split(path, "/")
+	head := path
+	if j := strings.IndexByte(path, '/'); j >= 0 {
+		head = path[:j]
+	}
+	last := path[strings.LastIndexByte(path, '/')+1:]
 	return metaDep{
 		line: line, slash: strings.Count(line, "/"), path: path,
-		key:  line[:i+2] + elems[len(elems)-1],
-		head: elems[0], elems: elems,
+		key: line[:i+2] + last, head: head,
 	}, nil
+}
+
+// anyElem reports whether any path element, starting at element skip, is in
+// set.
+func (d metaDep) anyElem(set map[string]bool, skip int) bool {
+	rest := d.path
+	for n := 0; ; n++ {
+		elem, tail, more := strings.Cut(rest, "/")
+		if n >= skip && set[elem] {
+			return true
+		}
+		if !more {
+			return false
+		}
+		rest = tail
+	}
 }
 
 // through reports whether any path element after the first is in set, which
 // is the "/name/" pattern match of BSBuild::gen_meta on "line/".
-func (d metaDep) through(set map[string]bool) bool {
-	for _, e := range d.elems[1:] {
-		if set[e] {
-			return true
-		}
-	}
-	return false
-}
+func (d metaDep) through(set map[string]bool) bool { return d.anyElem(set, 1) }
 
 // contains reports whether any path element is in set.
-func (d metaDep) contains(set map[string]bool) bool {
-	for _, e := range d.elems {
-		if set[e] {
-			return true
-		}
-	}
-	return false
-}
+func (d metaDep) contains(set map[string]bool) bool { return d.anyElem(set, 0) }
 
 // genMeta ports BSBuild::gen_meta. deps are the dependency lines of a
 // package whose own binaries are subpacks. The result is sorted by depth and

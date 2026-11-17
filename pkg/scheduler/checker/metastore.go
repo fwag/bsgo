@@ -7,53 +7,64 @@ import (
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
-// maxMetaCache bounds the cached metas; the caches are rebuilt from the store
-// on demand.
-const maxMetaCache = 20000
+// Bounds of the checker wide caches. A pass never depends on them: it copies
+// the trees it needs into pass.trees, so eviction cannot change a decision.
+const (
+	maxTreeCache  = 4000
+	maxCheckCache = 50000
+)
 
-// tree returns the meta stored under hash, or nil when it is not known.
-func (c *Checker) tree(hash string) []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if lines := c.trees[hash]; len(lines) > 0 {
-		return lines
+// evict drops arbitrary entries until at most half of limit remain.
+func evict[V any](m map[string]V, limit int) {
+	if len(m) <= limit {
+		return
 	}
-	return nil
-}
-
-func (c *Checker) cachedMeta(key string) *metaResult {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.metas[key]
-}
-
-func (c *Checker) storeMeta(key string, r *metaResult) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.metas) > maxMetaCache || len(c.trees) > maxMetaCache {
-		clear(c.metas)
-		clear(c.trees)
+	for k := range m {
+		if len(m) <= limit/2 {
+			return
+		}
+		delete(m, k)
 	}
-	c.metas[key] = r
-	c.trees[r.hash] = r.lines
 }
 
-// loadMetaTrees reads the metas of the last successful builds of the units
-// that produced binaries of the own build repository, which the metas of their
-// consumers include. Metas already cached are not read again.
+// cachedMeta returns the hash of the meta generated for the inputs key (the
+// OBS meta shortcut).
+func (c *Checker) cachedMeta(key string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	h, ok := c.metas[key]
+	return h, ok
+}
+
+func (c *Checker) storeMeta(key, hash string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	evict(c.metas, maxCheckCache)
+	c.metas[key] = hash
+}
+
+// loadMetaTrees puts the metas of the last successful builds of the units
+// that produced binaries of the own build repository, and of the members of
+// cycles, into pass.trees: the metas of their consumers include them. Metas
+// the checker cached are not read again.
 func (ps *pass) loadMetaTrees() error {
 	var want []string
-	seen := map[string]bool{}
-	for name := range ps.own {
-		u := ps.byName[name]
-		if u == nil {
-			continue
-		}
+	for _, u := range ps.units {
 		st := ps.states[unitKey(u.pkg, u.flavor)]
-		if st == nil || st.BuiltMeta == "" || seen[st.BuiltMeta] || ps.c.tree(st.BuiltMeta) != nil {
+		if st == nil || st.BuiltMeta == "" || u.fixed != nil {
 			continue
 		}
-		seen[st.BuiltMeta] = true
+		if len(ps.own[u.name]) == 0 && (u.group == nil || !u.group.cyclic) {
+			continue
+		}
+		if _, ok := ps.trees[st.BuiltMeta]; ok {
+			continue
+		}
+		if lines := ps.c.cachedTree(st.BuiltMeta); lines != nil {
+			ps.trees[st.BuiltMeta] = lines
+			continue
+		}
+		ps.trees[st.BuiltMeta] = nil
 		want = append(want, st.BuiltMeta)
 	}
 	if len(want) == 0 {
@@ -64,17 +75,31 @@ func (ps *pass) loadMetaTrees() error {
 	if err != nil {
 		return fmt.Errorf("load build metas: %w", err)
 	}
-	ps.c.mu.Lock()
-	defer ps.c.mu.Unlock()
 	for _, m := range metas {
-		ps.c.trees[m.Hash] = m.Lines
+		ps.trees[m.Hash] = m.Lines
 	}
+	ps.c.cacheTrees(metas)
 	return nil
 }
 
+func (c *Checker) cachedTree(hash string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.trees[hash]
+}
+
+func (c *Checker) cacheTrees(metas []storage.BuildMeta) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	evict(c.trees, maxTreeCache)
+	for _, m := range metas {
+		c.trees[m.Hash] = m.Lines
+	}
+}
+
 // saveMetas persists the metas of the newly scheduled builds and drops the
-// ones no state refers to any more. It runs before the states are written: a
-// state never points to a meta that is not stored.
+// ones no state refers to any more. It runs before jobs are emitted and the
+// states are written: neither ever points to a meta that is not stored.
 func (ps *pass) saveMetas() error {
 	var metas []storage.BuildMeta
 	keep := map[string]bool{}

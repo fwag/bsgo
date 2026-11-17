@@ -30,6 +30,16 @@ func (ps *pass) genMetaAlgo() int {
 type metaResult struct {
 	hash  string
 	lines []string
+	// build generates the lines when only the hash was cached.
+	build func() []string
+}
+
+// text returns the lines of the meta, generating them when needed.
+func (m *metaResult) text() []string {
+	if m.lines == nil && m.build != nil {
+		m.lines = m.build()
+	}
+	return m.lines
 }
 
 func newMetaResult(lines []string) *metaResult {
@@ -59,20 +69,57 @@ func (ps *pass) meta(u *unit) *metaResult {
 	}
 	deps := ps.metaDeps(u, policy)
 	key := ps.metaCheck(u, policy, deps)
-	if r := ps.c.cachedMeta(key); r != nil {
-		return r
+	gen := func() []string { return ps.genLines(u, policy, deps) }
+	if h, ok := ps.c.cachedMeta(key); ok {
+		return &metaResult{hash: h, build: gen}
 	}
-	gen, err := genMeta(u.info.Subpacks, ps.depLines(u, deps), ps.genMetaAlgo())
+	r := newMetaResult(gen())
+	ps.c.storeMeta(key, r.hash)
+	return r
+}
+
+// genLines generates the lines of the meta of u.
+func (ps *pass) genLines(u *unit, policy string, deps []depSource) []string {
+	gen, err := genMeta(ps.subpacksOf(u), ps.depLines(u, deps), ps.genMetaAlgo())
 	if err != nil {
 		ps.fail(fmt.Errorf("meta of %s: %w", u.name, err))
 	}
-	gen = append([]string{first}, gen...)
+	gen = append([]string{u.commit + "  " + u.name}, gen...)
 	if policy == "direct" {
 		gen = withoutNested(gen)
 	}
-	r := newMetaResult(gen)
-	ps.c.storeMeta(key, r)
-	return r
+	return gen
+}
+
+// subpacksOf returns the binary names of the source package of u, like the
+// subpacks of OBS (BSSched/Checker.pm preparehashes): the names the recipes of
+// all its flavors declare plus every binary that was built from it. Recipe
+// parsing alone misses generated subpackages (python singlespec, lua).
+func (ps *pass) subpacksOf(u *unit) []string {
+	if names, ok := ps.subpacks[u.pkg]; ok {
+		return names
+	}
+	set := map[string]bool{}
+	for _, o := range ps.units {
+		if o.pkg != u.pkg {
+			continue
+		}
+		if o.info != nil {
+			for _, n := range o.info.Subpacks {
+				set[n] = true
+			}
+		}
+		for _, n := range ps.own[o.name] {
+			set[n] = true
+		}
+	}
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	ps.subpacks[u.pkg] = names
+	return names
 }
 
 func withoutNested(lines []string) []string {
@@ -99,7 +146,7 @@ func (d depSource) token() string {
 	if d.tree != nil {
 		return "L " + d.pkg.Name + " " + d.metaHash
 	}
-	return "P " + d.pkg.Name + " " + d.pkg.SHA256
+	return "P " + d.pkg.Name + " " + binaryID(d.pkg)
 }
 
 // metaDeps returns the build dependencies that take part in the meta of u,
@@ -134,7 +181,17 @@ func (ps *pass) producerMeta(prod *unit, name string) (string, []string) {
 	if st == nil || st.BuiltMeta == "" {
 		return "", nil
 	}
-	return st.BuiltMeta, ps.c.tree(st.BuiltMeta)
+	return st.BuiltMeta, ps.trees[st.BuiltMeta]
+}
+
+// binaryID is the identity of a binary: its sha256, or when the repository
+// metadata has none a hash of what identifies the file otherwise.
+func binaryID(p solv.ResolvedPackage) string {
+	if p.SHA256 != "" {
+		return p.SHA256
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{strconv.Itoa(p.Repo), p.Name, p.EVR, p.Arch, p.Location}, "\x00")))
+	return hex.EncodeToString(sum[:])
 }
 
 // isOwnBinary reports whether name is a binary of prod in the own build
@@ -154,7 +211,7 @@ func (ps *pass) isOwnBinary(prod *unit, name string) bool {
 func (ps *pass) metaCheck(u *unit, policy string, deps []depSource) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "v2\n%d\n%s\n%s\n%s\n%s\n", ps.genMetaAlgo(), policy, u.name, u.commit,
-		strings.Join(u.info.Subpacks, " "))
+		strings.Join(ps.subpacksOf(u), " "))
 	for _, d := range deps {
 		fmt.Fprintln(h, d.token())
 	}
@@ -168,7 +225,7 @@ func (ps *pass) depLines(u *unit, deps []depSource) []string {
 	var lines []string
 	for _, d := range deps {
 		if d.tree == nil {
-			lines = append(lines, shortID(d.pkg.SHA256)+"  "+d.pkg.Name)
+			lines = append(lines, shortID(binaryID(d.pkg))+"  "+d.pkg.Name)
 			continue
 		}
 		lines = addMeta(lines, d.tree, d.pkg.Name, u.name)

@@ -79,6 +79,11 @@ type pass struct {
 	own     map[string][]string // unit -> binary names in the own build repo
 	prod    map[string]*unit    // binary name -> producing unit
 
+	// trees holds the metas of the last builds of the producers, loaded once
+	// per pass and never evicted during it.
+	trees    map[string][]string
+	subpacks map[string][]string // source package -> binary names
+
 	groups []*group
 	out    *outcomes
 	err    error
@@ -95,6 +100,8 @@ func (c *Checker) newPass(ctx context.Context, p Prpa) (*pass, error) {
 		c: c, ctx: ctx, prpa: p,
 		projects: map[string]*manifest.ProjectManifest{},
 		byName:   map[string]*unit{},
+		trees:    map[string][]string{},
+		subpacks: map[string][]string{},
 		out:      newOutcomes(),
 	}, nil
 }

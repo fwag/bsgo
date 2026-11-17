@@ -220,6 +220,19 @@ and the metas live in PostgreSQL instead of `:meta/` files. Builds made before
 the metas were stored have no tree: their binaries count by their sha256 until
 the package is built again.
 
+The subpackage names that `genMeta` cuts at are, like OBS's `subpacks`, the
+names the recipes of all flavors of the source package declare plus every
+binary of that package found in the build repository, since recipe parsing
+misses generated subpackages (python singlespec, lua).
+
+Upgrade note: the meta hash format changed (`bsgo-meta-v2`), so the first pass
+after the upgrade sees "meta change" for every unit that was built before, and
+rebuilds it once. In-flight jobs are cancelled and re-created. A few more rounds
+may follow while the trees of the old builds are replaced by real ones; after
+that only source or external binary changes trigger rebuilds. The parallel build
+of cycle members is intentional (OBS builds them one after another); the
+second pass of a cycle still holds back members with deeper changes.
+
 ## End-to-end flow
 
 ```

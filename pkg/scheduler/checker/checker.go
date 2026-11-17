@@ -97,7 +97,7 @@ type Checker struct {
 	// stale), metas the generated metas by their input key (the OBS meta
 	// shortcut).
 	trees map[string][]string
-	metas map[string]*metaResult
+	metas map[string]string
 }
 
 // New returns a Checker.
@@ -111,7 +111,7 @@ func New(d Deps) *Checker {
 	if d.FetchWorkers <= 0 {
 		d.FetchWorkers = 16
 	}
-	return &Checker{d: d, infos: map[string]*recipe.Info{}, trees: map[string][]string{}, metas: map[string]*metaResult{}}
+	return &Checker{d: d, infos: map[string]*recipe.Info{}, trees: map[string][]string{}, metas: map[string]string{}}
 }
 
 // Close releases the cached path pools.
