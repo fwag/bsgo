@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/openSUSE/bsgo/pkg/constraints"
@@ -15,9 +16,11 @@ type decision struct {
 	unit    *unit
 	state   string
 	details string
-	// meta and commit are set when this pass determined them.
+	// meta and commit are set when this pass determined them; lines are the
+	// lines of the meta of a newly scheduled build.
 	meta   string
 	commit string
+	lines  []string
 	// job is the job to emit for a newly scheduled unit.
 	job *JobSpec
 	// keep marks a job already in flight that stays valid.
@@ -53,10 +56,42 @@ func (ps *pass) decideAll() {
 		}
 	}
 	for _, g := range ps.groups {
-		for _, u := range g.members {
-			ps.decideUnit(u)
+		if g.cyclic {
+			ps.decideCycle(g)
+		} else {
+			ps.decideUnit(g.members[0], passPlain)
 		}
 		ps.markCycleNotReady(g)
+	}
+}
+
+// Passes over the members of a dependency cycle (BSSched::Checker handlecycle).
+const (
+	// passPlain is a unit outside of any cycle.
+	passPlain = iota
+	// passFirst only starts the members that need a build for their source or
+	// that were never built. A member whose meta changed below the first
+	// level is postponed: the change may well vanish when the members that
+	// have a source change are rebuilt.
+	passFirst
+	// passSecond decides the postponed members, those with the shallowest
+	// change first. A member waits for the members of its cycle that are not
+	// ready and have a lower level.
+	passSecond
+)
+
+// decideCycle decides the members of a cycle in two passes, like OBS. The
+// members are built together, which OBS does one after another.
+func (ps *pass) decideCycle(g *group) {
+	var postponed []*unit
+	for _, u := range g.members {
+		if !ps.decideUnit(u, passFirst) {
+			postponed = append(postponed, u)
+		}
+	}
+	sort.SliceStable(postponed, func(i, j int) bool { return postponed[i].level < postponed[j].level })
+	for _, u := range postponed {
+		ps.decideUnit(u, passSecond)
 	}
 }
 
@@ -105,26 +140,47 @@ func (ps *pass) setDecision(u *unit, state, details string) *decision {
 	return d
 }
 
-// decideUnit ports BSSched::BuildJob::Package::check for one unit.
-func (ps *pass) decideUnit(u *unit) {
+// decideUnit ports BSSched::BuildJob::Package::check for one unit. It reports
+// false when the unit is postponed to the second pass of its cycle.
+func (ps *pass) decideUnit(u *unit, pass int) bool {
 	if u.expErr != nil {
 		state, details := ps.expansionVerdict(u)
 		ps.setDecision(u, state, details)
-		return
+		return true
 	}
 	row := ps.row(u)
 	forced := ps.isForced(u)
 	localOK := ps.target.Flags.EffectiveRebuild() == "local"
-	if blocked := ps.blockedBy(u); len(blocked) > 0 {
-		meta := ps.meta(u)
-		if localOK && row != nil && row.BuiltMeta == meta && !forced {
-			ps.settle(u, row, meta, false)
-			return
+	if blocked := ps.blockedBy(u, pass); len(blocked) > 0 {
+		m := ps.meta(u)
+		if localOK && row != nil && row.BuiltMeta == m.hash && !forced {
+			ps.settle(u, row, m, false)
+			return true
 		}
 		ps.setDecision(u, storage.StateBlocked, "blocked: "+listNames(blocked))
-		return
+		return true
 	}
-	ps.settle(u, row, ps.meta(u), forced)
+	m := ps.meta(u)
+	if pass == passFirst && ps.postpone(u, row, m, forced) {
+		return false
+	}
+	ps.settle(u, row, m, forced)
+	return true
+}
+
+// postpone reports whether a member of a cycle only changed below the first
+// level of its meta. It records the level on the unit.
+func (ps *pass) postpone(u *unit, row *storage.PackageBuildState, m *metaResult, forced bool) bool {
+	if forced || row == nil || row.BuiltMeta == "" || row.BuiltMeta == m.hash ||
+		row.SourceCommit != u.commit || row.Meta == m.hash {
+		return false
+	}
+	old := ps.c.tree(row.BuiltMeta)
+	if old == nil {
+		return false
+	}
+	u.level = diffDepth(m.lines, old)
+	return u.level > 1
 }
 
 // listNames joins names, abbreviating long lists with "...".
@@ -136,9 +192,10 @@ func listNames(names []string) string {
 }
 
 // blockedBy returns the dependency names whose producer in this prpa is not
-// ready (scheduled, building or blocked). Producers in the same cycle never
-// block each other.
-func (ps *pass) blockedBy(u *unit) []string {
+// ready (scheduled, building or blocked). Producers in the same cycle do not
+// block each other, except that a member postponed to the second pass waits
+// for the members with a lower level.
+func (ps *pass) blockedBy(u *unit, pass int) []string {
 	if ps.target.Flags.EffectiveBlock() == "never" {
 		return nil
 	}
@@ -149,13 +206,21 @@ func (ps *pass) blockedBy(u *unit) []string {
 		if p == nil || p == u || seen[n] || !ps.out.notready[p] {
 			continue
 		}
-		if u.group != nil && u.group.cyclic && u.group.has(p) {
+		if u.group != nil && u.group.cyclic && u.group.has(p) && !ps.waitsFor(u, p, pass) {
 			continue
 		}
 		seen[n] = true
 		out = append(out, n)
 	}
 	return out
+}
+
+// waitsFor reports whether member u of a cycle waits for its not ready
+// member p (BSSched/BuildJob/Package.pm): only in the second pass, and only
+// for members with a lower cycle level. A member without a recorded level has
+// level 1: it was scheduled for its source.
+func (ps *pass) waitsFor(u, p *unit, pass int) bool {
+	return pass == passSecond && u.level > 0 && max(p.level, 1) < u.level
 }
 
 // expansionVerdict turns an expansion error into unresolvable with the OBS
@@ -206,9 +271,9 @@ func unique(in []string) []string {
 
 // settle compares the meta of u with its stored state and either keeps it or
 // schedules a build (BuildJob.pm metacheck).
-func (ps *pass) settle(u *unit, row *storage.PackageBuildState, meta string, forced bool) {
+func (ps *pass) settle(u *unit, row *storage.PackageBuildState, m *metaResult, forced bool) {
 	if !forced && row != nil {
-		if ps.settleExisting(u, row, meta) {
+		if ps.settleExisting(u, row, m.hash) {
 			return
 		}
 	}
@@ -221,7 +286,7 @@ func (ps *pass) settle(u *unit, row *storage.PackageBuildState, meta string, for
 	case row != nil && (row.Meta != "" || row.BuiltMeta != ""):
 		explain = "meta change"
 	}
-	ps.schedule(u, row, meta, explain)
+	ps.schedule(u, row, m, explain)
 }
 
 // resendJob rebuilds the job of a unit that is still scheduled so it can be
@@ -271,15 +336,15 @@ func (ps *pass) settleExisting(u *unit, row *storage.PackageBuildState, meta str
 // schedule creates the job of u and records the scheduled decision. When the
 // job cannot be created (for example a pre/vminstall package is missing) the
 // unit becomes unresolvable.
-func (ps *pass) schedule(u *unit, row *storage.PackageBuildState, meta, explain string) {
-	job, verdict := ps.newJob(u, meta, explain)
+func (ps *pass) schedule(u *unit, row *storage.PackageBuildState, m *metaResult, explain string) {
+	job, verdict := ps.newJob(u, m.hash, explain)
 	if verdict != nil {
 		ps.setDecision(u, verdict.state, verdict.details)
 		return
 	}
 	d := &decision{
 		unit: u, state: storage.StateScheduled, details: scheduledDetails(u, explain),
-		meta: meta, commit: u.commit, job: job,
+		meta: m.hash, lines: m.lines, commit: u.commit, job: job,
 	}
 	if row != nil && inFlight(row.State) {
 		d.cancel = row.JobID

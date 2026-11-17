@@ -37,8 +37,8 @@ type JobSpec struct {
 	CICnt, BCnt int
 	// DistURL is the --disturl value; it embeds the source commit.
 	DistURL string
-	// Meta is the build meta: sha256 over the source commit and the sorted
-	// sha256 of the dependency binaries.
+	// Meta is the hash of the build meta, the tree of dependencies the build
+	// is made from (see metatree.go).
 	Meta string
 	// Explain says why the job was created: "new build", "source change",
 	// "meta change" or "forced rebuild".

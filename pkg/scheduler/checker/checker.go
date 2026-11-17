@@ -41,6 +41,9 @@ type Store interface {
 	GetPrpaState(ctx context.Context, project, repo, arch string) (*storage.PrpaState, error)
 	SetPrpaState(ctx context.Context, st *storage.PrpaState) error
 	ClearForcedRebuilds(ctx context.Context, project, repo, arch string, units []storage.UnitRef) error
+	SaveBuildMetas(ctx context.Context, project, repo, arch string, metas []storage.BuildMeta) error
+	GetBuildMetas(ctx context.Context, project, repo, arch string, hashes []string) ([]storage.BuildMeta, error)
+	PruneBuildMetas(ctx context.Context, project, repo, arch string, keep []string) error
 }
 
 // Recipes provides the recipe files of a package at a pinned commit.
@@ -90,6 +93,11 @@ type Checker struct {
 
 	mu    sync.Mutex
 	infos map[string]*recipe.Info
+	// trees caches the dependency metas by hash (content-addressed, so never
+	// stale), metas the generated metas by their input key (the OBS meta
+	// shortcut).
+	trees map[string][]string
+	metas map[string]*metaResult
 }
 
 // New returns a Checker.
@@ -103,7 +111,7 @@ func New(d Deps) *Checker {
 	if d.FetchWorkers <= 0 {
 		d.FetchWorkers = 16
 	}
-	return &Checker{d: d, infos: map[string]*recipe.Info{}}
+	return &Checker{d: d, infos: map[string]*recipe.Info{}, trees: map[string][]string{}, metas: map[string]*metaResult{}}
 }
 
 // Close releases the cached path pools.
@@ -155,7 +163,7 @@ func (ps *pass) prepare() error {
 		return err
 	}
 	ps.buildGraph()
-	return nil
+	return ps.loadMetaTrees()
 }
 
 func (ps *pass) finish() (*Result, error) {

@@ -24,6 +24,9 @@ func (ps *pass) emitAndStore() error {
 			return fmt.Errorf("emit job %s of %s: %w", d.job.JobID, d.unit.name, err)
 		}
 	}
+	if err := ps.saveMetas(); err != nil {
+		return err
+	}
 	if err := ps.c.d.Store.UpsertBuildStates(ps.ctx, ps.changedRows()); err != nil {
 		return fmt.Errorf("store build states: %w", err)
 	}

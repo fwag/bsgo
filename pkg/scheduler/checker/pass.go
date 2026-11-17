@@ -38,6 +38,9 @@ type unit struct {
 	deps    map[string]bool // names of directly required packages
 	group   *group
 	ndepend int // number of units depending on this one
+	// level is the depth at which the meta of a cycle member changed (see
+	// diffDepth); zero when unknown.
+	level int
 }
 
 // verdict is the decided state of a unit.

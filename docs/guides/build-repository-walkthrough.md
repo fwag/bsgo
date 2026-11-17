@@ -43,7 +43,7 @@ PostgreSQL rows:
 | Current binary set of the prpa | `:full/` listing | build-repo **entries** (S3, content-addressed) |
 | Dependency index | `:full.solv` | build-repo **solv blob** (S3, content-addressed) |
 | Which index is current | the files themselves | pointer row in `build_repo_index` (Postgres), swapped atomically |
-| What a build was made from | `.meta` file | `package_build_state.meta` (Postgres) |
+| What a build was made from | `.meta` file | `package_build_state.meta` hash + lines in `build_meta` (Postgres) |
 
 ## 1. bininfo: written once per package build
 
@@ -141,25 +141,84 @@ passes them to obs-build with `--rpmlist`.
 
 ## 5. meta: has anything changed since the last build?
 
+The meta of a build is a small tree flattened into lines, the same format as
+the OBS `.meta` file (`BSSched/BuildJob/Package.pm`, `BSBuild.pm`):
+
 ```
-meta(hello) = sha256( "bsgo-meta-v1\n"
-                      + <hello source commit> + "\n"
-                      + sorted bdep sha256s, one per line )
-            = 57a2e55ac5f534599505c8a2145fd77658ca09060243dba196a7079157130b62
+<id>  <path>
 ```
 
-After `hello` succeeds, this value is stored in `package_build_state`. On every
-later pass the scheduler recomputes it:
+The first line is `<source commit>  <unit>`. Every other line is a build
+dependency. A dependency that comes from outside the repository (a path
+repository, a Bootstrap Dependency) is `<sha256 prefix>  <binary>`. A
+dependency built in this very repository (a *local* binary) contributes the
+meta its producer was last built with: first `<producer commit>  <binary>`,
+then the producer's lines with `<binary>/` in front of the path:
 
-- **Unchanged** (same commit, same dependency binaries): `hello` stays
-  `succeeded`. No rebuild.
-- **Changed** (e.g. `libgreet` was rebuilt and `libgreet1` now has a
-  different sha256): `hello` is scheduled again.
+```
+hello meta                      libgreet meta (stored when it was built)
+  c3f1..  hello                   9a02..  libgreet
+  77be..  glibc                   77be..  glibc
+  9a02..  libgreet1               51d4..  gcc-build
+  51d4..  libgreet1/gcc-build
+```
 
-OBS's `.meta` is the same idea as text: `<srcmd5>  hello` followed by one
-`<hdrmd5>  <name>` line per dependency, compared line by line
-(`BSSched/BuildJob.pm:metacheck`). bsgo uses the git commit and sha256
-instead of md5 values.
+(`libgreet1` is the binary of unit `libgreet`; `glibc` is listed once, at its
+shallowest position, so `libgreet1/glibc` is pruned.) The meta hash is the sha256 over the lines. It is stored
+in `package_build_state.meta` and, after a successful build, `built_meta`; the
+lines themselves are stored gzip-compressed and addressed by that hash in
+`build_meta`, because consumers of the binary need them. The checker keeps the
+last metas it used in memory, so the lines of a package are only generated again
+when one of its inputs changed (the OBS `hdrmetamd5` shortcut).
+
+On every pass the scheduler recomputes the meta of each package: unchanged
+means no rebuild, changed means a new job. Because a local dependency counts
+by its producer's *inputs* and not by the checksum of the freshly built files,
+a rebuild with identical inputs changes nothing downstream. Changes of a
+dependency's own dependencies, however, travel along the tree: that is the
+transitive rebuild behaviour (`BuildFlags: rebuild:` `transitive`, `direct` and
+`local` narrow it).
+
+### Dependency cycles
+
+The toolchain is one big strongly connected component: gcc needs binutils,
+binutils needs gcc, and every package needs the compiler (`Required: gcc-PIE`).
+Each member sees the others' binaries in its build root, so naively every
+rebuild changes the meta of every other member and the repository rebuilds for
+ever. OBS stops this with `BSBuild::gen_meta` and `diffdepth`, and so does
+`pkg/scheduler/checker`:
+
+1. **Cutting** (`genMeta`). A line whose path leads through one of the unit's
+   own binaries describes a dependency that was built against *us*. It is
+   dropped, and so are the producer's lines for our own package. With
+   `genmetaalgo:1` (the default) the deeper copies of a package that is also
+   reachable through a dependency that depends on us are dropped as well;
+   `genmetaalgo:0` drops every line behind such a dependency. What remains
+   does not change when the members of a cycle rebuild each other, only when
+   something outside of the cycle, or a source commit, changes.
+2. **Levels** (`diffDepth`). When the meta of a cycle member changed, the
+   depth of the first differing line is its *level*: 1 is the source, `n+2` a
+   dependency with `n` slashes in its path. In the first pass over a cycle only
+   members that need a build for their source, or were never built, start; the
+   others are postponed. In the second pass the postponed members are decided
+   shallowest change first, and a member waits for the not ready members of its
+   cycle with a lower level. The change that made a member rebuild is often
+   gone once the member that caused it has been rebuilt, which is why this
+   avoids most of the rebuilds.
+
+The scheduler does not tell members of a cycle apart by "being in the cycle":
+the meta of a unit depends only on its own dependencies and what their metas
+recorded. A member that becomes unresolvable and leaves the dependency graph
+therefore changes nothing for the others. (An earlier version excluded the
+binaries of every member of the strongly connected component and added their
+source commits to the meta; every change of the membership then changed the
+meta of all members at once, which restarted the whole toolchain.)
+
+Differences from OBS: sha256 instead of md5 (shortened to 128 bits in the
+lines), the members of a cycle are built in parallel instead of one by one,
+and the metas live in PostgreSQL instead of `:meta/` files. Builds made before
+the metas were stored have no tree: their binaries count by their sha256 until
+the package is built again.
 
 ## End-to-end flow
 
@@ -201,4 +260,4 @@ The sha256 values differ on every run because rpmbuild embeds build times.
 | Path layering, shadowing | `pkg/solv/pathpool.go` | `BSSched/Checker.pm:createpool` |
 | Expansion | `pkg/solv/expand.go` | `/usr/lib/build/Build/Expand.pm` |
 | Integration of a finished build | `pkg/scheduler/indexer` | `BSSched/BuildJob.pm:jobfinished` |
-| meta | `pkg/scheduler/checker/meta.go` | `BSSched/BuildJob.pm:metacheck` |
+| meta, cycles | `pkg/scheduler/checker/meta.go`, `metatree.go`, `decide.go` | `BSSched/BuildJob/Package.pm:check`, `BSBuild.pm` (`add_meta`, `gen_meta`, `diffdepth`), `BSSched/Checker.pm:handlecycle` |

@@ -116,6 +116,7 @@ type world struct {
 	indexes *fakeIndexes
 	sink    *recordingSink
 	chk     *checker.Checker
+	deps    checker.Deps
 	prpa    checker.Prpa
 	// bins is the content of the own build repository by unit.
 	bins map[string][]bininfo.BinInfo
@@ -153,12 +154,22 @@ func newWorld(t *testing.T, boot []bininfo.BinInfo, opts ...worldOpt) *world {
 	if dd != nil {
 		d = dd
 	}
-	w.chk = checker.New(checker.Deps{
+	w.deps = checker.Deps{
 		Store: w.store, Recipes: w.recipes, Indexes: w.indexes, DoD: d, Sink: w.sink,
 		Pools: solv.NewPoolCache(4),
-	})
+	}
+	w.chk = checker.New(w.deps)
 	t.Cleanup(func() { w.chk.Close() })
 	return w
+}
+
+// restart replaces the checker by a new one with empty caches, like a server
+// restart.
+func (w *world) restart() {
+	w.chk.Close()
+	w.deps.Pools = solv.NewPoolCache(4)
+	w.chk = checker.New(w.deps)
+	w.t.Cleanup(func() { w.chk.Close() })
 }
 
 func (w *world) saveProject() {
