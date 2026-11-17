@@ -355,8 +355,8 @@ func (r *WorkerRegistry) CanEverFit(workerID string, job *v1.BuildJob) bool {
 }
 
 // FindReservableWorker picks the worker to hold for a job that does not fit
-// the free resources anywhere: among the workers the job fits when idle (and
-// that are not excluded) the one running the fewest jobs, then the one with
+// the free resources anywhere: among the workers the job fits when idle, is
+// big for (see isBigFor) and that are not excluded, the one running the fewest jobs, then the one with
 // the most free vCPUs, then the lowest ID. It returns "" when none exists.
 func (r *WorkerRegistry) FindReservableWorker(job *v1.BuildJob, excluded map[string]bool) string {
 	r.mu.Lock()
@@ -365,7 +365,7 @@ func (r *WorkerRegistry) FindReservableWorker(job *v1.BuildJob, excluded map[str
 	now := time.Now()
 	var best *WorkerRecord
 	for _, w := range r.workers {
-		if excluded[w.WorkerID] || !r.fitsWhenIdle(w, job, now) {
+		if excluded[w.WorkerID] || !isBigFor(w, job) || !r.fitsWhenIdle(w, job, now) {
 			continue
 		}
 		if best == nil || reservePreferred(w, best) {
@@ -376,6 +376,15 @@ func (r *WorkerRegistry) FindReservableWorker(job *v1.BuildJob, excluded map[str
 		return ""
 	}
 	return best.WorkerID
+}
+
+// isBigFor reports whether the job asks for more than half of the worker's
+// total vCPUs or memory. Only such jobs may reserve a worker: small jobs
+// backfill instead of serializing dispatch behind reservations.
+func isBigFor(w *WorkerRecord, job *v1.BuildJob) bool {
+	hw := &w.Hardware
+	return int64(job.Resources.VCPUs)*2 > int64(hw.TotalVCPUs) ||
+		job.Resources.MemoryMB*2 > hw.TotalMemoryMB
 }
 
 func reservePreferred(a, b *WorkerRecord) bool {

@@ -74,6 +74,8 @@ func TestReservationDecision(t *testing.T) {
 		{"threshold 0 disables", []v1.WorkerHeartbeat{busyWorker("w1", 8, 2, false)}, 0, 48 * time.Hour, 8, nil, ""},
 		{"fits no worker by capacity", []v1.WorkerHeartbeat{busyWorker("w1", 8, 2, false)}, threshold, time.Hour, 16, nil, ""},
 		{"fits free resources", []v1.WorkerHeartbeat{busyWorker("w1", 8, 8, false)}, threshold, time.Hour, 4, nil, ""},
+		{"small job never reserves a busy worker", []v1.WorkerHeartbeat{busyWorker("w1", 8, 1, false)}, threshold, 48 * time.Hour, 4, nil, ""},
+		{"job above half of vCPUs reserves", []v1.WorkerHeartbeat{busyWorker("w1", 8, 1, false)}, threshold, threshold, 5, nil, "w1"},
 		{"idle worker preferred", []v1.WorkerHeartbeat{busyWorker("w1", 8, 2, false), busyWorker("w2", 8, 3, false)}, threshold, threshold, 8, nil, "w2"},
 		{"constrained-only worker not reserved for unconstrained job", []v1.WorkerHeartbeat{kvmWorker("kvm", 8, 2)}, threshold, time.Hour, 8, nil, ""},
 		{"constrained-only worker reserved for kvm job", []v1.WorkerHeartbeat{kvmWorker("kvm", 8, 2)}, threshold, time.Hour, 8, kvm, "kvm"},
@@ -213,5 +215,31 @@ func TestReenqueueKeepsWaitTime(t *testing.T) {
 	_, _, _ = d.DispatchNext(context.Background())
 	if _, ok := d.ReservedWorker("big"); !ok {
 		t.Error("re-enqueue reset the wait time")
+	}
+}
+
+func TestSmallJobBackfillsAndIsHeldOffReservedWorker(t *testing.T) {
+	clock := newFakeClock()
+	d := newReservationDispatcher(clock, 15*time.Minute, busyWorker("w1", 8, 2, false))
+	d.EnqueueJob(resJob("big", 8, 1))
+	d.EnqueueJob(resJob("small", 2, 5))
+	clock.advance(time.Hour)
+
+	// small waited long too but never reserves; big holds the only worker.
+	if _, job, _ := d.DispatchNext(context.Background()); job != nil {
+		t.Fatalf("dispatched %s to the reserved worker", job.JobID)
+	}
+	if got, _ := d.ReservedWorker("big"); got != "w1" {
+		t.Errorf("big reserved %q, want w1", got)
+	}
+	if got, ok := d.ReservedWorker("small"); ok {
+		t.Errorf("small job reserved %q", got)
+	}
+
+	// A second, unreserved worker takes the small job.
+	d.Registry().UpdateHeartbeat(busyWorker("w2", 8, 8, false))
+	w, job, _ := d.DispatchNext(context.Background())
+	if job == nil || job.JobID != "small" || w != "w2" {
+		t.Fatalf("dispatched %v on %q, want small on w2", job, w)
 	}
 }

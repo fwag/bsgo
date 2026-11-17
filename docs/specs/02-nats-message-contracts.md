@@ -276,7 +276,10 @@ resources. A job that fits a worker by capacity (when idle: total vCPUs and
 memory, arch, sandbox constraints, not badhost, worker neither draining nor
 quarantined) but not on free resources, and has waited longer than
 `--dispatch-reserve-after` (env `BSGO_DISPATCH_RESERVE_AFTER`, default `15m`,
-`0` disables), reserves one such worker: the one running the fewest jobs, then
+`0` disables), reserves one such worker, provided the job is big for it (it
+requests more than half of the worker's total vCPUs or memory; small jobs never
+reserve and keep backfilling, so a long queue on one worker does not serialize
+behind reservations): the one running the fewest jobs, then
 with the most free vCPUs. A reserved worker receives no other job until the
 reserved one fits; other workers keep backfilling. There is at most one
 reservation per worker, granted in queue priority order. The reservation is

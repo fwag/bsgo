@@ -103,7 +103,7 @@ func parseServerConfig() ServerConfig {
 	flag.StringVar(&cfg.RepoDownloadURL, "repo-download-url", getEnv("BSGO_REPO_DOWNLOAD_URL", ""), "Public URL of the repository storage root; when set a <project>.repo file is published per repository")
 	flag.DurationVar(&cfg.DoDRepomdTTL, "dod-repomd-ttl", getEnvDuration("DOD_REPOMD_TTL", dod.DefaultRepomdTTL), "Interval between repomd.xml re-checks of external (DoD) repositories")
 	flag.BoolVar(&cfg.Checker, "checker", getEnvBool("BSGO_CHECKER", true), "Run the scheduler checker loop (prpa passes, job creation, indexing)")
-	flag.DurationVar(&cfg.DispatchReserveAfter, "dispatch-reserve-after", getEnvDuration("BSGO_DISPATCH_RESERVE_AFTER", dispatcher.DefaultReserveAfter), "Wait after which a job that fits a worker only when idle reserves it, so small jobs cannot starve it; 0 disables")
+	flag.DurationVar(&cfg.DispatchReserveAfter, "dispatch-reserve-after", getEnvDuration("BSGO_DISPATCH_RESERVE_AFTER", dispatcher.DefaultReserveAfter), "Wait after which a big job (more than half of a worker's vCPUs or memory) that fits a worker only when idle reserves it, so small jobs cannot starve it; 0 disables")
 	flag.DurationVar(&cfg.CheckerDebounce, "checker-debounce", getEnvDuration("BSGO_CHECKER_DEBOUNCE", 2*time.Second), "Quiet time of a prpa before its checker pass starts")
 	flag.IntVar(&cfg.CheckerWorkers, "checker-workers", 2, "Prpas checked concurrently by this instance")
 	flag.DurationVar(&cfg.CheckerResync, "checker-resync", getEnvDuration("BSGO_CHECKER_RESYNC", 10*time.Minute), "Interval at which every prpa is re-checked as a safety net; 0 disables")

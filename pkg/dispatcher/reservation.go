@@ -65,10 +65,11 @@ func (d *Dispatcher) releaseReservation(workerID, jobID, why string) {
 	d.logf("released %s from job %s (%s)", workerID, jobID, why)
 }
 
-// updateReservations reserves a worker for each starving job, in the given
+// updateReservations reserves a worker for each starving big job, in the given
 // (priority) order. A job starves when it has waited for reserveAfter and fits
-// no unreserved worker on its free resources. Jobs that fit no worker even
-// when idle reserve nothing. The caller holds d.mu.
+// no unreserved worker on its free resources. Only jobs that are big for the
+// worker (more than half of its vCPUs or memory) reserve it, and jobs that fit
+// no worker even when idle reserve nothing. The caller holds d.mu.
 func (d *Dispatcher) updateReservations(sorted []*v1.BuildJob) {
 	if d.reserveAfter <= 0 {
 		return
