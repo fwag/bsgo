@@ -152,6 +152,15 @@ published.
 their paths; `ErrNoKey` means unsigned. bsgo-server wiring is in
 `cmd/bsgo-server/publisher_signing.go`.
 
+## Provenance use
+
+The signing stage (`pkg/signing/provenance.go`) signs the SLSA provenance of a
+job as a DSSE envelope: `RAWSIGN` over SHA-256 of the DSSE pre-authentication
+encoding `DSSEv1 <len type> <type> <len payload> <payload>`, `payloadType`
+`application/vnd.in-toto+json`, `keyid` = the key fingerprint. The envelope
+replaces `_slsa_provenance.json` in the artifact prefix and is published as
+`<binary>.slsa_provenance.json` next to each binary. See plan 02, S4.
+
 ## Removed
 
 The commands `SIGN_DIGEST` and `GEN_KEY` (raw RSA PKCS#1 signatures) no longer

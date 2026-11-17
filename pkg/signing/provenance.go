@@ -79,7 +79,7 @@ func readStatement(data []byte) (*v1.InTotoStatement, error) {
 // the statement and the key only, which makes a retry harmless. It returns
 // the artifact list with the provenance entry updated; a job without
 // provenance is returned unchanged.
-func (s *Stage) signProvenance(ctx context.Context, dir string, j Job, arts []indexer.Artifact, key KeyRef, rpms []*localRPM) ([]indexer.Artifact, error) {
+func (s *Stage) signProvenance(ctx context.Context, arts []indexer.Artifact, key KeyRef, rpms []*localRPM) ([]indexer.Artifact, error) {
 	prov, ok := provenanceArtifact(arts)
 	if !ok {
 		return arts, nil
@@ -87,13 +87,14 @@ func (s *Stage) signProvenance(ctx context.Context, dir string, j Job, arts []in
 	if s.Raw == nil {
 		return nil, errNoProvenanceSigner
 	}
-	local := filepath.Join(dir, ProvenanceFile)
-	if err := s.Objects.DownloadFile(ctx, prov.S3Key, local); err != nil {
-		return nil, fmt.Errorf("downloading %s: %w", prov.S3Key, err)
-	}
-	data, err := os.ReadFile(local) // #nosec G304 -- inside the stage's private temp dir
+	dir, err := os.MkdirTemp(s.TempRoot, "bsgo-provenance-*")
 	if err != nil {
 		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	data, err := s.Objects.ReadObject(ctx, prov.S3Key)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", prov.S3Key, err)
 	}
 	st, err := readStatement(data)
 	if err != nil {
@@ -116,10 +117,11 @@ func (s *Stage) signProvenance(ctx context.Context, dir string, j Job, arts []in
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(local, envelope, 0o600); err != nil {
+	out := filepath.Join(dir, "envelope.json")
+	if err := os.WriteFile(out, envelope, 0o600); err != nil {
 		return nil, err
 	}
-	up, err := s.upload(ctx, local, prov.S3Key, ProvenanceFile)
+	up, err := s.upload(ctx, out, prov.S3Key, ProvenanceFile)
 	if err != nil {
 		return nil, err
 	}

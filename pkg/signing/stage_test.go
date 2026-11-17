@@ -30,6 +30,14 @@ func (m memObjects) DownloadFile(_ context.Context, key, local string) error {
 	return os.WriteFile(local, data, 0o600)
 }
 
+func (m memObjects) ReadObject(_ context.Context, key string) ([]byte, error) {
+	data, ok := m[key]
+	if !ok {
+		return nil, errors.New("no such object " + key)
+	}
+	return data, nil
+}
+
 func (m memObjects) UploadFile(_ context.Context, local, key string) error {
 	data, err := os.ReadFile(local)
 	if err != nil {

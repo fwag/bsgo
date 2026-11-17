@@ -25,6 +25,7 @@ import (
 // Objects is the object storage of artifacts; storage/s3.S3Storage satisfies it.
 type Objects interface {
 	DownloadFile(ctx context.Context, key, localPath string) error
+	ReadObject(ctx context.Context, key string) ([]byte, error)
 	UploadFile(ctx context.Context, localPath, key string) error
 }
 
@@ -206,7 +207,7 @@ func (s *Stage) Sign(ctx context.Context, j Job) ([]indexer.Artifact, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.signProvenance(ctx, dir, j, arts, ref, rpms)
+	return s.signProvenance(ctx, arts, ref, rpms)
 }
 
 // keyCreated reads the creation time of an armored OpenPGP public key.

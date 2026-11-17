@@ -110,7 +110,7 @@ func newProvFixture(t *testing.T, sg *signer.Signer) *provFixture {
 
 func (f *provFixture) run(t *testing.T) []indexer.Artifact {
 	t.Helper()
-	arts, err := f.stage.signProvenance(context.Background(), f.dir, Job{}, f.arts, f.key, f.rpms)
+	arts, err := f.stage.signProvenance(context.Background(), f.arts, f.key, f.rpms)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestSignProvenanceSkipsAndFailures(t *testing.T) {
 			orig := bytes.Clone(f.objs[provKey])
 			tt.mutate(f)
 			before := bytes.Clone(f.objs[provKey])
-			_, err := f.stage.signProvenance(context.Background(), f.dir, Job{}, f.arts, f.key, f.rpms)
+			_, err := f.stage.signProvenance(context.Background(), f.arts, f.key, f.rpms)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
 			}

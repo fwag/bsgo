@@ -1,6 +1,6 @@
 # Plan: Signing (RPMs, repository metadata, provenance)
 
-Status: S0-S3 implemented; S4-S6 proposed
+Status: S0-S4 implemented; S5-S6 proposed
 Audience: implementation agents (Sonnet) + human reviewer
 Depends on: plan 01 (scheduler, indexer, publisher, hermetic worker) — merged.
 
@@ -204,15 +204,68 @@ Tests: unit tests with a MemoryStore + fake signd; integration test that signs
 a real RPM built in-test and checks `rpm -K` with the exported public key
 (skip without rpmbuild/rpmsign); idempotency test (run step twice).
 
-### S4. SLSA provenance signing
-Files: `pkg/signing`, `pkg/proto/v1/provenance.go`.
-Tasks: wrap the worker's provenance as an in-toto Statement in a DSSE envelope
-(`payloadType: application/vnd.in-toto+json`), sign the PAE
-(`DSSEv1 <len> <type> <len> <payload>`) with the project key via signd
-(raw signature over SHA-256, like `bs_signer:dsse_sign`), store as
-`_slsa_provenance.json` (envelope) next to the binaries; publisher exports it.
-Acceptance: verification with the project public key in a Go test; optional
-`slsa-verifier`/`cosign verify-blob` compatibility documented.
+### S4. SLSA provenance signing - DONE
+
+Implemented. The worker already emits an in-toto v1 Statement
+(`_type https://in-toto.io/Statement/v1`, subjects = produced RPMs with
+sha256, predicate `https://slsa.dev/provenance/v1` with buildDefinition and
+runDetails, `pkg/proto/v1/provenance.go`), so S4 only wraps and signs it.
+
+- **Envelope** (`pkg/proto/v1/dsse.go`): `{"payloadType":
+  "application/vnd.in-toto+json","payload":base64(statement),"signatures":
+  [{"keyid":<fingerprint>,"sig":base64(sig)}]}`. PAE = `DSSEv1 SP len(type) SP
+  type SP len(payload) SP payload` (same as `bs_signer:dsse_pae`).
+- **Signature format**: raw RSA PKCS#1 v1.5 over SHA-256(PAE) with the project
+  RSA key; no OpenPGP framing. Chosen because DSSE verifiers (sigstore dsse,
+  slsa-verifier, cosign with an RSA key) expect a bare signature value over the
+  PAE, and OBS signs the PAE through `sign -D`, a bare signature as well. The
+  obs-sign client source is not available here, so "raw PKCS#1 v1.5 SHA-256" is
+  matched to the DSSE spec and to the verifier expectations rather than diffed
+  against obs-sign output. Difference to OBS: the envelope carries `keyid`
+  (OpenPGP v4 fingerprint of the project key; optional in DSSE, OBS omits it).
+- **signd**: new command `RAWSIGN <enckey> <hashalgo> <hexdigest>`
+  (docs/specs/05); `signer.Signer.SignRaw` resolves the key (inheritance,
+  autoextend) and returns the signature plus fingerprint. The private key never
+  leaves signd.
+- **Stage** (`pkg/signing/provenance.go`): after the RPMs are signed, verified
+  and uploaded, the stage reads `_slsa_provenance.json` of the job, sets the
+  subject digests to the sha256 of the signed RPMs (adds missing RPM subjects;
+  OBS fixes up subjects the same way, hence provenance is signed last), signs
+  and uploads the envelope over the same object key, and returns the updated
+  sha256/size in the job-signed answer. The unsigned file is replaced, not
+  kept: a job reaches `succeeded` only with a signed envelope. Retries are
+  idempotent: a retry reads the envelope of the previous attempt, the payload
+  is re-marshaled deterministically and PKCS#1 v1.5 is deterministic, so the
+  bytes are identical. A job without a provenance artifact is passed through;
+  a job with one needs `Stage.Raw` (wired to the shared signer in
+  `cmd/bsgo-server/signing.go`).
+- **No key**: same as the RPM stage. `signer.Enabled` is false for a project
+  without key when `--sign-create-keys=false`; such jobs skip the stage and the
+  provenance stays the worker's unsigned statement. If a job reaches the stage
+  anyway, `ResolveKey` fails with `ErrNoKey` before anything is touched.
+- **Publisher** (`pkg/publisher/provenance_export.go`): like `bs_publish`, a
+  binary `X.rpm` gets `X.slsa_provenance.json` next to it in the repository
+  (a copy of the unit's envelope, written before `repomd.xml`). It is exported
+  only when the envelope has a signature and its statement lists the binary
+  with the published sha256; unsigned (pre-S4) or mismatching provenance is not
+  published and a stale copy is removed. Files of unpublished binaries are
+  garbage collected with their RPM. The publisher holds no keys and does not
+  verify the signature.
+- **Verification**: `signing.VerifyProvenance(data, armoredPubKey)` recomputes
+  the PAE and checks the RSA signature against the project public key. Tests:
+  `pkg/signing/provenance_test.go` (in-process signd engine: verify, tamper,
+  wrong key, idempotency, no-key, failure cases),
+  `TestStageSignsProvenance` (real rpmbuild/rpmsign and signd over TCP),
+  `pkg/signd/rawsign_test.go`, `pkg/proto/v1/dsse_test.go`,
+  `pkg/publisher/provenance_export_test.go`.
+- **cosign / slsa-verifier** (untested, neither tool is installed here): the
+  envelope is a standard DSSE with an RSA PKCS#1 v1.5 SHA-256 signature, so it
+  should verify with `cosign verify-blob-attestation --key <project RSA public
+  key as PEM> --signature ... --type slsaprovenance1` style tooling after
+  converting the key from OpenPGP to PEM (the PEM export is not provided yet;
+  the key is the RSA primary key of `repomd.xml.key`). `slsa-verifier` expects
+  Sigstore/GitHub-builder identities and does not apply to key-signed
+  provenance in this form.
 
 ### S5. Key management CLI and ACLs
 Files: `pkg/cli` (`bsgo project signkey show|create|extend|export`),

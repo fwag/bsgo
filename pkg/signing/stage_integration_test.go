@@ -131,6 +131,12 @@ func (d *dirObjects) DownloadFile(_ context.Context, key, local string) error {
 	return os.WriteFile(local, data, 0o600)
 }
 
+func (d *dirObjects) ReadObject(_ context.Context, key string) ([]byte, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return os.ReadFile(d.path(key))
+}
+
 func sha(t *testing.T, path string) (string, int64) {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -165,7 +171,7 @@ func newFixture(t *testing.T) *fixture {
 	client, addr := startSignd(t)
 	keys := signer.New(client, f.store, signer.Config{})
 	f.stage = &signing.Stage{
-		Keys: keys, Objects: f.objects, States: f.store, TempRoot: t.TempDir(),
+		Keys: keys, Raw: keys, Objects: f.objects, States: f.store, TempRoot: t.TempDir(),
 		Tool: signing.RPMTool{
 			Helper: buildHelper(t),
 			Signd:  signing.SigndEndpoint{Addr: addr},
@@ -260,6 +266,68 @@ func assertOtherKeyFails(t *testing.T, f *fixture, rpm string) {
 	if err := f.stage.Tool.Verify(context.Background(), other.PublicKeyArmored, []string{rpm}); err == nil {
 		t.Fatal("RPM must not verify with another project's key")
 	}
+}
+
+// TestStageSignsProvenance runs the whole stage over a real signd: the
+// worker's unsigned statement is replaced by a DSSE envelope that verifies
+// with the project key and lists the signed RPM, and a retry changes nothing.
+func TestStageSignsProvenance(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	rpm := f.job.Artifacts[0]
+	provKey := "artifacts/home:bot/std/x86_64/tiny/" + signing.ProvenanceFile
+	statement := `{"_type":"https://in-toto.io/Statement/v1","subject":[{"name":"` + rpm.Filename +
+		`","digest":{"sha256":"` + rpm.SHA256 + `"}}],"predicateType":"https://slsa.dev/provenance/v1","predicate":{}}`
+	local := filepath.Join(t.TempDir(), "prov.json")
+	if err := os.WriteFile(local, []byte(statement), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.objects.UploadFile(ctx, local, provKey); err != nil {
+		t.Fatal(err)
+	}
+	f.job.Artifacts = append(f.job.Artifacts, indexer.Artifact{Filename: signing.ProvenanceFile, S3Key: provKey, SHA256: sha256hex(statement)})
+
+	var envelopes [][]byte
+	for range 2 {
+		arts, err := f.stage.Sign(ctx, f.job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env, err := os.ReadFile(f.objects.path(provKey))
+		if err != nil {
+			t.Fatal(err)
+		}
+		envelopes = append(envelopes, env)
+		var prov indexer.Artifact
+		for _, a := range arts {
+			if a.Filename == signing.ProvenanceFile {
+				prov = a
+			}
+		}
+		if prov.SHA256 != sha256hex(string(env)) {
+			t.Errorf("answer lists sha256 %s for the provenance, object has %s", prov.SHA256, sha256hex(string(env)))
+		}
+	}
+	if string(envelopes[0]) != string(envelopes[1]) {
+		t.Error("a retried stage changed the provenance envelope")
+	}
+	key, err := f.store.GetProjectKey(ctx, "home:bot", signer.DefaultFlavor, signer.KeyType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := signing.VerifyProvenance(envelopes[0], key.PublicKeyArmored)
+	if err != nil {
+		t.Fatalf("envelope must verify with the project public key: %v", err)
+	}
+	signedSum, _ := sha(t, f.objects.path(rpm.S3Key))
+	if len(st.Subject) != 1 || st.Subject[0].Digest["sha256"] != signedSum || signedSum == rpm.SHA256 {
+		t.Errorf("subject %+v does not carry the signed RPM sha256 %s", st.Subject, signedSum)
+	}
+}
+
+func sha256hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 func TestStageIsIdempotent(t *testing.T) {
