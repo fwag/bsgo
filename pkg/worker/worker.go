@@ -191,7 +191,12 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 	jobCtx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
-	reqMem, reqVCPUs := w.allocateJob(job, cancel)
+	reqMem, reqVCPUs, ok := w.allocateJob(job, cancel)
+	if !ok {
+		fmt.Printf("[%s] [JOB] %s: already running, ignoring the repeated dispatch\n",
+			time.Now().Format("15:04:05"), job.JobID)
+		return
+	}
 	defer w.releaseJob(job.JobID, reqMem, reqVCPUs)
 
 	if ctrlSub := w.subscribeJobAbort(job.JobID, cancel); ctrlSub != nil {
@@ -217,8 +222,16 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 	logJobCompletion(job, phase, exitCode, res)
 }
 
-func (w *WorkerDaemon) allocateJob(job *v1.BuildJob, cancel context.CancelFunc) (int64, int32) {
+// allocateJob reserves the resources of job and registers it as active. It
+// reports false, changing nothing, when the worker already runs a job with
+// this ID: a repeated dispatch must neither start a second build in the same
+// job directory nor disturb the running one.
+func (w *WorkerDaemon) allocateJob(job *v1.BuildJob, cancel context.CancelFunc) (int64, int32, bool) {
 	w.mu.Lock()
+	if _, running := w.activeJobs[job.JobID]; running {
+		w.mu.Unlock()
+		return 0, 0, false
+	}
 	reqVCPUs, reqMem := grantResources(job.Resources, w.cfg.Hardware)
 	job.Resources.VCPUs = reqVCPUs
 	job.Resources.MemoryMB = reqMem
@@ -247,7 +260,7 @@ func (w *WorkerDaemon) allocateJob(job *v1.BuildJob, cancel context.CancelFunc) 
 
 	fmt.Printf("[%s] [JOB] %s: started build for %s/%s (arch: %s)\n",
 		time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package, job.Architecture)
-	return reqMem, reqVCPUs
+	return reqMem, reqVCPUs, true
 }
 
 func (w *WorkerDaemon) releaseJob(jobID string, reqMem int64, reqVCPUs int32) {
