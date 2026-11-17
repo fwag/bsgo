@@ -340,13 +340,26 @@ func (s *ProcessSandbox) fetchBdep(ctx context.Context, b v1.Bdep, bdepsDir stri
 			return err
 		}
 	}
-	dest := filepath.Join(bdepsDir, b.Filename())
-	if err := os.Link(cached, dest); err != nil {
-		if cpErr := copyFileContents(cached, dest); cpErr != nil {
-			return fmt.Errorf("placing bdep: %w", cpErr)
-		}
+	if err := placeBdep(cached, filepath.Join(bdepsDir, b.Filename()), b.SHA256); err != nil {
+		return fmt.Errorf("placing bdep: %w", err)
 	}
 	return nil
+}
+
+// placeBdep puts the cached file at dest. It is idempotent: a dest that
+// already holds the expected content is left alone, anything else (another
+// build of the same file name, a read-only hard link) is replaced.
+func placeBdep(cached, dest, sha256sum string) error {
+	if verifyFileSHA256(dest, sha256sum) == nil {
+		return nil
+	}
+	if err := os.Remove(dest); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Link(cached, dest); err == nil {
+		return nil
+	}
+	return copyFileContents(cached, dest)
 }
 
 func verifyFileSHA256(path, want string) error {
