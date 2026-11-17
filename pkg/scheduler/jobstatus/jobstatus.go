@@ -95,6 +95,9 @@ func (h *Handler) Handle(ctx context.Context, data []byte) error {
 	if cur.JobID != "" && cur.JobID != m.JobID {
 		return nil // superseded job
 	}
+	if lostJob(m.Phase) && !inFlight(cur.State) {
+		return nil // the checker already moved the unit on
+	}
 	if m.Phase == "DISPATCHING" && cur.JobID == m.JobID && cur.State == storage.StateBuilding {
 		return nil // the worker's start overtook the dispatcher's message
 	}
@@ -105,10 +108,28 @@ func (h *Handler) Handle(ctx context.Context, data []byte) error {
 	switch row.State {
 	case storage.StateSigning:
 		return h.requestSigning(ctx, &m, p, pkg, flavor)
-	case storage.StateDispatching, storage.StateBuilding, storage.StateScheduled:
+	case storage.StateScheduled:
+		if m.Phase == "ABORTED" {
+			// The dispatch queue forgot the job: a pass sends it again.
+			return h.Dirty.JobFinished(ctx, p)
+		}
+		return nil
+	case storage.StateDispatching, storage.StateBuilding:
 		return nil
 	}
 	return h.Dirty.JobFinished(ctx, p)
+}
+
+// lostJob reports whether the phase says the job did not run to an end.
+func lostJob(phase string) bool { return phase == "ABORTED" || phase == "REQUEUED" }
+
+// inFlight reports whether the dispatcher or a worker may still hold the job.
+func inFlight(state string) bool {
+	switch state {
+	case storage.StateScheduled, storage.StateDispatching, storage.StateBuilding:
+		return true
+	}
+	return false
 }
 
 func relevant(phase string) bool {
@@ -136,10 +157,14 @@ func (h *Handler) nextRow(ctx context.Context, m *Message, p buildrepo.Prpa, pkg
 	case "SUCCEEDED":
 		h.succeeded(ctx, row, m, p)
 	case "ABORTED":
-		row.State = storage.StateFailed
-		row.Details = "aborted"
+		// A cancelled or killed job is not a build failure (OBS puts the
+		// package back to scheduled and builds it again). Superseded and
+		// withdrawn jobs never get here: their row carries another job ID or
+		// no longer is in flight.
+		row.State = storage.StateScheduled
+		row.Details = "requeued: aborted"
 		if m.Reason != "" {
-			row.Details = "aborted: " + m.Reason
+			row.Details = "requeued: aborted: " + m.Reason
 		}
 	default:
 		row.State = storage.StateFailed
