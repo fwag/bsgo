@@ -22,8 +22,8 @@ type Dispatcher struct {
 	// running maps job IDs that workers report as active (heartbeats) to the
 	// worker. After a server restart it is the only record of builds that
 	// are still running, so their jobs are not dispatched a second time.
-	running      map[string]string
-	reportedAt   map[string]time.Time // workerID -> time of its last report
+	running    map[string]string
+	reportedAt map[string]time.Time // workerID -> time of its last report
 	// dispatchedAt is when each dispatched job was sent to its worker.
 	dispatchedAt map[string]time.Time
 	// dispatchGrace is how long a freshly dispatched job may be missing from
@@ -31,8 +31,8 @@ type Dispatcher struct {
 	// independently, so a heartbeat sent just before the job arrived says
 	// nothing about it.
 	dispatchGrace time.Duration
-	workerTTL    time.Duration
-	abortHandler func(jobID, reason string)
+	workerTTL     time.Duration
+	abortHandler  func(jobID, reason string)
 
 	// reservations maps a worker held for a starving job to that job.
 	reservations map[string]string
