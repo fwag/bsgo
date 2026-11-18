@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openSUSE/bsgo/pkg/bininfo"
 	"github.com/openSUSE/bsgo/pkg/storage"
@@ -253,6 +254,102 @@ func TestCycleMembershipChangeIsQuiet(t *testing.T) {
 	}
 	w.wantState("x", storage.StateSucceeded, "")
 	w.wantState("y", storage.StateSucceeded, "")
+}
+
+// TestMetaChangeKeepsRunningJob: like OBS, a job that is scheduled or running
+// for the current source is not cancelled because the meta changed meanwhile.
+// Cancelling would keep the producers of a cycle from ever finishing.
+func TestMetaChangeKeepsRunningJob(t *testing.T) {
+	w := cycleWorld(t)
+	w.run()
+	jobs := w.sink.take()
+	yJob := jobs[1]
+	w.finish(jobs[0], binary("x", "1")) // x is done: the meta of y changes
+	w.run()
+	w.wantJobs()
+	if len(w.sink.cancelled) != 0 {
+		t.Errorf("cancelled %v on a meta change", w.sink.cancelled)
+	}
+	if st := w.state("y"); st.State != storage.StateScheduled || st.JobID != yJob.JobID {
+		t.Errorf("y is %s with job %s, want scheduled with %s", st.State, st.JobID, yJob.JobID)
+	}
+	// When it has finished, the meta is compared again and settles.
+	w.finish(yJob, binary("y", "1"))
+	w.rounds(10)
+	if len(w.sink.cancelled) != 0 {
+		t.Errorf("cancelled %v", w.sink.cancelled)
+	}
+	for _, u := range []string{"x", "y", "z"} {
+		w.wantState(u, storage.StateSucceeded, "")
+	}
+}
+
+// TestSourceChangeCancelsRunningJob: a new source makes the running job
+// obsolete.
+func TestSourceChangeCancelsRunningJob(t *testing.T) {
+	w := newWorld(t, nil)
+	w.pkg("p", nil)
+	w.run()
+	old := w.wantJobs("p")[0]
+	w.touch("p", nil)
+	w.run()
+	w.wantJobs("p")
+	if len(w.sink.cancelled) != 1 || w.sink.cancelled[0] != old.JobID {
+		t.Errorf("cancelled %v, want the job %s", w.sink.cancelled, old.JobID)
+	}
+}
+
+// TestMetaIDsAreCanonical: every id in a stored meta has the same width, for
+// binaries from the path (sha256) and for local producers (source commit),
+// whether or not the producer's tree is available.
+func TestMetaIDsAreCanonical(t *testing.T) {
+	check := func(w *world) {
+		t.Helper()
+		var hashes []string
+		for _, u := range []string{"a", "b", "c", "d"} {
+			hashes = append(hashes, w.state(u).BuiltMeta)
+		}
+		metas, err := w.store.GetBuildMetas(context.Background(), testProject, testRepo, testArch, hashes)
+		if err != nil || len(metas) == 0 {
+			t.Fatalf("metas %v, %v", metas, err)
+		}
+		for _, m := range metas {
+			for _, l := range m.Lines {
+				if id, _, _ := strings.Cut(l, "  "); len(id) != 32 {
+					t.Errorf("line %q has a %d digit id", l, len(id))
+				}
+			}
+		}
+	}
+	w := abcWorld(t)
+	w.rounds(10)
+	check(w)
+	// Without the trees of the producers the binaries count by their sha256.
+	err := w.store.PruneBuildMetas(context.Background(), testProject, testRepo, testArch, []string{"none"}, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.restart()
+	w.rounds(10)
+	if metas, _ := w.store.GetBuildMetas(context.Background(), testProject, testRepo, testArch, []string{w.state("d").BuiltMeta}); len(metas) == 0 {
+		t.Fatal("no meta saved for the rebuilt d")
+	}
+	for _, m := range mustMetas(t, w, w.state("d").BuiltMeta) {
+		for _, l := range m.Lines {
+			if id, _, _ := strings.Cut(l, "  "); len(id) != 32 {
+				t.Errorf("fallback line %q has a %d digit id", l, len(id))
+			}
+		}
+	}
+}
+
+func mustMetas(t *testing.T, w *world, hash string) []storage.BuildMeta {
+	t.Helper()
+	metas, err := w.store.GetBuildMetas(context.Background(), testProject, testRepo, testArch, []string{hash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return metas
 }
 
 func TestBlockedDetailListIsAbbreviated(t *testing.T) {

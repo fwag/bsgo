@@ -230,8 +230,10 @@ type Store interface {
 	SaveBuildMetas(ctx context.Context, project, repo, arch string, metas []BuildMeta) error
 	// GetBuildMetas returns the stored metas among hashes; unknown ones are left out.
 	GetBuildMetas(ctx context.Context, project, repo, arch string, hashes []string) ([]BuildMeta, error)
-	// PruneBuildMetas deletes the metas of one prpa that are not in keep.
-	PruneBuildMetas(ctx context.Context, project, repo, arch string, keep []string) error
+	// PruneBuildMetas deletes the metas of one prpa that are not in keep and
+	// were saved before the given time. The grace period keeps the meta of a
+	// job that is finishing while it is no longer referenced.
+	PruneBuildMetas(ctx context.Context, project, repo, arch string, keep []string, before time.Time) error
 }
 
 type MemoryStore struct {
@@ -244,9 +246,9 @@ type MemoryStore struct {
 	dod        map[string]*DoDRepo                      // key: url
 	counters   map[CounterKey]BuildCounters
 	forced     []ForcedRebuild
-	indexes    map[string]*BuildRepoIndex     // key: project/repo/arch
-	prpaStates map[string]*PrpaState          // key: project/repo/arch
-	metas      map[string]map[string][]string // key: project/repo/arch -> meta hash -> lines
+	indexes    map[string]*BuildRepoIndex       // key: project/repo/arch
+	prpaStates map[string]*PrpaState            // key: project/repo/arch
+	metas      map[string]map[string]storedMeta // key: project/repo/arch -> meta hash -> lines
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -260,7 +262,7 @@ func NewMemoryStore() *MemoryStore {
 		counters:   make(map[CounterKey]BuildCounters),
 		indexes:    make(map[string]*BuildRepoIndex),
 		prpaStates: make(map[string]*PrpaState),
-		metas:      make(map[string]map[string][]string),
+		metas:      make(map[string]map[string]storedMeta),
 	}
 }
 

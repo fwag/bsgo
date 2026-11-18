@@ -225,6 +225,14 @@ names the recipes of all flavors of the source package declare plus every
 binary of that package found in the build repository, since recipe parsing
 misses generated subpackages (python singlespec, lua).
 
+A job that is scheduled or running for the current source is never cancelled
+because the meta changed meanwhile (OBS names jobs after the source and only
+kills them when the source changes or the package is excluded or disabled). It
+finishes, and the next pass compares its meta with the current one. Cancelling
+instead would keep the members of a cycle from ever finishing. A meta is kept
+for 48 hours after the last state stopped referring to it, because a job that
+was superseded may still finish.
+
 Upgrade note: the meta hash format changed (`bsgo-meta-v2`), so the first pass
 after the upgrade sees "meta change" for every unit that was built before, and
 rebuilds it once. In-flight jobs are cancelled and re-created. A few more rounds

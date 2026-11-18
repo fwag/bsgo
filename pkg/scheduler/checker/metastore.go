@@ -3,6 +3,7 @@ package checker
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
@@ -10,6 +11,10 @@ import (
 // Bounds of the checker wide caches. A pass never depends on them: it copies
 // the trees it needs into pass.trees, so eviction cannot change a decision.
 const (
+	// metaGrace is how long an unreferenced meta is kept: a job that was
+	// superseded may still finish and then refers to its meta.
+	metaGrace = 48 * time.Hour
+
 	maxTreeCache  = 4000
 	maxCheckCache = 50000
 )
@@ -51,7 +56,7 @@ func (ps *pass) loadMetaTrees() error {
 	var want []string
 	for _, u := range ps.units {
 		st := ps.states[unitKey(u.pkg, u.flavor)]
-		if st == nil || st.BuiltMeta == "" || u.fixed != nil {
+		if st == nil || st.BuiltMeta == "" {
 			continue
 		}
 		if len(ps.own[u.name]) == 0 && (u.group == nil || !u.group.cyclic) {
@@ -125,7 +130,7 @@ func (ps *pass) saveMetas() error {
 	for h := range keep {
 		hashes = append(hashes, h)
 	}
-	if err := ps.c.d.Store.PruneBuildMetas(ps.ctx, p.Project, p.Repo, p.Arch, hashes); err != nil {
+	if err := ps.c.d.Store.PruneBuildMetas(ps.ctx, p.Project, p.Repo, p.Arch, hashes, ps.c.d.Now().Add(-metaGrace)); err != nil {
 		return fmt.Errorf("prune build metas: %w", err)
 	}
 	return nil

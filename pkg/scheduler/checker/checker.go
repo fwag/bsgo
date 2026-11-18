@@ -43,7 +43,7 @@ type Store interface {
 	ClearForcedRebuilds(ctx context.Context, project, repo, arch string, units []storage.UnitRef) error
 	SaveBuildMetas(ctx context.Context, project, repo, arch string, metas []storage.BuildMeta) error
 	GetBuildMetas(ctx context.Context, project, repo, arch string, hashes []string) ([]storage.BuildMeta, error)
-	PruneBuildMetas(ctx context.Context, project, repo, arch string, keep []string) error
+	PruneBuildMetas(ctx context.Context, project, repo, arch string, keep []string, before time.Time) error
 }
 
 // Recipes provides the recipe files of a package at a pinned commit.

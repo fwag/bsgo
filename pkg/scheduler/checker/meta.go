@@ -62,7 +62,7 @@ func newMetaResult(lines []string) *metaResult {
 // retrigger itself, while a change deep below a cycle member still reaches
 // the other members through the lines of that member.
 func (ps *pass) meta(u *unit) *metaResult {
-	first := u.commit + "  " + u.name
+	first := shortID(u.commit) + "  " + u.name
 	policy := ps.target.Flags.EffectiveRebuild()
 	if policy == "local" {
 		return newMetaResult([]string{first})
@@ -84,7 +84,7 @@ func (ps *pass) genLines(u *unit, policy string, deps []depSource) []string {
 	if err != nil {
 		ps.fail(fmt.Errorf("meta of %s: %w", u.name, err))
 	}
-	gen = append([]string{u.commit + "  " + u.name}, gen...)
+	gen = append([]string{shortID(u.commit) + "  " + u.name}, gen...)
 	if policy == "direct" {
 		gen = withoutNested(gen)
 	}

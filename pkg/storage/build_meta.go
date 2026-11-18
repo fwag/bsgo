@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
 
 // BuildMeta is the dependency meta of one build: the lines the build was
@@ -54,10 +55,12 @@ func (s *MemoryStore) SaveBuildMetas(_ context.Context, project, repo, arch stri
 	defer s.mu.Unlock()
 	key := project + "/" + repo + "/" + arch
 	if s.metas[key] == nil {
-		s.metas[key] = map[string][]string{}
+		s.metas[key] = map[string]storedMeta{}
 	}
 	for _, m := range metas {
-		s.metas[key][m.Hash] = append([]string(nil), m.Lines...)
+		if _, ok := s.metas[key][m.Hash]; !ok {
+			s.metas[key][m.Hash] = storedMeta{lines: append([]string(nil), m.Lines...), at: time.Now()}
+		}
 	}
 	return nil
 }
@@ -68,15 +71,20 @@ func (s *MemoryStore) GetBuildMetas(_ context.Context, project, repo, arch strin
 	defer s.mu.RUnlock()
 	var out []BuildMeta
 	for _, h := range hashes {
-		if lines, ok := s.metas[project+"/"+repo+"/"+arch][h]; ok {
-			out = append(out, BuildMeta{Hash: h, Lines: append([]string(nil), lines...)})
+		if m, ok := s.metas[project+"/"+repo+"/"+arch][h]; ok {
+			out = append(out, BuildMeta{Hash: h, Lines: append([]string(nil), m.lines...)})
 		}
 	}
 	return out, nil
 }
 
+type storedMeta struct {
+	lines []string
+	at    time.Time
+}
+
 // PruneBuildMetas implements Store.
-func (s *MemoryStore) PruneBuildMetas(_ context.Context, project, repo, arch string, keep []string) error {
+func (s *MemoryStore) PruneBuildMetas(_ context.Context, project, repo, arch string, keep []string, before time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := project + "/" + repo + "/" + arch
@@ -84,8 +92,8 @@ func (s *MemoryStore) PruneBuildMetas(_ context.Context, project, repo, arch str
 	for _, h := range keep {
 		keepSet[h] = true
 	}
-	for h := range s.metas[key] {
-		if !keepSet[h] {
+	for h, m := range s.metas[key] {
+		if !keepSet[h] && m.at.Before(before) {
 			delete(s.metas[key], h)
 		}
 	}

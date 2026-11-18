@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -68,10 +69,10 @@ func (s *PostgresStore) GetBuildMetas(ctx context.Context, project, repo, arch s
 }
 
 // PruneBuildMetas deletes the metas of one prpa that are not in keep.
-func (s *PostgresStore) PruneBuildMetas(ctx context.Context, project, repo, arch string, keep []string) error {
+func (s *PostgresStore) PruneBuildMetas(ctx context.Context, project, repo, arch string, keep []string, before time.Time) error {
 	if _, err := s.pool.Exec(ctx, `DELETE FROM build_meta
-		WHERE project = $1 AND repo = $2 AND arch = $3 AND NOT (hash = ANY($4))`,
-		project, repo, arch, keep); err != nil {
+		WHERE project = $1 AND repo = $2 AND arch = $3 AND NOT (hash = ANY($4)) AND created_at < $5`,
+		project, repo, arch, keep, before); err != nil {
 		return fmt.Errorf("failed to prune build metas: %w", err)
 	}
 	return nil

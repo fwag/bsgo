@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
@@ -33,7 +34,7 @@ func TestPostgresBuildMetas(t *testing.T) {
 	if other, err := store.GetBuildMetas(ctx, prj, "std", "i586", []string{"a"}); err != nil || len(other) != 0 {
 		t.Errorf("another arch sees %+v, %v", other, err)
 	}
-	if err := store.PruneBuildMetas(ctx, prj, "std", "x86_64", []string{"b"}); err != nil {
+	if err := store.PruneBuildMetas(ctx, prj, "std", "x86_64", []string{"b"}, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	left, err := store.GetBuildMetas(ctx, prj, "std", "x86_64", []string{"a", "b"})

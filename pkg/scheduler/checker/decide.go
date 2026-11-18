@@ -143,6 +143,9 @@ func (ps *pass) setDecision(u *unit, state, details string) *decision {
 // decideUnit ports BSSched::BuildJob::Package::check for one unit. It reports
 // false when the unit is postponed to the second pass of its cycle.
 func (ps *pass) decideUnit(u *unit, pass int) bool {
+	if ps.keepJob(u) {
+		return true
+	}
 	if u.expErr != nil {
 		state, details := ps.expansionVerdict(u)
 		ps.setDecision(u, state, details)
@@ -165,6 +168,28 @@ func (ps *pass) decideUnit(u *unit, pass int) bool {
 		return false
 	}
 	ps.settle(u, row, m, forced)
+	return true
+}
+
+// keepJob keeps the job of a unit that is already scheduled or running for the
+// current source, whatever its dependencies did meanwhile. OBS names a job
+// after the source (BSSched/Checker.pm "already scheduled") and only kills it
+// when the source changes or the package is excluded or disabled: a change of
+// the meta alone is looked at again when the build has finished. Cancelling
+// on every meta change would keep the producers of a dependency cycle from
+// ever finishing, and their metas from ever settling. A forced rebuild
+// request supersedes the job.
+func (ps *pass) keepJob(u *unit) bool {
+	row := ps.row(u)
+	if row == nil || !inFlight(row.State) || row.SourceCommit != u.commit || ps.isForced(u) {
+		return false
+	}
+	var job *JobSpec
+	if row.State == storage.StateScheduled {
+		job = ps.resendJob(u, row)
+	}
+	ps.out.add(&decision{unit: u, state: row.State, details: row.Details, keep: true, job: job})
+	ps.out.notready[u] = true
 	return true
 }
 
@@ -291,10 +316,16 @@ func (ps *pass) settle(u *unit, row *storage.PackageBuildState, m *metaResult, f
 
 // resendJob rebuilds the job of a unit that is still scheduled so it can be
 // emitted again. The dispatch queue is not persistent; re-emitting on every
-// pass restores it after a server restart. The job ID and the release
-// counters are deterministic for the same meta and attempt, and the sink
-// ignores job IDs it already has, so a resend changes nothing otherwise.
-func (ps *pass) resendJob(u *unit, row *storage.PackageBuildState, meta string) *JobSpec {
+// pass restores it after a server restart. The job carries the meta it was
+// scheduled with, whose tree is stored, so the result matches the row. The job
+// ID and the release counters are deterministic for the same meta and
+// attempt, and the sink ignores job IDs it already has, so a resend changes
+// nothing otherwise.
+func (ps *pass) resendJob(u *unit, row *storage.PackageBuildState) *JobSpec {
+	meta := row.Meta
+	if meta == "" {
+		meta = ps.meta(u).hash
+	}
 	job, v := ps.newJob(u, meta, row.Details)
 	if v != nil {
 		return nil
@@ -317,14 +348,6 @@ func (ps *pass) settleExisting(u *unit, row *storage.PackageBuildState, meta str
 		if row.Meta == meta {
 			d.cancel = ""
 		}
-	case row.Meta == meta && inFlight(row.State):
-		var job *JobSpec
-		if row.State == storage.StateScheduled {
-			job = ps.resendJob(u, row, meta)
-		}
-		d := &decision{unit: u, state: row.State, details: row.Details, keep: true, job: job}
-		ps.out.add(d)
-		ps.out.notready[u] = true
 	case row.Meta == meta && row.State == storage.StateFailed:
 		ps.out.add(&decision{unit: u, state: storage.StateFailed, details: row.Details})
 	default:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
@@ -67,7 +68,14 @@ func TestMemoryBuildMetas(t *testing.T) {
 	if got := hashes("x86_64", "a", "c", "unknown"); !slices.Equal(got, []string{"a", "c"}) {
 		t.Errorf("got %v, want a and c", got)
 	}
-	if err := s.PruneBuildMetas(ctx, "p", "r", "x86_64", []string{"b"}); err != nil {
+	// Within the grace period nothing is pruned.
+	if err := s.PruneBuildMetas(ctx, "p", "r", "x86_64", []string{"b"}, time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := hashes("x86_64", "a", "b", "c"); !slices.Equal(got, []string{"a", "b", "c"}) {
+		t.Errorf("pruned within the grace period: %v", got)
+	}
+	if err := s.PruneBuildMetas(ctx, "p", "r", "x86_64", []string{"b"}, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if got := hashes("x86_64", "a", "b", "c"); !slices.Equal(got, []string{"b"}) {
