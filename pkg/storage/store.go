@@ -237,6 +237,9 @@ type Store interface {
 }
 
 type MemoryStore struct {
+	// Clock stamps the stored build metas; nil means time.Now.
+	Clock func() time.Time
+
 	mu         sync.RWMutex
 	projects   map[string]*manifest.ProjectManifest
 	packages   map[string]map[string]*manifest.PackageManifest

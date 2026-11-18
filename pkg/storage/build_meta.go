@@ -59,7 +59,7 @@ func (s *MemoryStore) SaveBuildMetas(_ context.Context, project, repo, arch stri
 	}
 	for _, m := range metas {
 		if _, ok := s.metas[key][m.Hash]; !ok {
-			s.metas[key][m.Hash] = storedMeta{lines: append([]string(nil), m.Lines...), at: time.Now()}
+			s.metas[key][m.Hash] = storedMeta{lines: append([]string(nil), m.Lines...), at: s.now()}
 		}
 	}
 	return nil
@@ -98,4 +98,11 @@ func (s *MemoryStore) PruneBuildMetas(_ context.Context, project, repo, arch str
 		}
 	}
 	return nil
+}
+
+func (s *MemoryStore) now() time.Time {
+	if s.Clock != nil {
+		return s.Clock()
+	}
+	return time.Now()
 }

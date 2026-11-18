@@ -62,7 +62,7 @@ func newMetaResult(lines []string) *metaResult {
 // retrigger itself, while a change deep below a cycle member still reaches
 // the other members through the lines of that member.
 func (ps *pass) meta(u *unit) *metaResult {
-	first := shortID(u.commit) + "  " + u.name
+	first := u.commit + "  " + u.name
 	policy := ps.target.Flags.EffectiveRebuild()
 	if policy == "local" {
 		return newMetaResult([]string{first})
@@ -84,7 +84,7 @@ func (ps *pass) genLines(u *unit, policy string, deps []depSource) []string {
 	if err != nil {
 		ps.fail(fmt.Errorf("meta of %s: %w", u.name, err))
 	}
-	gen = append([]string{shortID(u.commit) + "  " + u.name}, gen...)
+	gen = append([]string{u.commit + "  " + u.name}, gen...)
 	if policy == "direct" {
 		gen = withoutNested(gen)
 	}
@@ -136,6 +136,7 @@ func withoutNested(lines []string) []string {
 // built in this prpa, the meta its producer was last built with.
 type depSource struct {
 	pkg solv.ResolvedPackage
+	id  string // identity of the binary, see binaryID
 	// metaHash and tree are empty for binaries that count by their sha256.
 	metaHash string
 	tree     []string
@@ -146,7 +147,7 @@ func (d depSource) token() string {
 	if d.tree != nil {
 		return "L " + d.pkg.Name + " " + d.metaHash
 	}
-	return "P " + d.pkg.Name + " " + binaryID(d.pkg)
+	return "P " + d.pkg.Name + " " + d.id
 }
 
 // metaDeps returns the build dependencies that take part in the meta of u,
@@ -161,7 +162,7 @@ func (ps *pass) metaDeps(u *unit, policy string) []depSource {
 		if prod == u {
 			continue
 		}
-		d := depSource{pkg: p}
+		d := depSource{pkg: p, id: ps.binaryID(p)}
 		d.metaHash, d.tree = ps.producerMeta(prod, p.Name)
 		out = append(out, d)
 	}
@@ -185,12 +186,18 @@ func (ps *pass) producerMeta(prod *unit, name string) (string, []string) {
 }
 
 // binaryID is the identity of a binary: its sha256, or when the repository
-// metadata has none a hash of what identifies the file otherwise.
-func binaryID(p solv.ResolvedPackage) string {
+// metadata has none a hash of what identifies the file otherwise, with the
+// repository named by project and repository or URL, not by pool position.
+func (ps *pass) binaryID(p solv.ResolvedPackage) string {
 	if p.SHA256 != "" {
 		return p.SHA256
 	}
-	sum := sha256.Sum256([]byte(strings.Join([]string{strconv.Itoa(p.Repo), p.Name, p.EVR, p.Arch, p.Location}, "\x00")))
+	repo := ""
+	if p.Repo >= 0 && p.Repo < len(ps.sources) {
+		src := ps.sources[p.Repo]
+		repo = src.elem.Project + "/" + src.elem.Repo + "|" + src.url
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{repo, p.Name, p.EVR, p.Arch, p.Location}, "\x00")))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -225,7 +232,7 @@ func (ps *pass) depLines(u *unit, deps []depSource) []string {
 	var lines []string
 	for _, d := range deps {
 		if d.tree == nil {
-			lines = append(lines, shortID(binaryID(d.pkg))+"  "+d.pkg.Name)
+			lines = append(lines, shortID(d.id)+"  "+d.pkg.Name)
 			continue
 		}
 		lines = addMeta(lines, d.tree, d.pkg.Name, u.name)

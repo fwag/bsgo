@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/openSUSE/bsgo/pkg/bininfo"
+	"github.com/openSUSE/bsgo/pkg/solv"
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
@@ -299,57 +300,48 @@ func TestSourceChangeCancelsRunningJob(t *testing.T) {
 	}
 }
 
-// TestMetaIDsAreCanonical: every id in a stored meta has the same width, for
-// binaries from the path (sha256) and for local producers (source commit),
-// whether or not the producer's tree is available.
-func TestMetaIDsAreCanonical(t *testing.T) {
-	check := func(w *world) {
-		t.Helper()
-		var hashes []string
-		for _, u := range []string{"a", "b", "c", "d"} {
-			hashes = append(hashes, w.state(u).BuiltMeta)
-		}
-		metas, err := w.store.GetBuildMetas(context.Background(), testProject, testRepo, testArch, hashes)
-		if err != nil || len(metas) == 0 {
-			t.Fatalf("metas %v, %v", metas, err)
-		}
-		for _, m := range metas {
-			for _, l := range m.Lines {
-				if id, _, _ := strings.Cut(l, "  "); len(id) != 32 {
-					t.Errorf("line %q has a %d digit id", l, len(id))
-				}
-			}
-		}
-	}
+// TestMetaIsStableWithoutTrees: whether or not the trees of the producers are
+// in the store, the meta is a function of the inputs: after the trees are lost
+// the units rebuild once against sha256 lines, and then stay quiet across
+// restarts.
+func TestMetaIsStableWithoutTrees(t *testing.T) {
 	w := abcWorld(t)
 	w.rounds(10)
-	check(w)
-	// Without the trees of the producers the binaries count by their sha256.
 	err := w.store.PruneBuildMetas(context.Background(), testProject, testRepo, testArch, []string{"none"}, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	w.restart()
 	w.rounds(10)
-	if metas, _ := w.store.GetBuildMetas(context.Background(), testProject, testRepo, testArch, []string{w.state("d").BuiltMeta}); len(metas) == 0 {
-		t.Fatal("no meta saved for the rebuilt d")
+	before := map[string]string{}
+	for _, u := range []string{"a", "b", "c", "d"} {
+		before[u] = w.state(u).BuiltMeta
 	}
-	for _, m := range mustMetas(t, w, w.state("d").BuiltMeta) {
-		for _, l := range m.Lines {
-			if id, _, _ := strings.Cut(l, "  "); len(id) != 32 {
-				t.Errorf("fallback line %q has a %d digit id", l, len(id))
-			}
+	w.restart()
+	w.run()
+	w.wantJobs()
+	for u, h := range before {
+		if got := w.state(u).BuiltMeta; got != h {
+			t.Errorf("%s: meta changed across a restart", u)
 		}
 	}
 }
 
-func mustMetas(t *testing.T, w *world, hash string) []storage.BuildMeta {
-	t.Helper()
-	metas, err := w.store.GetBuildMetas(context.Background(), testProject, testRepo, testArch, []string{hash})
-	if err != nil {
-		t.Fatal(err)
+// TestKeptJobThatCannotBeResentIsEvaluated: a scheduled job exists in the
+// dispatcher's memory only. After a restart in which one of its dependencies
+// vanished the job cannot be recreated, so the unit must not stay scheduled.
+func TestKeptJobThatCannotBeResentIsEvaluated(t *testing.T) {
+	w := newWorld(t, []bininfo.BinInfo{binary("ext", "0")})
+	w.pkg("p", []string{"ext"})
+	w.run()
+	w.wantJobs("p")
+	w.deps.DoD.(*fakeDoD).blob = solv.RepoBlob{Name: "boot", Data: rpmmdSolv(t, []bininfo.BinInfo{binary("other", "0")})}
+	w.restart()
+	w.run()
+	w.wantJobs()
+	if st := w.state("p"); st.State != storage.StateUnresolvable {
+		t.Errorf("p is %s %q, want unresolvable", st.State, st.Details)
 	}
-	return metas
 }
 
 func TestBlockedDetailListIsAbbreviated(t *testing.T) {

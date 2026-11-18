@@ -112,7 +112,7 @@ func (ps *pass) saveMetas() error {
 		keep[st.Meta], keep[st.BuiltMeta] = true, true
 	}
 	for _, d := range ps.out.list {
-		if d.job == nil || d.keep || d.lines == nil {
+		if d.job == nil || d.lines == nil {
 			continue
 		}
 		keep[d.meta] = true

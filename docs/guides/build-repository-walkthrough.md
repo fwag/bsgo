@@ -229,13 +229,17 @@ A job that is scheduled or running for the current source is never cancelled
 because the meta changed meanwhile (OBS names jobs after the source and only
 kills them when the source changes or the package is excluded or disabled). It
 finishes, and the next pass compares its meta with the current one. Cancelling
-instead would keep the members of a cycle from ever finishing. A meta is kept
-for 48 hours after the last state stopped referring to it, because a job that
-was superseded may still finish.
+instead would keep the members of a cycle from ever finishing. A meta is only
+pruned once no state refers to it and it was saved more than 48 hours ago,
+because a job that was superseded may still finish. A scheduled job is
+re-emitted after a restart with its original meta but with the build
+dependencies expanded again (OBS keeps the job file); if the job cannot be
+recreated any more, the unit is evaluated normally.
 
 Upgrade note: the meta hash format changed (`bsgo-meta-v2`), so the first pass
 after the upgrade sees "meta change" for every unit that was built before, and
-rebuilds it once. In-flight jobs are cancelled and re-created. A few more rounds
+rebuilds it once. Jobs already scheduled or running for an unchanged source are
+not cancelled: they finish and are then compared again. A few more rounds
 may follow while the trees of the old builds are replaced by real ones; after
 that only source or external binary changes trigger rebuilds. The parallel build
 of cycle members is intentional (OBS builds them one after another); the

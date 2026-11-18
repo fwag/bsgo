@@ -190,13 +190,14 @@ func TestEvictKeepsHalf(t *testing.T) {
 }
 
 func TestBinaryID(t *testing.T) {
-	if got := binaryID(solv.ResolvedPackage{Name: "a", SHA256: "abc"}); got != "abc" {
+	if got := (&pass{}).binaryID(solv.ResolvedPackage{Name: "a", SHA256: "abc"}); got != "abc" {
 		t.Errorf("got %q, want the sha256", got)
 	}
+	ps := &pass{}
 	a := solv.ResolvedPackage{Name: "a", EVR: "1-1", Arch: "x86_64", Location: "x/a.rpm"}
 	b := a
 	b.EVR = "2-1"
-	if binaryID(a) == "" || binaryID(a) == binaryID(b) {
+	if ps.binaryID(a) == "" || ps.binaryID(a) == ps.binaryID(b) {
 		t.Error("fallback id must be stable and depend on the version")
 	}
 }

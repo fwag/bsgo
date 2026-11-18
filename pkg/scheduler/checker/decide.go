@@ -184,11 +184,18 @@ func (ps *pass) keepJob(u *unit) bool {
 	if row == nil || !inFlight(row.State) || row.SourceCommit != u.commit || ps.isForced(u) {
 		return false
 	}
-	var job *JobSpec
+	d := &decision{unit: u, state: row.State, details: row.Details, keep: true}
 	if row.State == storage.StateScheduled {
-		job = ps.resendJob(u, row)
+		// A scheduled job lives in the dispatcher's memory only; the resend
+		// restores it. When it cannot be recreated (a dependency vanished) the
+		// unit must be evaluated normally instead of waiting for a job that
+		// exists nowhere.
+		var ok bool
+		if d.job, d.meta, d.lines, ok = ps.resendJob(u, row); !ok {
+			return false
+		}
 	}
-	ps.out.add(&decision{unit: u, state: row.State, details: row.Details, keep: true, job: job})
+	ps.out.add(d)
 	ps.out.notready[u] = true
 	return true
 }
@@ -320,22 +327,28 @@ func (ps *pass) settle(u *unit, row *storage.PackageBuildState, m *metaResult, f
 // scheduled with, whose tree is stored, so the result matches the row. The job
 // ID and the release counters are deterministic for the same meta and
 // attempt, and the sink ignores job IDs it already has, so a resend changes
-// nothing otherwise.
-func (ps *pass) resendJob(u *unit, row *storage.PackageBuildState) *JobSpec {
-	meta := row.Meta
+// nothing otherwise. The build dependencies are expanded again from the
+// current repositories (OBS keeps the job file; bsgo does not persist them),
+// so after a restart a resent job can build against newer binaries than the
+// meta it carries describes; the next pass compares and rebuilds if that
+// matters. It reports false when the job cannot be created any more.
+func (ps *pass) resendJob(u *unit, row *storage.PackageBuildState) (job *JobSpec, meta string, lines []string, ok bool) {
+	meta = row.Meta
 	if meta == "" {
-		meta = ps.meta(u).hash
+		// A row without a meta: schedule with the current one and store its tree.
+		m := ps.meta(u)
+		meta, lines = m.hash, m.text()
 	}
 	job, v := ps.newJob(u, meta, row.Details)
 	if v != nil {
-		return nil
+		return nil, "", nil, false
 	}
 	// The recomputed attempt can differ from the stored job's (a forced
 	// rebuild request is consumed once its job was emitted). Keep the stored
 	// job ID: the dispatcher dedupes it, a queued or running attempt is not
 	// superseded, and the worker's result still matches the row.
 	job.JobID = row.JobID
-	return job
+	return job, meta, lines, true
 }
 
 // settleExisting handles the cases where no new job is needed. It reports
