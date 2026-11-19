@@ -13,6 +13,7 @@ func producer(unit, state string) storage.BlockedProducer {
 
 func TestBlockedReasonSummary(t *testing.T) {
 	cycle := storage.BlockedCycle{InFlight: []storage.BlockedProducer{producer("gcc15", "building")}}
+	blockedToo := storage.BlockedCycle{BlockedMembers: 33, InFlight: []storage.BlockedProducer{producer("gcc15", "building")}}
 	tests := []struct {
 		name string
 		r    storage.BlockedReason
@@ -22,6 +23,10 @@ func TestBlockedReasonSummary(t *testing.T) {
 			"blocked: perl (scheduled)"},
 		{"cycle only", storage.BlockedReason{Cycles: []storage.BlockedCycle{cycle}},
 			"blocked: dependency cycle not finished (gcc15 building)"},
+		{"blocked members are counted", storage.BlockedReason{Cycles: []storage.BlockedCycle{blockedToo}},
+			"blocked: dependency cycle not finished (gcc15 building; 33 blocked)"},
+		{"nothing in flight", storage.BlockedReason{Cycles: []storage.BlockedCycle{{BlockedMembers: 2}}},
+			"blocked: dependency cycle not finished (none in flight; 2 blocked)"},
 		{"mixed", storage.BlockedReason{
 			Producers: []storage.BlockedProducer{producer("libxml2", "building")},
 			Cycles:    []storage.BlockedCycle{cycle}},

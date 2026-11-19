@@ -45,7 +45,7 @@ func TestBlockedByCycleOnly(t *testing.T) {
 	w.run()
 	wantReason(t, w, "z", &storage.BlockedReason{Cycles: []storage.BlockedCycle{{
 		Held:     []storage.BlockedProducer{prod("x", "succeeded", "x")},
-		InFlight: []storage.BlockedProducer{prod("y", "scheduled")},
+		InFlight: []storage.BlockedProducer{prod("y", "scheduled")}, Members: 2,
 	}}})
 	if got, want := w.state("z").Details, "blocked: dependency cycle not finished (y scheduled)"; got != want {
 		t.Errorf("details %q, want %q", got, want)
@@ -121,5 +121,58 @@ func TestBlockedByUnresolvedBinaryKeepsOBSText(t *testing.T) {
 	st := w.state("app")
 	if st.State != storage.StateUnresolvable || st.Blocked != nil {
 		t.Errorf("app is %s %q reason %+v", st.State, st.Details, st.Blocked)
+	}
+}
+
+// TestCycleReasonCountsBlockedMembers: a member of the cycle that is blocked
+// itself is no cause, only counted; building members come before scheduled.
+func TestCycleReasonCountsBlockedMembers(t *testing.T) {
+	w := newWorld(t, []bininfo.BinInfo{binary("x", "0"), binary("y", "0"), binary("q", "0")})
+	w.pkg("x", []string{"y"})
+	w.pkg("y", []string{"x"})
+	w.pkg("z", []string{"x"})
+	w.run()
+	jobs := w.sink.take()
+	for _, j := range jobs {
+		if j.Package == "x" {
+			w.finish(j, binary("x", "1"))
+		}
+	}
+	// y is building, not just scheduled.
+	y := w.state("y")
+	y.State = storage.StateBuilding
+	if err := w.store.UpsertBuildState(context.Background(), y); err != nil {
+		t.Fatal(err)
+	}
+	w.run()
+	got := w.state("z")
+	want := "blocked: dependency cycle not finished (y building)"
+	if got.Details != want {
+		t.Fatalf("details %q, want %q", got.Details, want)
+	}
+	if c := got.Blocked.Cycles[0]; c.Members != 2 || c.BlockedMembers != 0 {
+		t.Errorf("cycle %+v", c)
+	}
+}
+
+// TestCycleWithOnlyBlockedMembers: y is blocked by a plain producer, so the
+// cycle has nothing in flight but one blocked member.
+func TestCycleWithOnlyBlockedMembers(t *testing.T) {
+	w := newWorld(t, []bininfo.BinInfo{binary("x", "0"), binary("y", "0"), binary("q", "0")})
+	w.pkg("x", []string{"y"})
+	w.pkg("y", []string{"x", "q"})
+	w.pkg("q", nil)
+	w.pkg("z", []string{"x"})
+	w.run()
+	for _, j := range w.sink.take() {
+		if j.Package == "x" {
+			w.finish(j, binary("x", "1"))
+		}
+	}
+	w.run()
+	got := w.state("z")
+	want := "blocked: dependency cycle not finished (none in flight; 1 blocked)"
+	if got.State != storage.StateBlocked || got.Details != want {
+		t.Fatalf("z is %s %q, want %q", got.State, got.Details, want)
 	}
 }

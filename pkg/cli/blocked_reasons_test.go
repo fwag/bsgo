@@ -18,8 +18,14 @@ const whyProject = "home:why"
 var cycleReason = &storage.BlockedReason{
 	Producers: []storage.BlockedProducer{{Unit: "libxml2", State: "building", Binaries: []string{"libxml2-devel"}}},
 	Cycles: []storage.BlockedCycle{{
-		Held:     []storage.BlockedProducer{{Unit: "zlib", State: "succeeded", Binaries: []string{"zlib-devel", "zlib-tools"}}},
-		InFlight: []storage.BlockedProducer{{Unit: "gcc15", State: "building"}},
+		Held: []storage.BlockedProducer{{Unit: "zlib", State: "succeeded", Binaries: []string{"zlib-devel", "zlib-tools"}}},
+		InFlight: []storage.BlockedProducer{
+			{Unit: "gcc15", State: "building"}, {Unit: "aaa_base", State: "scheduled"},
+			{Unit: "bash", State: "scheduled"}, {Unit: "cmake", State: "scheduled"},
+			{Unit: "diffutils", State: "scheduled"}, {Unit: "expat", State: "scheduled"},
+			{Unit: "flex", State: "scheduled"}, {Unit: "gawk", State: "scheduled"},
+		},
+		Members: 40, BlockedMembers: 31,
 	}},
 }
 
@@ -76,8 +82,8 @@ func TestProjectStatusBlockedListIsCropped(t *testing.T) {
 		{"all", []string{"--all"},
 			[]string{"Blocked packages (20)", "app19 "}, []string{"shown"}},
 		{"verbose", []string{"--limit", "1", "--verbose"},
-			[]string{"libxml2 (building) provides libxml2-devel", "in flight: gcc15 building",
-				"held only by the cycle: zlib (succeeded) provides zlib-devel, zlib-tools"}, nil},
+			[]string{"libxml2 (building): libxml2-devel", "held by unfinished dependency cycle (40 members): building: gcc15; scheduled: aaa_base, bash, cmake, diffutils, expat, flex, gawk; 31 blocked",
+				"zlib (succeeded): zlib-devel, zlib-tools"}, nil},
 		{"short list needs no hint", []string{"--state", "unresolvable"},
 			[]string{"Unresolvable packages (1)"}, []string{"shown"}},
 	}
@@ -152,12 +158,20 @@ func TestPackageWhyBlockedText(t *testing.T) {
 	}
 	for _, w := range []string{
 		"standard/x86_64: blocked",
-		"libxml2-devel <- libxml2 (building)",
-		"zlib-devel <- zlib (succeeded): not ready only because its dependency cycle is not finished; in flight: gcc15 building",
+		"- libxml2 (building): libxml2-devel",
+		"held by unfinished dependency cycle (40 members): building: gcc15; scheduled: aaa_base, bash, cmake, diffutils, expat, ... (+2 more); 31 blocked",
+		"- zlib (succeeded): zlib-devel, zlib-tools",
 	} {
 		if !strings.Contains(out, w) {
 			t.Errorf("output lacks %q:\n%s", w, out)
 		}
+	}
+	if n := strings.Count(out, "dependency cycle"); n != 1 {
+		t.Errorf("cycle described %d times, want once:\n%s", n, out)
+	}
+	verbose, err := runWhyCLI(t, whyStore(t, 1), "package", "why", whyProject+"/app00", "--verbose")
+	if err != nil || !strings.Contains(verbose, "scheduled: aaa_base, bash, cmake, diffutils, expat, flex, gawk;") {
+		t.Errorf("--verbose does not name every member (%v):\n%s", err, verbose)
 	}
 }
 

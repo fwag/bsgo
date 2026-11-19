@@ -65,16 +65,18 @@ type PackageWhyResult struct {
 
 func newPackageWhyCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
 	var filter storage.BuildStateFilter
+	var verbose bool
 	cmd := &cobra.Command{
 		Use:   "why <project>/<package>[:<flavor>]",
 		Short: "Explain why a package is in its build state",
 		Long: `Explain the persisted build state of one package, for every repository and
 architecture (narrow it with --repo and --arch).
 
-  blocked       every blocking binary package, the source package that
-                produces it and that package's state. A producer that is built
-                but not ready only because its dependency cycle is not
-                finished says so and names the cycle members in flight.
+  blocked       the source packages (with state and the binaries needed) that
+                are not ready by themselves, then each unfinished dependency
+                cycle once: its members building or scheduled (--verbose names
+                all of them) and the source packages it holds back. --json has
+                the complete structure, including one entry per blocking binary.
   unresolvable  the dependencies nothing provides.
   scheduled     why the build was scheduled (new build, source change, meta
                 change, forced rebuild).
@@ -85,6 +87,7 @@ With --json the command prints one deterministic JSON document on stdout:
 blocked, missing, problems, schedule_reason, ...}]}. Errors go to stderr.`,
 		Example: `  bsgo package why SUSE:SLFO:1.2/7zip
   bsgo package why SUSE:SLFO:1.2/python-base:python313 --arch x86_64 --repo standard
+  bsgo package why SUSE:SLFO:1.2/7zip --verbose
   bsgo package why SUSE:SLFO:1.2/7zip --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -100,11 +103,12 @@ blocked, missing, problems, schedule_reason, ...}]}. Errors go to stderr.`,
 			for _, e := range res.Entries {
 				quiet = append(quiet, fmt.Sprintf("%s/%s %s", e.Repo, e.Arch, e.State))
 			}
-			return Render(cmd.OutOrStdout(), formatPackageWhy(res), res, strings.Join(quiet, "\n"), *opts)
+			return Render(cmd.OutOrStdout(), formatPackageWhy(res, verbose), res, strings.Join(quiet, "\n"), *opts)
 		},
 	}
 	cmd.Flags().StringVar(&filter.Repo, "repo", "", "Only explain this repository (build target)")
 	cmd.Flags().StringVar(&filter.Arch, "arch", "", "Only explain this architecture")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Name every member of an unfinished dependency cycle, not only the first few per state")
 	return cmd
 }
 
@@ -200,7 +204,7 @@ func parseUnresolvable(details string) (missing []MissingDependency, problems []
 	return missing, problems
 }
 
-func formatPackageWhy(res *PackageWhyResult) string {
+func formatPackageWhy(res *PackageWhyResult, verbose bool) string {
 	var sb strings.Builder
 	name := res.Package
 	if res.Flavor != "" {
@@ -209,15 +213,15 @@ func formatPackageWhy(res *PackageWhyResult) string {
 	sb.WriteString(titleStyle.Render(fmt.Sprintf("Why: %s/%s", res.Project, name)) + "\n")
 	for _, e := range res.Entries {
 		fmt.Fprintf(&sb, "\n%s\n", lipgloss.NewStyle().Bold(true).Render(fmt.Sprintf("%s/%s: %s", e.Repo, e.Arch, e.State)))
-		writeWhyEntry(&sb, e)
+		writeWhyEntry(&sb, e, verbose)
 	}
 	return sb.String()
 }
 
-func writeWhyEntry(sb *strings.Builder, e PackageWhyEntry) {
+func writeWhyEntry(sb *strings.Builder, e PackageWhyEntry, verbose bool) {
 	switch e.State {
 	case storage.StateBlocked:
-		writeWhyBlocked(sb, e)
+		writeWhyBlocked(sb, e, verbose)
 	case storage.StateUnresolvable:
 		for _, m := range e.Missing {
 			line := "nothing provides " + m.Requirement
@@ -238,17 +242,21 @@ func writeWhyEntry(sb *strings.Builder, e PackageWhyEntry) {
 	}
 }
 
-func writeWhyBlocked(sb *strings.Builder, e PackageWhyEntry) {
+func writeWhyBlocked(sb *strings.Builder, e PackageWhyEntry, verbose bool) {
 	if e.Blocked == nil {
 		fmt.Fprintf(sb, "  %s\n  (no structured reason stored; the next checker pass records it)\n", e.Details)
 		return
 	}
-	sb.WriteString("  waiting for these binary packages:\n")
-	for _, b := range e.BlockedBy {
-		line := fmt.Sprintf("  - %s <- %s (%s)", b.Binary, b.Unit, b.State)
-		if b.CycleOnly {
-			line += ": not ready only because its dependency cycle is not finished; in flight: " + membersText(b.CycleInFlight)
+	if len(e.Blocked.Producers) > 0 {
+		sb.WriteString("  waiting for source packages:\n")
+		for _, p := range e.Blocked.Producers {
+			fmt.Fprintf(sb, "  - %s\n", producerText(p))
 		}
-		sb.WriteString(line + "\n")
+	}
+	for _, c := range e.Blocked.Cycles {
+		fmt.Fprintf(sb, "  %s\n", cycleHeading(c, verbose))
+		for _, h := range c.Held {
+			fmt.Fprintf(sb, "  - %s\n", producerText(h))
+		}
 	}
 }

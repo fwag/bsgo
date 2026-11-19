@@ -31,7 +31,7 @@ func (ps *pass) blockReason(binaries []string) *storage.BlockedReason {
 	sortProducers(reason.Producers)
 	for g, members := range held {
 		sortProducers(members)
-		reason.Cycles = append(reason.Cycles, storage.BlockedCycle{Held: members, InFlight: ps.inFlightMembers(g)})
+		reason.Cycles = append(reason.Cycles, ps.cycleReason(g, members))
 	}
 	sort.Slice(reason.Cycles, func(i, j int) bool {
 		return reason.Cycles[i].Held[0].Unit < reason.Cycles[j].Held[0].Unit
@@ -39,17 +39,41 @@ func (ps *pass) blockReason(binaries []string) *storage.BlockedReason {
 	return reason
 }
 
-// inFlightMembers lists the members of a cycle that are not ready by
-// themselves: the ones being built or waiting for something.
-func (ps *pass) inFlightMembers(g *group) []storage.BlockedProducer {
-	var out []storage.BlockedProducer
+// cycleReason describes an unfinished cycle: the members being worked on,
+// building first, and how many are blocked themselves.
+func (ps *pass) cycleReason(g *group, held []storage.BlockedProducer) storage.BlockedCycle {
+	c := storage.BlockedCycle{Held: held, InFlight: []storage.BlockedProducer{}, Members: len(g.members)}
 	for _, m := range g.members {
-		if ps.out.notready[m] && !ps.out.held[m] {
-			out = append(out, storage.BlockedProducer{Unit: m.name, State: ps.out.state[m]})
+		state := ps.out.state[m]
+		switch {
+		case state == storage.StateBlocked:
+			c.BlockedMembers++
+		case ps.out.notready[m] && !ps.out.held[m]:
+			c.InFlight = append(c.InFlight, storage.BlockedProducer{Unit: m.name, State: state})
 		}
 	}
-	sortProducers(out)
-	return out
+	sort.Slice(c.InFlight, func(i, j int) bool {
+		a, b := c.InFlight[i], c.InFlight[j]
+		if ra, rb := flightRank(a.State), flightRank(b.State); ra != rb {
+			return ra < rb
+		}
+		return a.Unit < b.Unit
+	})
+	return c
+}
+
+// flightRank orders the states of members in flight: building is the most
+// telling one.
+func flightRank(state string) int {
+	switch state {
+	case storage.StateBuilding:
+		return 0
+	case storage.StateSigning, storage.StateFinished:
+		return 1
+	case storage.StateDispatching:
+		return 2
+	}
+	return 3
 }
 
 func sortProducers(list []storage.BlockedProducer) {
