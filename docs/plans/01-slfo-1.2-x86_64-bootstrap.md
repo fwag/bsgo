@@ -616,7 +616,8 @@ separate PR).
   inputs → outputs from the oracle, then implement in Go. Keep the oracle
   table as the unit test.
 - Error texts that users see (`nothing provides`, `have choice for`,
-  `conflict for providers of`, `blocked: a, b`) must match OBS wording. Agents
+  `conflict for providers of`, `blocked: a (building), b (scheduled)`) must match OBS wording
+  (blocked names source packages with their state; see spec 03, 3.2b). Agents
   and humans grep for them.
 - Keep cgo minimal: dependency parsing and expansion in C on libsolv, and
   everything else in Go.

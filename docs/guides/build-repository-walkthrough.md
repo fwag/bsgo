@@ -214,6 +214,19 @@ binaries of every member of the strongly connected component and added their
 source commits to the meta; every change of the membership then changed the
 meta of all members at once, which restarted the whole toolchain.)
 
+Why a package is blocked. A package is blocked while the source package that
+produces one of its build dependencies is not ready: `scheduled`, `dispatching`,
+`building`, `signing`, `blocked`, or held by a cycle. The OBS rule that a whole
+cycle is not ready while one member is makes mostly built packages (for example
+`zlib`) block their consumers only because another member (`gcc15`) is being
+built. The checker keeps these apart (`blocked.go`): a producer that is not
+ready by itself is reported with its state; producers held only by their cycle
+are reported once per cycle with the members that are in flight, as
+`blocked: dependency cycle not finished (gcc15 building)`. The structured
+reason is stored with the row (`package_build_state.blocked`) and compared on
+every pass, so a changed reason rewrites the row even when the shortened
+details stay the same. `bsgo package why` shows it per binary.
+
 Differences from OBS: sha256 instead of md5 (shortened to 128 bits in the
 lines), the members of a cycle are built in parallel instead of one by one,
 and the metas live in PostgreSQL instead of `:meta/` files. Builds made before

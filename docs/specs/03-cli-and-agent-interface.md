@@ -119,10 +119,44 @@ Reads a superproject such as `products/SLFO` with git plumbing only (`rev-parse`
 ### 3.2a Project Status (`bsgo project status`)
 
 ```bash
-bsgo project status <project> [--repo <repo>] [--arch <arch>] [--state <state>] [--json]
+bsgo project status <project> [--repo <repo>] [--arch <arch>] [--state <state>] [--limit N | --all] [--verbose] [--json]
 ```
 
-Prints the per-state package counts (including `dispatching`), the repository state of every repository and architecture, and samples of failing packages. With `--json` stdout carries one document: `counts`, the legacy summary counters, `repositories: [{"repo", "arch", "state", "details"}]` and `packages[]`. Repository states are `broken`, `building`, `blocked`, `finished`, `publishing`, `published` and `unpublished` (see spec 02, "Repository state"); `repositories` lists only repositories for which the backend recorded a state and is `[]` otherwise.
+Prints the per-state package counts (including `dispatching`), the repository state of every repository and architecture, and lists of building, failing, unresolvable, blocked and broken packages. A list shows at most `--limit` packages (default 15; `0` or `--all` lists every package) and says how many are hidden, for example `Blocked packages (15 of 1499 shown; use --all or --limit N)`; a complete list reads `Blocked packages (3)`. `--verbose` adds the full reason below each blocked package (see "Blocked reasons"). With `--json` stdout carries one document that is always complete (all packages, no cropping, independent of `--limit`, `--all` and `--verbose`): `counts`, the legacy summary counters, `repositories: [{"repo", "arch", "state", "details"}]` and `packages[]`; a blocked package carries its structured reason in `blocked`. Repository states are `broken`, `building`, `blocked`, `finished`, `publishing`, `published` and `unpublished` (see spec 02, "Repository state"); `repositories` lists only repositories for which the backend recorded a state and is `[]` otherwise.
+
+### 3.2b Blocked Reasons and `bsgo package why`
+
+A `blocked` package waits for source packages, not for binary packages. The `details` text keeps the OBS prefix and names the producing source packages (multibuild flavors as `pkg:flavor`) with their own state, sorted by name, at most three, then `+N more`:
+
+```
+blocked: libxml2 (building), perl (scheduled) +3 more
+blocked: dependency cycle not finished (gcc15 building)
+```
+
+A producer that is itself built (often `succeeded`) is still not ready while another member of its dependency cycle is scheduled or building (OBS rule: consumers wait until the whole cycle is quiet). The checker reports that as one `dependency cycle not finished (...)` item per cycle naming the members that are in flight (at most three, then `+N more`), instead of the held members. Producers that are not ready by themselves are listed before cycles. Unresolvable packages keep the OBS texts (`nothing provides X needed by Y`).
+
+The complete reason is stored in `package_build_state.blocked` (JSONB, migration 00014) and the row is rewritten whenever it changes, even when the shortened `details` do not. It is exposed as `blocked` in `bsgo project status --json` and `bsgo package why --json`:
+
+```json
+{"producers": [{"unit": "libxml2", "state": "building", "binaries": ["libxml2-devel"]}],
+ "cycles": [{"held": [{"unit": "zlib", "state": "succeeded", "binaries": ["zlib-devel"]}],
+             "in_flight": [{"unit": "gcc15", "state": "building"}]}]}
+```
+
+```bash
+bsgo package why <project>/<package>[:<flavor>] [--repo <repo>] [--arch <arch>] [--json]
+```
+
+Explains the state of one package for every repository and architecture that has a row (the filters narrow it; no row is an error):
+
+| State | Explanation |
+|-------|-------------|
+| `blocked` | every blocking binary, its producing source package and that package's state; `cycle_only` marks producers held only by their cycle together with the `cycle_in_flight` members |
+| `unresolvable` | `missing[]` (`requirement`, `needed_by`) and `problems[]` for other solver messages |
+| `scheduled` | `schedule_reason` (`new build`, `source change`, `meta change`, `forced rebuild`) |
+| other | the stored `details` |
+
+`--json` prints `{"project","package","flavor","entries":[{"repo","arch","state","details","updated_at","blocked_by","blocked","missing","problems","schedule_reason","source_commit","built_commit","meta","built_meta"}]}`; errors go to stderr. `-q` prints one `repo/arch state` line per entry. Rows written before migration 00014 have no structured reason until the next checker pass.
 
 ### 3.3 Applying a Project Directory (`bsgo project apply`)
 
