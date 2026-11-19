@@ -27,21 +27,24 @@ type jobSink struct {
 	bucket string
 
 	mu   sync.Mutex
-	seen map[string]struct{}
+	seen map[string]int32 // emitted job ID -> highest priority emitted
 }
 
 func newJobSink(js jetstream.JetStream, nc *nats.Conn, disp *dispatcher.Dispatcher, bucket string) *jobSink {
-	return &jobSink{js: js, nc: nc, disp: disp, bucket: bucket, seen: map[string]struct{}{}}
+	return &jobSink{js: js, nc: nc, disp: disp, bucket: bucket, seen: map[string]int32{}}
 }
 
 // Emit implements checker.JobSink. A job ID that was already emitted by this
 // process is ignored; across restarts the stream deduplicates by message ID.
 func (s *jobSink) Emit(ctx context.Context, spec *checker.JobSpec) error {
 	s.mu.Lock()
-	_, dup := s.seen[spec.JobID]
+	prio, dup := s.seen[spec.JobID]
+	if dup && spec.Priority > prio {
+		s.seen[spec.JobID] = spec.Priority
+	}
 	s.mu.Unlock()
 	if dup {
-		return nil
+		return s.reprioritise(spec, prio)
 	}
 	job, err := jobFromSpec(spec, s.bucket, time.Now())
 	if err != nil {
@@ -59,10 +62,26 @@ func (s *jobSink) Emit(ctx context.Context, spec *checker.JobSpec) error {
 	if len(s.seen) >= maxRemembered {
 		clear(s.seen)
 	}
-	s.seen[spec.JobID] = struct{}{}
+	s.seen[spec.JobID] = spec.Priority
 	s.mu.Unlock()
 	logf("DISPATCHER", "enqueued job %s (%s/%s %s, priority %d, %s)",
 		job.JobID, job.Project, job.Package, job.Target+"/"+job.Architecture, job.Priority, spec.Explain)
+	return nil
+}
+
+// reprioritise passes a re-emitted job to the dispatcher when its priority
+// rose (a forced rebuild request with a higher tier): the queued job takes the
+// priority, nothing is published again.
+func (s *jobSink) reprioritise(spec *checker.JobSpec, was int32) error {
+	if spec.Priority <= was {
+		return nil
+	}
+	job, err := jobFromSpec(spec, s.bucket, time.Now())
+	if err != nil {
+		return err
+	}
+	s.disp.EnqueueJob(job)
+	logf("DISPATCHER", "raised job %s priority %d -> %d", job.JobID, was, job.Priority)
 	return nil
 }
 

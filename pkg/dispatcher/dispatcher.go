@@ -158,7 +158,12 @@ func (d *Dispatcher) EnqueueJob(job *v1.BuildJob) {
 	defer d.mu.Unlock()
 
 	// Idempotent per job ID: the checker re-emits scheduled jobs on every
-	// pass to rebuild the queue after a restart.
+	// pass to rebuild the queue after a restart. A queued job only takes a
+	// higher priority (an operator boost stays when a later resend carries
+	// the computed one); no duplicate is created.
+	if d.queue.Raise(job.JobID, job.Priority) {
+		return
+	}
 	if _, dispatched := d.dispatchedJobs[job.JobID]; dispatched || d.queue.Contains(job.JobID) {
 		return
 	}

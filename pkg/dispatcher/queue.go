@@ -123,3 +123,18 @@ func (q *PriorityQueue) Contains(jobID string) bool {
 	}
 	return false
 }
+
+// Raise lifts the priority of the queued job with the given ID and reports
+// whether it did. A lower or equal priority leaves the job as it is.
+func (q *PriorityQueue) Raise(jobID string, priority int32) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, j := range q.jobs {
+		if j.JobID == jobID && priority > j.Priority {
+			j.Priority = priority
+			q.sortJobs()
+			return true
+		}
+	}
+	return false
+}
