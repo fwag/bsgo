@@ -12,8 +12,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// maxStatusSample bounds the per-state package samples in human output.
-const maxStatusSample = 15
+// defaultStatusLimit is the default number of packages listed per state in
+// human output.
+const defaultStatusLimit = 15
+
+// statusView selects how much of the status the human output shows.
+type statusView struct {
+	// limit bounds the packages listed per state; zero lists all of them.
+	limit int
+	// verbose lists the full reason of every blocked package.
+	verbose bool
+}
 
 // PackageStateEntry is the persisted build state of one package/flavor in one repo and arch.
 type PackageStateEntry struct {
@@ -30,6 +39,9 @@ type PackageStateEntry struct {
 	BuildingSeconds int64 `json:"building_seconds,omitempty"`
 	// Worker is the worker running a building package, when known (watch only).
 	Worker string `json:"worker,omitempty"`
+	// Blocked is the structured reason of a blocked package: the source
+	// packages it waits for and the unfinished cycles.
+	Blocked *storage.BlockedReason `json:"blocked,omitempty"`
 }
 
 // ProjectStatusResult is the machine contract of `bsgo project status --json`.
@@ -64,6 +76,8 @@ type RepoStateEntry struct {
 
 func newProjectStatusCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
 	var filter storage.BuildStateFilter
+	view := statusView{limit: defaultStatusLimit}
+	var all bool
 
 	cmd := &cobra.Command{
 		Use:   "status <project>",
@@ -75,19 +89,40 @@ Valid values for --state: ` + strings.Join(storage.ValidBuildStates, ", ") + `.
 With --json the command prints one deterministic JSON document on stdout:
 per-state counts, the repository state of every repository and architecture
 (repositories: repo, arch, state, details) and one entry per package with its
-state and details. Repository states: ` + strings.Join(storage.ValidRepoStates, ", ") + `.`,
+state and details. Repository states: ` + strings.Join(storage.ValidRepoStates, ", ") + `.
+
+Blocked packages: the details name the source packages (with their state) a
+package waits for, for example "blocked: libxml2 (building), perl (scheduled)
++3 more". A package that waits for a source package that is itself built but
+is held back because its dependency cycle is not finished reads "blocked:
+dependency cycle not finished (gcc15 building)". With --json each blocked
+package carries the complete structured reason in "blocked" (producers with
+their binaries and state, cycles with held and in-flight members).
+
+The human output lists at most --limit packages per state and says how many
+are hidden; --all lists every package, --verbose adds the full reason of each
+blocked package. --json is always complete and ignores --limit and --all.
+For one package use "bsgo package why".`,
 		Example: `  bsgo project status SUSE:SLFO:1.2
+  bsgo project status SUSE:SLFO:1.2 --state blocked --all --verbose
+  bsgo project status SUSE:SLFO:1.2 --limit 50
   bsgo project status SUSE:SLFO:1.2 --repo standard --arch x86_64 --state unresolvable --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if filter.State != "" && !storage.IsValidBuildState(filter.State) {
 				return fmt.Errorf("invalid --state %q (valid: %s)", filter.State, strings.Join(storage.ValidBuildStates, ", "))
 			}
+			if view.limit < 0 {
+				return fmt.Errorf("invalid --limit %d (must be 0 or more; 0 lists all)", view.limit)
+			}
+			if all {
+				view.limit = 0
+			}
 			res, err := loadProjectStatus(cmd.Context(), store, args[0], filter)
 			if err != nil {
 				return err
 			}
-			humanView := formatProjectStatusHuman(res)
+			humanView := formatProjectStatusHuman(res, view)
 			return Render(cmd.OutOrStdout(), humanView, res, fmt.Sprintf("%d/%d", res.Succeeded, res.TotalPackages), *opts)
 		},
 	}
@@ -95,6 +130,9 @@ state and details. Repository states: ` + strings.Join(storage.ValidRepoStates, 
 	cmd.Flags().StringVar(&filter.Repo, "repo", "", "Only show states for this repository (build target)")
 	cmd.Flags().StringVar(&filter.Arch, "arch", "", "Only show states for this architecture")
 	cmd.Flags().StringVar(&filter.State, "state", "", "Only show packages in this state")
+	cmd.Flags().BoolVar(&all, "all", false, "List every package of each state in the human output (--json is always complete)")
+	cmd.Flags().IntVar(&view.limit, "limit", defaultStatusLimit, "Packages listed per state in the human output; 0 lists all")
+	cmd.Flags().BoolVar(&view.verbose, "verbose", false, "Show the full reason of each blocked package")
 	return cmd
 }
 
@@ -175,6 +213,7 @@ func stateEntry(st *storage.PackageBuildState, now time.Time) PackageStateEntry 
 		JobID:           st.JobID,
 		UpdatedAt:       st.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		BuildingSeconds: buildingSeconds(st, now),
+		Blocked:         st.Blocked,
 	}
 }
 
@@ -200,7 +239,7 @@ func statusLine(sb io.Writer, label string, n int, color string) {
 	fmt.Fprintf(sb, "  • %-20s %s\n", label, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(color)).Render(fmt.Sprintf("%d", n)))
 }
 
-func formatProjectStatusHuman(res *ProjectStatusResult) string {
+func formatProjectStatusHuman(res *ProjectStatusResult, view statusView) string {
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render(fmt.Sprintf("📦 Project Status: %s", res.Project)) + "\n\n")
 
@@ -219,11 +258,11 @@ func formatProjectStatusHuman(res *ProjectStatusResult) string {
 	statusLine(&sb, "No state yet:", max(0, res.TotalPackages-sumCounts(res.Counts)), "#808080")
 
 	writeRepositories(&sb, res.Repositories)
-	writeStateSample(&sb, res, "building", "Currently Building:", "#00BFFF")
-	writeStateSample(&sb, res, "failed", "Failed Packages (Sample):", "#FF3333")
-	writeStateSample(&sb, res, "unresolvable", "Unresolvable Packages (Sample):", "#E5C07B")
-	writeStateSample(&sb, res, "blocked", "Blocked Packages (Sample):", "#C678DD")
-	writeStateSample(&sb, res, "broken", "Broken Packages (Sample):", "#FF3333")
+	writeStateSample(&sb, res, view, "building", "Currently building", "#00BFFF")
+	writeStateSample(&sb, res, view, "failed", "Failed packages", "#FF3333")
+	writeStateSample(&sb, res, view, "unresolvable", "Unresolvable packages", "#E5C07B")
+	writeStateSample(&sb, res, view, "blocked", "Blocked packages", "#C678DD")
+	writeStateSample(&sb, res, view, "broken", "Broken packages", "#FF3333")
 	return sb.String()
 }
 
@@ -241,35 +280,58 @@ func writeRepositories(sb *strings.Builder, repos []RepoStateEntry) {
 	}
 }
 
-func writeStateSample(sb *strings.Builder, res *ProjectStatusResult, state, title, color string) {
+func writeStateSample(sb *strings.Builder, res *ProjectStatusResult, view statusView, state, title, color string) {
 	var lines []string
+	total := 0
 	for _, e := range res.Packages {
 		if e.State != state {
 			continue
 		}
-		name := e.Package
-		if e.Flavor != "" {
-			name += ":" + e.Flavor
-		}
-		line := fmt.Sprintf("%s (%s/%s)", name, e.Repo, e.Arch)
-		if e.State == "building" {
-			line += " for " + (time.Duration(e.BuildingSeconds) * time.Second).String()
-		}
-		if e.Details != "" {
-			line += ": " + firstLine(e.Details)
-		}
-		lines = append(lines, line)
-		if len(lines) == maxStatusSample {
-			break
+		total++
+		if view.limit == 0 || len(lines) < view.limit {
+			lines = append(lines, sampleLine(e, view.verbose))
 		}
 	}
-	if len(lines) == 0 {
+	if total == 0 {
 		return
 	}
-	sb.WriteString("\n" + lipgloss.NewStyle().Bold(true).Render(title) + "\n")
+	sb.WriteString("\n" + lipgloss.NewStyle().Bold(true).Render(sampleTitle(title, len(lines), total)) + "\n")
 	for _, l := range lines {
-		fmt.Fprintf(sb, "  • %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(l))
+		first, rest, _ := strings.Cut(l, "\n")
+		fmt.Fprintf(sb, "  • %s\n", lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(first))
+		if rest != "" {
+			sb.WriteString(rest + "\n")
+		}
 	}
+}
+
+// sampleTitle names the list and, when it is cropped, how many packages it
+// shows and how to see the rest.
+func sampleTitle(title string, shown, total int) string {
+	if shown < total {
+		return fmt.Sprintf("%s (%d of %d shown; use --all or --limit N)", title, shown, total)
+	}
+	return fmt.Sprintf("%s (%d)", title, total)
+}
+
+// sampleLine is the entry of one package; with verbose the full reason of a
+// blocked package follows on further lines.
+func sampleLine(e PackageStateEntry, verbose bool) string {
+	name := e.Package
+	if e.Flavor != "" {
+		name += ":" + e.Flavor
+	}
+	line := fmt.Sprintf("%s (%s/%s)", name, e.Repo, e.Arch)
+	if e.State == "building" {
+		line += " for " + (time.Duration(e.BuildingSeconds) * time.Second).String()
+	}
+	if e.Details != "" {
+		line += ": " + firstLine(e.Details)
+	}
+	if verbose && e.Blocked != nil {
+		line += "\n" + strings.Join(blockedLines(e.Blocked, "      "), "\n")
+	}
+	return line
 }
 
 func firstLine(s string) string {

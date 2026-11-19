@@ -24,6 +24,7 @@ func newPackageCmd(store storage.Store, opts *OutputOptions) *cobra.Command {
 	cmd.AddCommand(newPackageAddCmd(store, opts))
 	cmd.AddCommand(newPackageSetResourcesCmd(store, opts))
 	cmd.AddCommand(newPackageTriggerCmd(store, opts))
+	cmd.AddCommand(newPackageWhyCmd(store, opts))
 	return cmd
 }
 

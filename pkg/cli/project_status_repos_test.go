@@ -39,7 +39,7 @@ func TestProjectStatusRepositoriesGolden(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
-			if err := Render(&out, formatProjectStatusHuman(res), res, "2/4", OutputOptions{JSON: tt.json}); err != nil {
+			if err := Render(&out, formatProjectStatusHuman(res, statusView{limit: defaultStatusLimit}), res, "2/4", OutputOptions{JSON: tt.json}); err != nil {
 				t.Fatal(err)
 			}
 			if strings.Contains(out.String(), "\x1b") {
