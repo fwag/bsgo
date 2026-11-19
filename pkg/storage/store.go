@@ -156,6 +156,9 @@ type ForcedRebuild struct {
 	Arch        string    `json:"arch,omitempty"`
 	Package     string    `json:"package"`
 	Flavor      string    `json:"flavor,omitempty"`
+	// Priority is the trigger tier "high", "med" or "low" (empty: low); it
+	// boosts the dispatch priority of the job the request produces.
+	Priority    string    `json:"priority,omitempty"`
 	RequestedAt time.Time `json:"requested_at"`
 }
 

@@ -77,7 +77,7 @@ func (ps *pass) jobSpec(u *unit, meta, explain, attempt string, c storage.BuildC
 		DistURL:      "bsgo://" + ps.prpa.Project + "/" + ps.prpa.Repo + "/" + u.commit + "-" + u.name,
 		Meta:         meta,
 		Explain:      explain,
-		Priority:     priorityOf(u.ndepend),
+		Priority:     ps.priority(u),
 		LogIdleLimit: ps.logIdleLimit(),
 		Resources:    u.manifest.Resources,
 		Constraints:  u.constraints,
@@ -233,6 +233,51 @@ func (ps *pass) forcedAt(u *unit) (t time.Time) {
 
 // maxPriorityBoost caps the priority bonus for units many others wait for.
 const maxPriorityBoost = 10000
+
+// priority is the dispatch priority of the job of u: priorityOf the number of
+// units that wait for it, plus the boost of a forced rebuild request. Like
+// OBS ('needed' of BSSched::Checker create_rebuildpackage_needed, the number
+// of units having it as build dependency) it counts dependents, but a member
+// of a dependency cycle counts the dependents of the whole cycle: the cycle is
+// not ready while any member is scheduled, so every unit blocked on the cycle
+// waits for this job even though the preinstall edges that make it a
+// dependency of those units are not part of the graph.
+func (ps *pass) priority(u *unit) int32 {
+	n := u.ndepend
+	if g := u.group; g != nil && g.cyclic {
+		n = max(n, g.ndepend)
+	}
+	return priorityOf(n) + ps.forceBoost(u)
+}
+
+// Boosts added to the priority of a unit with a forced rebuild request; the
+// tier is that of the trigger (bsgo package trigger --priority). high exceeds
+// maxPriorityBoost, so it outranks every computed priority; low adds nothing.
+const (
+	boostHigh = 2 * maxPriorityBoost
+	boostMed  = maxPriorityBoost / 2
+)
+
+// forceBoost is the largest boost among the force requests covering u.
+func (ps *pass) forceBoost(u *unit) (boost int32) {
+	ref := storage.UnitRef{Package: u.pkg, Flavor: u.flavor}
+	for _, f := range ps.forced {
+		if f.Applies(ps.prpa.Repo, ps.prpa.Arch, ref) {
+			boost = max(boost, boostOf(f.Priority))
+		}
+	}
+	return boost
+}
+
+func boostOf(tier string) int32 {
+	switch tier {
+	case "high":
+		return boostHigh
+	case "med":
+		return boostMed
+	}
+	return 0
+}
 
 // priorityOf is 50 plus the number of units that depend on the unit, capped.
 func priorityOf(dependents int) int32 {

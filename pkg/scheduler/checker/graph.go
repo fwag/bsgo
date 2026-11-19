@@ -7,6 +7,10 @@ import "sort"
 type group struct {
 	members []*unit
 	cyclic  bool
+	// ndepend is the number of distinct units that depend on at least one
+	// member. The cycle is ready only as a whole, so all of them wait for
+	// every member; it includes the members themselves. Zero for plain units.
+	ndepend int
 }
 
 func (g *group) has(u *unit) bool {
@@ -32,22 +36,36 @@ func (ps *pass) buildGraph() {
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].name < nodes[j].name })
 	deps := make(map[*unit][]*unit, len(nodes))
+	dependents := make(map[*unit][]*unit, len(nodes))
 	for _, u := range nodes {
 		deps[u] = ps.unitDeps(u)
 		for _, d := range deps[u] {
 			d.ndepend++
+			dependents[d] = append(dependents[d], u)
 		}
 	}
 	for _, scc := range tarjan(nodes, deps) {
 		g := &group{members: scc, cyclic: len(scc) > 1}
 		if g.cyclic {
 			g.members = cycsort(scc, deps)
+			g.ndepend = cycleDependents(g.members, dependents)
 		}
 		for _, m := range g.members {
 			m.group = g
 		}
 		ps.groups = append(ps.groups, g)
 	}
+}
+
+// cycleDependents counts the distinct units depending on any member.
+func cycleDependents(members []*unit, dependents map[*unit][]*unit) int {
+	seen := map[*unit]bool{}
+	for _, m := range members {
+		for _, d := range dependents[m] {
+			seen[d] = true
+		}
+	}
+	return len(seen)
 }
 
 // unitDeps returns the active units u depends on, sorted by name, without u.
