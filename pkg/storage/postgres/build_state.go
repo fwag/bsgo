@@ -12,8 +12,10 @@ import (
 
 const upsertBuildStateSQL = `
 	INSERT INTO package_build_state
-		(project, repo, arch, package, flavor, state, details, source_commit, meta, bcnt, job_id, built_meta, updated_at)
-	VALUES ($1, $2, $3, $4, $5, $6::varchar, $7, $8, $9::varchar, $10, $11, CASE WHEN $6::varchar = 'succeeded' THEN $9::varchar ELSE '' END, NOW())
+		(project, repo, arch, package, flavor, state, details, source_commit, meta, bcnt, job_id, built_meta, built_commit, updated_at)
+	VALUES ($1, $2, $3, $4, $5, $6::varchar, $7, $8, $9::varchar, $10, $11,
+		CASE WHEN $6::varchar = 'succeeded' THEN $9::varchar ELSE '' END,
+		CASE WHEN $6::varchar = 'succeeded' THEN $8::varchar ELSE '' END, NOW())
 	ON CONFLICT (project, repo, arch, package, flavor) DO UPDATE SET
 		state = EXCLUDED.state,
 		details = EXCLUDED.details,
@@ -24,6 +26,9 @@ const upsertBuildStateSQL = `
 		built_meta = CASE WHEN EXCLUDED.state = 'succeeded'
 			THEN COALESCE(NULLIF(EXCLUDED.meta, ''), package_build_state.meta)
 			ELSE package_build_state.built_meta END,
+		built_commit = CASE WHEN EXCLUDED.state = 'succeeded'
+			THEN COALESCE(NULLIF(EXCLUDED.source_commit, ''), package_build_state.source_commit)
+			ELSE package_build_state.built_commit END,
 		updated_at = NOW()`
 
 func upsertBuildStateArgs(st *storage.PackageBuildState) []any {
@@ -46,12 +51,12 @@ func (s *PostgresStore) UpsertBuildState(ctx context.Context, st *storage.Packag
 func (s *PostgresStore) GetBuildState(ctx context.Context, project, repo, arch, pkg, flavor string) (*storage.PackageBuildState, error) {
 	var st storage.PackageBuildState
 	err := s.pool.QueryRow(ctx, `
-		SELECT project, repo, arch, package, flavor, state, details, source_commit, meta, built_meta, bcnt, job_id, updated_at
+		SELECT project, repo, arch, package, flavor, state, details, source_commit, meta, built_meta, built_commit, bcnt, job_id, updated_at
 		FROM package_build_state
 		WHERE project = $1 AND repo = $2 AND arch = $3 AND package = $4 AND flavor = $5`,
 		project, repo, arch, pkg, flavor).
 		Scan(&st.Project, &st.Repo, &st.Arch, &st.Package, &st.Flavor, &st.State, &st.Details,
-			&st.SourceCommit, &st.Meta, &st.BuiltMeta, &st.Bcnt, &st.JobID, &st.UpdatedAt)
+			&st.SourceCommit, &st.Meta, &st.BuiltMeta, &st.BuiltCommit, &st.Bcnt, &st.JobID, &st.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, storage.ErrNotFound
 	}
@@ -105,7 +110,7 @@ const buildStateFilterClause = `
 // ListBuildStates returns the build states of a project ordered by repo, arch, package, flavor.
 func (s *PostgresStore) ListBuildStates(ctx context.Context, project string, filter storage.BuildStateFilter) ([]*storage.PackageBuildState, error) {
 	query := `
-		SELECT project, repo, arch, package, flavor, state, details, source_commit, meta, built_meta, bcnt, job_id, updated_at
+		SELECT project, repo, arch, package, flavor, state, details, source_commit, meta, built_meta, built_commit, bcnt, job_id, updated_at
 		FROM package_build_state` + buildStateFilterClause + `
 		ORDER BY repo, arch, package, flavor`
 	rows, err := s.pool.Query(ctx, query, project, filter.Repo, filter.Arch, filter.State)
@@ -118,7 +123,7 @@ func (s *PostgresStore) ListBuildStates(ctx context.Context, project string, fil
 	for rows.Next() {
 		var st storage.PackageBuildState
 		if err := rows.Scan(&st.Project, &st.Repo, &st.Arch, &st.Package, &st.Flavor, &st.State,
-			&st.Details, &st.SourceCommit, &st.Meta, &st.BuiltMeta, &st.Bcnt, &st.JobID, &st.UpdatedAt); err != nil {
+			&st.Details, &st.SourceCommit, &st.Meta, &st.BuiltMeta, &st.BuiltCommit, &st.Bcnt, &st.JobID, &st.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan build state: %w", err)
 		}
 		list = append(list, &st)

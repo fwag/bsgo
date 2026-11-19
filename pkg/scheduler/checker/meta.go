@@ -137,6 +137,9 @@ func withoutNested(lines []string) []string {
 type depSource struct {
 	pkg solv.ResolvedPackage
 	id  string // identity of the binary, see binaryID
+	// commit is the source commit its local producer built it from, for a
+	// producer whose meta tree is unknown.
+	commit string
 	// metaHash and tree are empty for binaries that count by their sha256.
 	metaHash string
 	tree     []string
@@ -146,6 +149,9 @@ type depSource struct {
 func (d depSource) token() string {
 	if d.tree != nil {
 		return "L " + d.pkg.Name + " " + d.metaHash
+	}
+	if d.commit != "" {
+		return "C " + d.pkg.Name + " " + d.commit
 	}
 	return "P " + d.pkg.Name + " " + d.id
 }
@@ -163,26 +169,33 @@ func (ps *pass) metaDeps(u *unit, policy string) []depSource {
 			continue
 		}
 		d := depSource{pkg: p, id: ps.binaryID(p)}
-		d.metaHash, d.tree = ps.producerMeta(prod, p.Name)
+		d.metaHash, d.tree, d.commit = ps.producerMeta(prod, p.Name)
 		out = append(out, d)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].pkg.Name < out[j].pkg.Name })
 	return out
 }
 
-// producerMeta returns the meta the producer of binary name was last
-// successfully built with. It is empty when the binary does not come from a
-// build in this prpa or its meta is unknown (a build from before metas were
-// kept): the binary then counts by its sha256 like in OBS.
-func (ps *pass) producerMeta(prod *unit, name string) (string, []string) {
+// producerMeta returns what is known about the build of a binary that comes
+// from a build in this prpa: the meta its producer was last successfully built
+// with. When that meta is unknown (a build from before metas were kept) it
+// returns the source commit of that build instead, which is the id the first
+// line of the missing meta would carry, so the line of the dependency is the
+// same whether or not the tree exists yet. It returns nothing for binaries
+// from other repositories or without a recorded build: they count by their
+// sha256 like in OBS.
+func (ps *pass) producerMeta(prod *unit, name string) (hash string, tree []string, commit string) {
 	if prod == nil || !ps.isOwnBinary(prod, name) {
-		return "", nil
+		return "", nil, ""
 	}
 	st := ps.states[unitKey(prod.pkg, prod.flavor)]
 	if st == nil || st.BuiltMeta == "" {
-		return "", nil
+		return "", nil, ""
 	}
-	return st.BuiltMeta, ps.trees[st.BuiltMeta]
+	if tree = ps.trees[st.BuiltMeta]; tree != nil {
+		return st.BuiltMeta, tree, ""
+	}
+	return "", nil, st.BuiltCommit
 }
 
 // binaryID is the identity of a binary: its sha256, or when the repository
@@ -231,6 +244,11 @@ func (ps *pass) metaCheck(u *unit, policy string, deps []depSource) string {
 func (ps *pass) depLines(u *unit, deps []depSource) []string {
 	var lines []string
 	for _, d := range deps {
+		if d.tree == nil && d.commit != "" {
+			// What addMeta makes of the first line of the producer's meta.
+			lines = append(lines, d.commit+"  "+d.pkg.Name)
+			continue
+		}
 		if d.tree == nil {
 			lines = append(lines, shortID(d.id)+"  "+d.pkg.Name)
 			continue

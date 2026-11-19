@@ -97,10 +97,13 @@ type PackageBuildState struct {
 	Meta         string `json:"meta,omitempty"`
 	// BuiltMeta is the meta of the last succeeded build. The store maintains
 	// it: a transition to succeeded copies Meta into it.
-	BuiltMeta string    `json:"built_meta,omitempty"`
-	Bcnt      int       `json:"bcnt,omitempty"`
-	JobID     string    `json:"job_id,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
+	BuiltMeta string `json:"built_meta,omitempty"`
+	// BuiltCommit is the source commit of the last succeeded build, kept like
+	// BuiltMeta: SourceCommit moves on as soon as a new build is scheduled.
+	BuiltCommit string    `json:"built_commit,omitempty"`
+	Bcnt        int       `json:"bcnt,omitempty"`
+	JobID       string    `json:"job_id,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // BuildStateFilter narrows ListBuildStates; empty fields match everything.
@@ -505,8 +508,10 @@ func preserveBuildIdentity(next, prev *PackageBuildState) {
 		next.Bcnt = prev.Bcnt
 	}
 	next.BuiltMeta = prev.BuiltMeta
+	next.BuiltCommit = prev.BuiltCommit
 	if next.State == StateSucceeded {
 		next.BuiltMeta = next.Meta
+		next.BuiltCommit = next.SourceCommit
 	}
 }
 

@@ -236,6 +236,18 @@ re-emitted after a restart with its original meta but with the build
 dependencies expanded again (OBS keeps the job file); if the job cannot be
 recreated any more, the unit is evaluated normally.
 
+A dependency built in this repository whose producer has no stored tree
+(a build from before trees were kept) is written as `<producer commit>  <binary>`:
+the source commit of the producer's last successful build
+(`package_build_state.built_commit`, kept like `built_meta` because
+`source_commit` moves on when a new build is scheduled), which is byte for byte the
+first line its tree will give it. When the tree appears later, the consumer's
+meta only gains the nested lines; it does not change at all when those lines
+already exist higher up. The trade-off: until a producer has a tree, a rebuild
+of it with the same commit but different dependencies is invisible to its
+consumers. The strictness is back once every unit has been built once with
+trees. Binaries from path or bootstrap repositories still count by sha256.
+
 Upgrade note: the meta hash format changed (`bsgo-meta-v2`), so the first pass
 after the upgrade sees "meta change" for every unit that was built before, and
 rebuilds it once. Jobs already scheduled or running for an unchanged source are
