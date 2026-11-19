@@ -151,11 +151,11 @@ type BuildCounters struct {
 
 // ForcedRebuild asks the checker to rebuild a unit.
 type ForcedRebuild struct {
-	Project     string    `json:"project"`
-	Repo        string    `json:"repo,omitempty"`
-	Arch        string    `json:"arch,omitempty"`
-	Package     string    `json:"package"`
-	Flavor      string    `json:"flavor,omitempty"`
+	Project string `json:"project"`
+	Repo    string `json:"repo,omitempty"`
+	Arch    string `json:"arch,omitempty"`
+	Package string `json:"package"`
+	Flavor  string `json:"flavor,omitempty"`
 	// Priority is the trigger tier "high", "med" or "low" (empty: low); it
 	// boosts the dispatch priority of the job the request produces.
 	Priority    string    `json:"priority,omitempty"`

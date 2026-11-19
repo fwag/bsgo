@@ -55,9 +55,10 @@ func (s *MemoryStore) RequestForcedRebuild(_ context.Context, req ForcedRebuild)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, f := range s.forced {
+	for i, f := range s.forced {
 		if f.Project == req.Project && f.Repo == req.Repo && f.Arch == req.Arch &&
 			f.Package == req.Package && f.Flavor == req.Flavor {
+			s.forced[i].Priority = req.Priority
 			return nil
 		}
 	}

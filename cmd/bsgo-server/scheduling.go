@@ -243,6 +243,7 @@ func recordForce(ctx context.Context, store storage.Store, trig *v1.BuildTrigger
 	}
 	return store.RequestForcedRebuild(ctx, storage.ForcedRebuild{
 		Project: trig.Project, Repo: trig.Target, Arch: trig.Architecture, Package: pkg, Flavor: flavor,
+		Priority: trig.NormalizedPriority(),
 	})
 }
 

@@ -65,15 +65,16 @@ func (s *PostgresStore) NextBuildCounters(ctx context.Context, key storage.Count
 	return c, nil
 }
 
-// RequestForcedRebuild records a forced rebuild request; repeating it is a no-op.
+// RequestForcedRebuild records a forced rebuild request; repeating it keeps the request and takes the latest priority.
 func (s *PostgresStore) RequestForcedRebuild(ctx context.Context, req storage.ForcedRebuild) error {
 	if req.Project == "" || req.Package == "" {
 		return fmt.Errorf("forced rebuild requires project and package")
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO build_force (project, repo, arch, package, flavor)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT DO NOTHING`, req.Project, req.Repo, req.Arch, req.Package, req.Flavor)
+		INSERT INTO build_force (project, repo, arch, package, flavor, priority)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (project, repo, arch, package, flavor) DO UPDATE SET priority = EXCLUDED.priority`,
+		req.Project, req.Repo, req.Arch, req.Package, req.Flavor, req.Priority)
 	if err != nil {
 		return fmt.Errorf("failed to record forced rebuild: %w", err)
 	}
@@ -83,7 +84,7 @@ func (s *PostgresStore) RequestForcedRebuild(ctx context.Context, req storage.Fo
 // ListForcedRebuilds returns the pending forced rebuild requests of a project.
 func (s *PostgresStore) ListForcedRebuilds(ctx context.Context, project string) ([]storage.ForcedRebuild, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT project, repo, arch, package, flavor, requested_at
+		SELECT project, repo, arch, package, flavor, priority, requested_at
 		FROM build_force WHERE project = $1 ORDER BY requested_at, package, flavor`, project)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list forced rebuilds: %w", err)
@@ -92,7 +93,7 @@ func (s *PostgresStore) ListForcedRebuilds(ctx context.Context, project string) 
 	var out []storage.ForcedRebuild
 	for rows.Next() {
 		var f storage.ForcedRebuild
-		if err := rows.Scan(&f.Project, &f.Repo, &f.Arch, &f.Package, &f.Flavor, &f.RequestedAt); err != nil {
+		if err := rows.Scan(&f.Project, &f.Repo, &f.Arch, &f.Package, &f.Flavor, &f.Priority, &f.RequestedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan forced rebuild: %w", err)
 		}
 		out = append(out, f)

@@ -101,9 +101,15 @@ func newAdminTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Command
 Similar to legacy OBS 'obs_admin --force-check-project', this allows operators to bypass
 routine queues by injecting high-priority triggers or forcing rebuilds.
 
+--priority is the dispatch tier of a forced rebuild (--force): 'high' adds +20000 to
+the priority the scheduler computed for the job (above every computed priority), 'med'
+adds +5000, 'low' adds nothing. A job that is already queued is re-prioritised.
+Without --force the trigger only makes the scheduler re-check the project and the tier
+just selects the NATS trigger subject.
+
 Examples:
   # Inject high-priority rebuild for a single package:
-  bsgo admin trigger my-project my-package --priority high --reason "CRITICAL_CVE_REBUILD"
+  bsgo admin trigger my-project my-package --force --priority high --reason "CRITICAL_CVE_REBUILD"
 
   # Force rebuild all packages in a project:
   bsgo admin trigger my-project --all --force --priority high
@@ -135,7 +141,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&flags.priority, "priority", "high", "Trigger priority tier: 'high', 'med', or 'low'")
+	cmd.Flags().StringVar(&flags.priority, "priority", "high", "Dispatch priority tier: 'high' (+20000), 'med' (+5000) or 'low' (no boost); applies with --force")
 	cmd.Flags().StringVar(&flags.reason, "reason", "ADMIN_TRIGGER", "Audit reason for administrative trigger injection")
 	cmd.Flags().StringVar(&flags.target, "target", "", "Filter trigger to a specific build target")
 	cmd.Flags().StringVar(&flags.arch, "arch", "", "Filter trigger to a specific architecture")

@@ -76,6 +76,7 @@ type packageTriggerFlags struct {
 	natsURL   string
 	repo      string
 	arch      string
+	priority  string
 	dryRun    bool
 	skipCheck bool
 }
@@ -94,6 +95,13 @@ for rebuild, so every flavor needs its own trigger. --repo and --arch narrow the
 request like the repository and arch parameters of OBS rebuild; unset they match
 every repository and architecture.
 
+--priority sets the tier of the request: 'high' and 'med' add a boost to the
+dispatch priority of the job the request produces, 'low' (the default) adds
+none. The boost is added to the priority the scheduler computed from the
+units that wait for the package (high: +20000, above every computed priority;
+med: +5000), so the job overtakes queued jobs; a job that is already queued is
+re-prioritised. The tier also selects the trigger subject.
+
 A flavor is checked against the flavors the scheduler has already recorded for
 the package; --skip-flavor-check bypasses this for a flavor not built yet.`
 
@@ -102,6 +110,9 @@ const packageTriggerExample = `  # Force the plain gcc package
 
   # Force only the 'build' flavor of gcc, on x86_64 of repository standard
   bsgo package trigger SUSE:SLFO:1.2/gcc:build --repo standard --arch x86_64
+
+  # Build gcc before everything else that is queued
+  bsgo package trigger SUSE:SLFO:1.2/gcc --priority high
 
   # Show the request as JSON without publishing it
   bsgo package trigger SUSE:SLFO:1.2/gcc:build --dry-run --json`
@@ -127,6 +138,8 @@ func newPackageTriggerCmd(store storage.Store, opts *OutputOptions) *cobra.Comma
 	cmd.Flags().StringVar(&f.commit, "commit", "", "Optional commit SHA override to build")
 	cmd.Flags().StringVar(&f.repo, "repo", "", "Only force this repository (default: all)")
 	cmd.Flags().StringVar(&f.arch, "arch", "", "Only force this architecture (default: all)")
+	cmd.Flags().StringVar(&f.priority, "priority", "low",
+		"Dispatch priority tier: 'high' (+20000), 'med' (+5000) or 'low' (no boost)")
 	cmd.Flags().BoolVar(&f.skipCheck, "skip-flavor-check", false, "Do not verify the flavor against the recorded flavors")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "Print the request without publishing it to NATS")
 	cmd.Flags().StringVar(&f.natsURL, "nats-url", f.natsURL, "NATS JetStream connection URL")
@@ -149,6 +162,10 @@ func runPackageTrigger(cmd *cobra.Command, store storage.Store, opts *OutputOpti
 		}
 	}
 
+	tier, err := parseTier(f.priority)
+	if err != nil {
+		return err
+	}
 	commit := f.commit
 	if commit == "" {
 		commit = p.Source.Commit
@@ -157,8 +174,8 @@ func runPackageTrigger(cmd *cobra.Command, store storage.Store, opts *OutputOpti
 		commit = "HEAD"
 	}
 
-	trigger := newForceTrigger(ref, p.Source.Git, commit, p.Source.Branch, f.repo, f.arch)
-	subject := natsqueue.TriggerSubject(natsqueue.PriorityHigh, ref.Project, ref.unit())
+	trigger := newForceTrigger(ref, p.Source.Git, commit, p.Source.Branch, f.repo, f.arch, tier)
+	subject := natsqueue.TriggerSubject(tier, ref.Project, ref.unit())
 	status := "TRIGGERED"
 	if f.dryRun {
 		status = "DRY_RUN"
@@ -175,6 +192,7 @@ func runPackageTrigger(cmd *cobra.Command, store storage.Store, opts *OutputOpti
 		"flavor":     ref.Flavor,
 		"repo":       f.repo,
 		"arch":       f.arch,
+		"priority":   tier,
 		"commit_sha": commit,
 		"subject":    subject,
 		"dry_run":    f.dryRun,
@@ -182,12 +200,22 @@ func runPackageTrigger(cmd *cobra.Command, store storage.Store, opts *OutputOpti
 	return Render(cmd.OutOrStdout(), triggerSummary(ref, f, commit, subject, trigger.TriggerID), result, trigger.TriggerID, *opts)
 }
 
+// parseTier validates a --priority value.
+func parseTier(v string) (string, error) {
+	switch v {
+	case natsqueue.PriorityHigh, natsqueue.PriorityMed, natsqueue.PriorityLow:
+		return v, nil
+	}
+	return "", fmt.Errorf("invalid --priority %q: use high, med or low", v)
+}
+
 // newForceTrigger builds the trigger that makes the scheduler force exactly
 // the unit named by ref (repo and arch empty means all).
-func newForceTrigger(ref packageRef, gitURL, commit, branch, repo, arch string) *v1.BuildTrigger {
+func newForceTrigger(ref packageRef, gitURL, commit, branch, repo, arch, tier string) *v1.BuildTrigger {
 	t := v1.NewTrigger(ref.Project, ref.Package, gitURL, commit, branch, "developer")
 	t.Flavor = ref.Flavor
 	t.ForceRebuild = true // rebuild regardless of the meta; the checker consumes the request
+	t.Priority = tier
 	t.Target = repo
 	t.Architecture = arch
 	return t
