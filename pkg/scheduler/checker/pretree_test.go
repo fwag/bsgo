@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/openSUSE/bsgo/pkg/bininfo"
+	"github.com/openSUSE/bsgo/pkg/manifest"
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
@@ -87,5 +88,46 @@ func TestPreTreeProducerWithUnbuiltSourceChange(t *testing.T) {
 	}
 	if st := w.state("d"); st.State != storage.StateSucceeded {
 		t.Errorf("d is %s %q: the unbuilt source change of c was attributed to its binary", st.State, st.Details)
+	}
+}
+
+// TestPreTreeProducerWithUnknownBuiltCommit: a producer whose build commit is
+// not recorded (a legacy row that is not succeeded, with a newer source
+// commit) counts by the sha256 of its binary, and its consumers rebuild when
+// the new build succeeds.
+func TestPreTreeProducerWithUnknownBuiltCommit(t *testing.T) {
+	w := newWorld(t, nil)
+	files := map[string]string{"c.spec": spec("c", nil)}
+	commit := w.addPackage("c", files, func(pm *manifest.PackageManifest) { pm.Build.Enabled = false })
+	w.pkg("d", []string{"c"})
+	// The binary of an old build, whose row was written before trees and
+	// built commits existed, followed by a failed build of a newer commit.
+	w.bins["c"] = []bininfo.BinInfo{binary("c", "old")}
+	w.publishIndex()
+	ctx := context.Background()
+	row := func(state, source string) *storage.PackageBuildState {
+		return &storage.PackageBuildState{
+			Project: testProject, Repo: testRepo, Arch: testArch, Package: "c",
+			State: state, SourceCommit: source, Meta: "legacy",
+		}
+	}
+	if err := w.store.UpsertBuildState(ctx, row(storage.StateSucceeded, "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.store.UpsertBuildState(ctx, row(storage.StateFailed, commit)); err != nil {
+		t.Fatal(err)
+	}
+	w.run()
+	dJob := w.wantJobs("d")[0]
+	want := sha("cold")[:32] + "  c"
+	if got := w.metaLines("d")[1]; got != want {
+		t.Errorf("line %q, want %q", got, want)
+	}
+	w.finish(dJob, binary("d", "1"))
+	// c is enabled again and built; d follows.
+	w.addPackage("c", files)
+	got := joinRounds(w.rounds(10))
+	if want := "c:meta change | d:meta change"; got != want {
+		t.Errorf("rounds %q, want %q", got, want)
 	}
 }

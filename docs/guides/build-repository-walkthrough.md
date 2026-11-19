@@ -248,14 +248,24 @@ of it with the same commit but different dependencies is invisible to its
 consumers. The strictness is back once every unit has been built once with
 trees. Binaries from path or bootstrap repositories still count by sha256.
 
-Upgrade note: the meta hash format changed (`bsgo-meta-v2`), so the first pass
-after the upgrade sees "meta change" for every unit that was built before, and
-rebuilds it once. Jobs already scheduled or running for an unchanged source are
-not cancelled: they finish and are then compared again. A few more rounds
-may follow while the trees of the old builds are replaced by real ones; after
-that only source or external binary changes trigger rebuilds. The parallel build
-of cycle members is intentional (OBS builds them one after another); the
-second pass of a cycle still holds back members with deeper changes.
+Upgrade note: when the meta format changes, the first pass after the upgrade
+sees "meta change" for every unit that was built before. Outside dependency
+cycles that is one rebuild per unit. Jobs already scheduled or running for an
+unchanged source are not cancelled; they finish and are rebuilt once more
+because their meta is compared again afterwards.
+
+Inside a cycle it takes more than one round. Members without a stored tree all
+start in the first pass (postponing a member needs its old tree), and when
+they have finished, the trees of the other members add nested lines to their
+metas, so they change again. The trees deepen by one level per round, so a
+cycle converges after about its nesting depth: expect two or three rounds of
+the toolchain. After that only source or external binary changes trigger
+rebuilds. A producer's commit is only recorded
+(`built_commit`) for rows that were succeeded when the column was added; other
+rows count by checksum until their next successful build, so consumers notice
+that build. The parallel build of cycle members is intentional (OBS builds them
+one after another); the second pass of a cycle still holds back members with
+deeper changes.
 
 ## End-to-end flow
 
