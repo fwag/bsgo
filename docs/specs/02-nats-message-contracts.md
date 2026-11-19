@@ -80,7 +80,7 @@ message BuildJob {
   string package = 3;
   string target = 4;          // e.g. "standard"
   string architecture = 5;    // e.g. "x86_64", "aarch64", "s390x"
-  int32 priority = 6;         // Higher value = higher priority (topological depth)
+  int32 priority = 6;         // Higher value = higher priority (see Job priority)
 
   SourceSpec source = 7;
   repeated ChrootRPM chroot_rpms = 8;
@@ -524,6 +524,23 @@ the reported artifacts (`bininfo.json` plus RPMs, verified by sha256) into the
 build repository. `REQUEUED` (published by the dispatcher watchdog with
 `reason: WORKER_LEASE_EXPIRED` when it puts a job of a lost worker back into its
 queue) returns the unit to `scheduled`; worker loss is not a build failure.
+
+#### Job priority
+The checker sets `BuildJob.priority` to `50 + n`, with `n` capped at 10000. `n`
+is the number of units that have the unit as build dependency, like the
+`needed` count of OBS (`create_rebuildpackage_needed`), which the OBS
+dispatcher uses as priority. OBS has no cycle handling there. bsgo counts for a
+member of a dependency cycle the distinct units depending on any member
+(members included), because the cycle is ready only as a whole: while one
+member is scheduled, every unit depending on the cycle waits for it. Preinstall
+packages are not edges of the graph, so without this a package like `aaa_base`
+would rank last while gating its cycle. A forced rebuild request adds a boost
+of its tier on top of the (capped) value: `high` +20000, `med` +5000, `low` 0.
+The tier is stored with the request (`build_force.priority`, migration 00015);
+a repeated request takes the latest tier. The checker re-emits scheduled jobs
+every pass; the job sink and the dispatcher ignore a repeated job ID except
+that a queued job takes a higher priority (never a lower one, so a boost
+survives the resends after the request was consumed). No duplicate is queued.
 
 #### Publisher coordination
 Publisher replicas use two further KV buckets with the same key encoding and

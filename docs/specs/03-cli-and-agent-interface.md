@@ -38,7 +38,7 @@ bsgo
 ├── package
 │   ├── list <project>                  List packages within a project
 │   ├── show <project/package>          Inspect manifest, git source, and shard path
-│   ├── trigger <project/package>       Trigger a build job (optional: --commit <sha>)
+│   ├── trigger <project/package>       Force a rebuild (--commit <sha>, --priority high|med|low)
 │   └── set-resources <project/package> Update worker VM limits (API-assisted Git commit)
 ├── build
 │   ├── status <job-id>                 Inspect job state, worker assignment, and timings
@@ -46,6 +46,12 @@ bsgo
 │   └── cancel <job-id>                 Dispatch abort signal to cancel active build
 └── watch <project>                     Live build-state TUI (--once, --history, --json)
 ```
+
+`--priority` of `package trigger` and of `admin trigger --force` is the dispatch
+tier of the forced rebuild: `high` adds 20000 to the job's dispatch priority
+(above any computed priority), `med` adds 5000, `low` adds nothing (default of
+`package trigger`; `admin trigger` defaults to `high`). A job already queued is
+re-prioritised. Without `--force` the tier only selects the NATS subject.
 
 ---
 
