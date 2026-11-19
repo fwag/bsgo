@@ -100,10 +100,13 @@ type PackageBuildState struct {
 	BuiltMeta string `json:"built_meta,omitempty"`
 	// BuiltCommit is the source commit of the last succeeded build, kept like
 	// BuiltMeta: SourceCommit moves on as soon as a new build is scheduled.
-	BuiltCommit string    `json:"built_commit,omitempty"`
-	Bcnt        int       `json:"bcnt,omitempty"`
-	JobID       string    `json:"job_id,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	BuiltCommit string `json:"built_commit,omitempty"`
+	// Blocked is the structured cause of a blocked state; Details holds its
+	// summary. Nil in every other state.
+	Blocked   *BlockedReason `json:"blocked,omitempty"`
+	Bcnt      int            `json:"bcnt,omitempty"`
+	JobID     string         `json:"job_id,omitempty"`
+	UpdatedAt time.Time      `json:"updated_at"`
 }
 
 // BuildStateFilter narrows ListBuildStates; empty fields match everything.

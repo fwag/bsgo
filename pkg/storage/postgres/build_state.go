@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -12,10 +13,10 @@ import (
 
 const upsertBuildStateSQL = `
 	INSERT INTO package_build_state
-		(project, repo, arch, package, flavor, state, details, source_commit, meta, bcnt, job_id, built_meta, built_commit, updated_at)
+		(project, repo, arch, package, flavor, state, details, source_commit, meta, bcnt, job_id, built_meta, built_commit, blocked, updated_at)
 	VALUES ($1, $2, $3, $4, $5, $6::varchar, $7, $8, $9::varchar, $10, $11,
 		CASE WHEN $6::varchar = 'succeeded' THEN $9::varchar ELSE '' END,
-		CASE WHEN $6::varchar = 'succeeded' THEN $8::varchar ELSE '' END, NOW())
+		CASE WHEN $6::varchar = 'succeeded' THEN $8::varchar ELSE '' END, $12::jsonb, NOW())
 	ON CONFLICT (project, repo, arch, package, flavor) DO UPDATE SET
 		state = EXCLUDED.state,
 		details = EXCLUDED.details,
@@ -29,11 +30,38 @@ const upsertBuildStateSQL = `
 		built_commit = CASE WHEN EXCLUDED.state = 'succeeded'
 			THEN COALESCE(NULLIF(EXCLUDED.source_commit, ''), package_build_state.source_commit)
 			ELSE package_build_state.built_commit END,
+		blocked = EXCLUDED.blocked,
 		updated_at = NOW()`
 
-func upsertBuildStateArgs(st *storage.PackageBuildState) []any {
+func upsertBuildStateArgs(st *storage.PackageBuildState) ([]any, error) {
+	var blocked []byte
+	if st.Blocked != nil {
+		var err error
+		if blocked, err = json.Marshal(st.Blocked); err != nil {
+			return nil, fmt.Errorf("failed to encode blocked reason: %w", err)
+		}
+	}
 	return []any{st.Project, st.Repo, st.Arch, st.Package, st.Flavor,
-		st.State, st.Details, st.SourceCommit, st.Meta, st.Bcnt, st.JobID}
+		st.State, st.Details, st.SourceCommit, st.Meta, st.Bcnt, st.JobID, blocked}, nil
+}
+
+const buildStateColumns = `project, repo, arch, package, flavor, state, details, source_commit, meta, built_meta, built_commit, blocked, bcnt, job_id, updated_at`
+
+// scanBuildState reads one row selected with buildStateColumns.
+func scanBuildState(row pgx.Row) (*storage.PackageBuildState, error) {
+	var st storage.PackageBuildState
+	var blocked []byte
+	if err := row.Scan(&st.Project, &st.Repo, &st.Arch, &st.Package, &st.Flavor, &st.State, &st.Details,
+		&st.SourceCommit, &st.Meta, &st.BuiltMeta, &st.BuiltCommit, &blocked, &st.Bcnt, &st.JobID, &st.UpdatedAt); err != nil {
+		return nil, err
+	}
+	if len(blocked) > 0 {
+		st.Blocked = &storage.BlockedReason{}
+		if err := json.Unmarshal(blocked, st.Blocked); err != nil {
+			return nil, fmt.Errorf("failed to decode blocked reason: %w", err)
+		}
+	}
+	return &st, nil
 }
 
 // UpsertBuildState inserts or replaces the build state row for one package/flavor.
@@ -41,7 +69,11 @@ func (s *PostgresStore) UpsertBuildState(ctx context.Context, st *storage.Packag
 	if err := storage.ValidateBuildState(st); err != nil {
 		return err
 	}
-	if _, err := s.pool.Exec(ctx, upsertBuildStateSQL, upsertBuildStateArgs(st)...); err != nil {
+	args, err := upsertBuildStateArgs(st)
+	if err != nil {
+		return err
+	}
+	if _, err := s.pool.Exec(ctx, upsertBuildStateSQL, args...); err != nil {
 		return fmt.Errorf("failed to upsert build state: %w", err)
 	}
 	return nil
@@ -49,21 +81,18 @@ func (s *PostgresStore) UpsertBuildState(ctx context.Context, st *storage.Packag
 
 // GetBuildState returns one build state row or storage.ErrNotFound.
 func (s *PostgresStore) GetBuildState(ctx context.Context, project, repo, arch, pkg, flavor string) (*storage.PackageBuildState, error) {
-	var st storage.PackageBuildState
-	err := s.pool.QueryRow(ctx, `
-		SELECT project, repo, arch, package, flavor, state, details, source_commit, meta, built_meta, built_commit, bcnt, job_id, updated_at
+	st, err := scanBuildState(s.pool.QueryRow(ctx, `
+		SELECT `+buildStateColumns+`
 		FROM package_build_state
 		WHERE project = $1 AND repo = $2 AND arch = $3 AND package = $4 AND flavor = $5`,
-		project, repo, arch, pkg, flavor).
-		Scan(&st.Project, &st.Repo, &st.Arch, &st.Package, &st.Flavor, &st.State, &st.Details,
-			&st.SourceCommit, &st.Meta, &st.BuiltMeta, &st.BuiltCommit, &st.Bcnt, &st.JobID, &st.UpdatedAt)
+		project, repo, arch, pkg, flavor))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, storage.ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to read build state: %w", err)
 	}
-	return &st, nil
+	return st, nil
 }
 
 // UpsertBuildStates writes all rows in one transaction.
@@ -83,7 +112,11 @@ func (s *PostgresStore) UpsertBuildStates(ctx context.Context, states []*storage
 	defer func() { _ = tx.Rollback(ctx) }()
 	batch := &pgx.Batch{}
 	for _, st := range states {
-		batch.Queue(upsertBuildStateSQL, upsertBuildStateArgs(st)...)
+		args, err := upsertBuildStateArgs(st)
+		if err != nil {
+			return err
+		}
+		batch.Queue(upsertBuildStateSQL, args...)
 	}
 	results := tx.SendBatch(ctx, batch)
 	for range states {
@@ -110,7 +143,7 @@ const buildStateFilterClause = `
 // ListBuildStates returns the build states of a project ordered by repo, arch, package, flavor.
 func (s *PostgresStore) ListBuildStates(ctx context.Context, project string, filter storage.BuildStateFilter) ([]*storage.PackageBuildState, error) {
 	query := `
-		SELECT project, repo, arch, package, flavor, state, details, source_commit, meta, built_meta, built_commit, bcnt, job_id, updated_at
+		SELECT ` + buildStateColumns + `
 		FROM package_build_state` + buildStateFilterClause + `
 		ORDER BY repo, arch, package, flavor`
 	rows, err := s.pool.Query(ctx, query, project, filter.Repo, filter.Arch, filter.State)
@@ -121,12 +154,11 @@ func (s *PostgresStore) ListBuildStates(ctx context.Context, project string, fil
 
 	list := []*storage.PackageBuildState{}
 	for rows.Next() {
-		var st storage.PackageBuildState
-		if err := rows.Scan(&st.Project, &st.Repo, &st.Arch, &st.Package, &st.Flavor, &st.State,
-			&st.Details, &st.SourceCommit, &st.Meta, &st.BuiltMeta, &st.BuiltCommit, &st.Bcnt, &st.JobID, &st.UpdatedAt); err != nil {
+		st, err := scanBuildState(rows)
+		if err != nil {
 			return nil, fmt.Errorf("failed to scan build state: %w", err)
 		}
-		list = append(list, &st)
+		list = append(list, st)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("failed to iterate build states: %w", err)
