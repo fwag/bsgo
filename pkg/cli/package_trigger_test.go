@@ -67,10 +67,12 @@ func TestPackageTriggerFlavor(t *testing.T) {
 		wantSubj   string
 		wantErr    string
 	}{
-		{"plain", []string{prj + "/gcc"}, "", "bsgo.triggers.high." + prj + ".gcc", ""},
-		{"flavor", []string{prj + "/gcc:build"}, "build", "bsgo.triggers.high." + prj + ".gcc:build", ""},
+		{"plain", []string{prj + "/gcc"}, "", "bsgo.triggers.low." + prj + ".gcc", ""},
+		{"flavor", []string{prj + "/gcc:build"}, "build", "bsgo.triggers.low." + prj + ".gcc:build", ""},
+		{"priority high", []string{prj + "/gcc", "--priority", "high"}, "", "bsgo.triggers.high." + prj + ".gcc", ""},
+		{"invalid priority", []string{prj + "/gcc", "--priority", "urgent"}, "", "", "invalid --priority"},
 		{"unknown flavor", []string{prj + "/gcc:nope"}, "", "", "unknown flavor"},
-		{"unknown flavor skipped", []string{prj + "/gcc:nope", "--skip-flavor-check"}, "nope", "bsgo.triggers.high." + prj + ".gcc:nope", ""},
+		{"unknown flavor skipped", []string{prj + "/gcc:nope", "--skip-flavor-check"}, "nope", "bsgo.triggers.low." + prj + ".gcc:nope", ""},
 		{"unknown package", []string{prj + "/nope:build"}, "", "", "not found"},
 	}
 	for _, tt := range tests {
