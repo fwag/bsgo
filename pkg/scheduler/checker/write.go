@@ -53,7 +53,7 @@ func (ps *pass) changedRows() []*storage.PackageBuildState {
 		row := &storage.PackageBuildState{
 			Project: ps.prpa.Project, Repo: ps.prpa.Repo, Arch: ps.prpa.Arch,
 			Package: d.unit.pkg, Flavor: d.unit.flavor,
-			State: d.state, Details: d.details,
+			State: d.state, Details: d.details, Blocked: d.reason,
 			SourceCommit: d.commit, Meta: d.meta,
 		}
 		if d.job != nil {
@@ -67,7 +67,7 @@ func (ps *pass) changedRows() []*storage.PackageBuildState {
 }
 
 func sameRow(old, next *storage.PackageBuildState) bool {
-	if old == nil || old.State != next.State || old.Details != next.Details {
+	if old == nil || old.State != next.State || old.Details != next.Details || !old.Blocked.Equal(next.Blocked) {
 		return false
 	}
 	return next.JobID == "" || (old.JobID == next.JobID && old.Meta == next.Meta)

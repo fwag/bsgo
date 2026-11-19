@@ -8,9 +8,6 @@ import (
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
-// maxBlockedList bounds the names listed in a "blocked" detail, like OBS.
-const maxBlockedList = 10
-
 // decision is the outcome for one unit.
 type decision struct {
 	unit    *unit
@@ -27,16 +24,28 @@ type decision struct {
 	keep bool
 	// cancel is the ID of an in-flight job that is no longer wanted.
 	cancel string
+	// reason is the structured cause of a blocked decision.
+	reason *storage.BlockedReason
 }
 
 type outcomes struct {
 	list     []*decision
 	notready map[*unit]bool
+	// held marks the units that are not ready only because a member of their
+	// dependency cycle is, not by their own state.
+	held map[*unit]bool
+	// state is the decided state of every unit so far.
+	state map[*unit]string
 }
 
-func newOutcomes() *outcomes { return &outcomes{notready: map[*unit]bool{}} }
+func newOutcomes() *outcomes {
+	return &outcomes{notready: map[*unit]bool{}, held: map[*unit]bool{}, state: map[*unit]string{}}
+}
 
-func (o *outcomes) add(d *decision) { o.list = append(o.list, d) }
+func (o *outcomes) add(d *decision) {
+	o.list = append(o.list, d)
+	o.state[d.unit] = d.state
+}
 
 func inFlight(state string) bool {
 	switch state {
@@ -105,6 +114,9 @@ func (ps *pass) markCycleNotReady(g *group) {
 	for _, m := range g.members {
 		if ps.out.notready[m] {
 			for _, o := range g.members {
+				if !ps.out.notready[o] {
+					ps.out.held[o] = true
+				}
 				ps.out.notready[o] = true
 			}
 			return
@@ -140,6 +152,11 @@ func (ps *pass) setDecision(u *unit, state, details string) *decision {
 	return d
 }
 
+// setBlocked decides u is blocked for the structured reason.
+func (ps *pass) setBlocked(u *unit, reason *storage.BlockedReason) {
+	ps.setDecision(u, storage.StateBlocked, reason.Summary()).reason = reason
+}
+
 // decideUnit ports BSSched::BuildJob::Package::check for one unit. It reports
 // false when the unit is postponed to the second pass of its cycle.
 func (ps *pass) decideUnit(u *unit, pass int) bool {
@@ -147,8 +164,12 @@ func (ps *pass) decideUnit(u *unit, pass int) bool {
 		return true
 	}
 	if u.expErr != nil {
-		state, details := ps.expansionVerdict(u)
-		ps.setDecision(u, state, details)
+		state, details, reason := ps.expansionVerdict(u)
+		if reason != nil {
+			ps.setBlocked(u, reason)
+		} else {
+			ps.setDecision(u, state, details)
+		}
 		return true
 	}
 	row := ps.row(u)
@@ -160,7 +181,7 @@ func (ps *pass) decideUnit(u *unit, pass int) bool {
 			ps.settle(u, row, m, false)
 			return true
 		}
-		ps.setDecision(u, storage.StateBlocked, "blocked: "+listNames(blocked))
+		ps.setBlocked(u, ps.blockReason(blocked))
 		return true
 	}
 	m := ps.meta(u)
@@ -215,14 +236,6 @@ func (ps *pass) postpone(u *unit, row *storage.PackageBuildState, m *metaResult,
 	return u.level > 1
 }
 
-// listNames joins names, abbreviating long lists with "...".
-func listNames(names []string) string {
-	if len(names) > maxBlockedList {
-		names = append(append([]string(nil), names[:maxBlockedList]...), "...")
-	}
-	return strings.Join(names, ", ")
-}
-
 // blockedBy returns the dependency names whose producer in this prpa is not
 // ready (scheduled, building or blocked). Producers in the same cycle do not
 // block each other, except that a member postponed to the second pass waits
@@ -258,20 +271,21 @@ func (ps *pass) waitsFor(u, p *unit, pass int) bool {
 // expansionVerdict turns an expansion error into unresolvable with the OBS
 // text, except when every missing package is the plain name of a package that
 // this prpa has yet to build: then the unit is blocked on it.
-func (ps *pass) expansionVerdict(u *unit) (state, details string) {
+func (ps *pass) expansionVerdict(u *unit) (state, details string, reason *storage.BlockedReason) {
 	var waiting []string
 	for _, m := range u.expErr.Messages {
 		req, ok := strings.CutPrefix(m, "nothing provides ")
 		if !ok {
-			return storage.StateUnresolvable, u.expErr.Error()
+			return storage.StateUnresolvable, u.expErr.Error(), nil
 		}
 		name := strings.Fields(strings.SplitN(req, " needed by ", 2)[0])
 		if len(name) == 0 || !ps.pendingProducer(u, name[0]) {
-			return storage.StateUnresolvable, u.expErr.Error()
+			return storage.StateUnresolvable, u.expErr.Error(), nil
 		}
 		waiting = append(waiting, name[0])
 	}
-	return storage.StateBlocked, "blocked: " + listNames(unique(waiting))
+	reason = ps.blockReason(unique(waiting))
+	return storage.StateBlocked, reason.Summary(), reason
 }
 
 // pendingProducer reports whether name is produced by another unit of the

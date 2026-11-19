@@ -21,8 +21,8 @@ func TestChainOrdering(t *testing.T) {
 	w.run()
 	jobs := w.wantJobs("a")
 	w.wantState("a", storage.StateScheduled, "new build")
-	w.wantState("b", storage.StateBlocked, "blocked: a")
-	w.wantState("c", storage.StateBlocked, "blocked: b")
+	w.wantState("b", storage.StateBlocked, "blocked: a (scheduled)")
+	w.wantState("c", storage.StateBlocked, "blocked: b (blocked)")
 
 	w.run() // nothing changed: a is still building, no duplicate job
 	w.wantJobs()
@@ -34,7 +34,7 @@ func TestChainOrdering(t *testing.T) {
 		t.Errorf("counts %v, want a succeeded", res.Counts)
 	}
 	w.wantState("a", storage.StateSucceeded, "")
-	w.wantState("c", storage.StateBlocked, "blocked: b")
+	w.wantState("c", storage.StateBlocked, "blocked: b (scheduled)")
 
 	w.finish(jobs[0], binary("b", "1"))
 	w.run()
@@ -56,7 +56,7 @@ func TestBlockedOnExpandedDependency(t *testing.T) {
 
 	w.run()
 	jobs := w.wantJobs("a")
-	w.wantState("b", storage.StateBlocked, "blocked: a")
+	w.wantState("b", storage.StateBlocked, "blocked: a (scheduled)")
 	if len(jobs) != 1 {
 		t.Fatal("want one job")
 	}

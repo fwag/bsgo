@@ -266,7 +266,7 @@ func (w *world) wantState(unit, state, details string) {
 	w.t.Helper()
 	st := w.state(unit)
 	if st.State != state || st.Details != details {
-		w.t.Errorf("%s: got %s %q, want %s %q", unit, st.State, details, state, details)
+		w.t.Errorf("%s: got %s %q, want %s %q", unit, st.State, st.Details, state, details)
 	}
 }
 

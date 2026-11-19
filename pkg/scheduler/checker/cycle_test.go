@@ -73,7 +73,7 @@ func TestCycleSettles(t *testing.T) {
 		t.Fatalf("first pass emitted %d jobs, want x and y", len(jobs))
 	}
 	// z waits for the cycle.
-	w.wantState("z", storage.StateBlocked, "blocked: x")
+	w.wantState("z", storage.StateBlocked, "blocked: x (scheduled)")
 	for _, j := range jobs {
 		w.finish(j, binary(j.Package, "1"))
 	}
@@ -95,7 +95,7 @@ func TestCycleConsumersBlockWhileCycleBuilds(t *testing.T) {
 	jobs := w.sink.take()
 	w.finish(jobs[0], binary(jobs[0].Package, "1")) // only x of the cycle is done
 	w.run()
-	w.wantState("z", storage.StateBlocked, "blocked: x")
+	w.wantState("z", storage.StateBlocked, "blocked: dependency cycle not finished (y scheduled)")
 }
 
 // abcWorld is a cycle of a and b, a dependency c outside of it and a
@@ -344,7 +344,7 @@ func TestKeptJobThatCannotBeResentIsEvaluated(t *testing.T) {
 	}
 }
 
-func TestBlockedDetailListIsAbbreviated(t *testing.T) {
+func TestBlockedDetailListIsCropped(t *testing.T) {
 	deps := make([]string, 0, 12)
 	boot := []bininfo.BinInfo{}
 	for i := range 12 {
@@ -359,7 +359,7 @@ func TestBlockedDetailListIsAbbreviated(t *testing.T) {
 	w.pkg("app", deps)
 	w.run()
 	st := w.state("app")
-	want := "blocked: " + strings.Join(deps[:10], ", ") + ", ..."
+	want := "blocked: dep00 (scheduled), dep01 (scheduled), dep02 (scheduled) +9 more"
 	if st.State != storage.StateBlocked || st.Details != want {
 		t.Errorf("app is %s %q, want blocked %q", st.State, st.Details, want)
 	}
