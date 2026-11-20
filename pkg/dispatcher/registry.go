@@ -72,6 +72,17 @@ func (r *WorkerRegistry) UpdateHeartbeat(hb v1.WorkerHeartbeat) {
 	w.LastSeen = time.Now()
 }
 
+// LastSeen is the time of the worker's last heartbeat, the zero time for an
+// unknown worker.
+func (r *WorkerRegistry) LastSeen(workerID string) time.Time {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if w, ok := r.workers[workerID]; ok {
+		return w.LastSeen
+	}
+	return time.Time{}
+}
+
 func (r *WorkerRegistry) SetWorkerStatus(workerID, status, activeJob string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

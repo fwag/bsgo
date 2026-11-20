@@ -355,8 +355,7 @@ func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nat
 				for _, rj := range reaped {
 					// The job is back in the queue with the same ID: REQUEUED
 					// returns its build state to scheduled (not failed).
-					fmt.Printf("[%s] [WATCHDOG] Re-queued stale/interrupted job %s (%s/%s) due to worker failure/restart\n",
-						time.Now().Format("15:04:05"), rj.JobID, rj.Project, rj.Package)
+					logf("WATCHDOG", "Re-queued job %s (%s/%s): %s", rj.JobID, rj.Project, rj.Package, rj.Reason)
 
 					statusMsg, _ := json.Marshal(map[string]any{
 						"job_id":       rj.JobID,

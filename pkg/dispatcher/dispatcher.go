@@ -282,8 +282,30 @@ func (d *Dispatcher) worthReaping(jobID, workerID string, dead bool, now time.Ti
 	return now.Sub(d.dispatchedAt[jobID]) > d.dispatchGrace
 }
 
+// ReapedJob is a job taken back from a worker by ReapStaleJobs.
+type ReapedJob struct {
+	*v1.BuildJob
+	WorkerID string
+	// Reason names the check that fired and its evidence.
+	Reason string
+}
+
+// reapReason describes why the job of a stale worker was taken back.
+func (d *Dispatcher) reapReason(jobID, workerID string, dead bool, now time.Time) string {
+	if !dead {
+		return fmt.Sprintf("worker %s restarted: it reports no active jobs, job unreported %s after dispatch",
+			workerID, now.Sub(d.dispatchedAt[jobID]).Round(time.Second))
+	}
+	reported := "job never reported running"
+	if d.running[jobID] == workerID {
+		reported = "job last reported running"
+	}
+	return fmt.Sprintf("worker %s silent for %s (TTL %s), %s",
+		workerID, now.Sub(d.registry.LastSeen(workerID)).Round(time.Second), d.workerTTL, reported)
+}
+
 // ReapStaleJobs checks for dead workers or restarted workers, aborts unacknowledged jobs, and re-enqueues them.
-func (d *Dispatcher) ReapStaleJobs(now time.Time) []*v1.BuildJob {
+func (d *Dispatcher) ReapStaleJobs(now time.Time) []ReapedJob {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -292,7 +314,7 @@ func (d *Dispatcher) ReapStaleJobs(now time.Time) []*v1.BuildJob {
 		return nil
 	}
 
-	var reaped []*v1.BuildJob
+	var reaped []ReapedJob
 	for jobID, wid := range d.jobWorkers {
 		if !dead[wid] && !restarted[wid] {
 			continue
@@ -302,6 +324,7 @@ func (d *Dispatcher) ReapStaleJobs(now time.Time) []*v1.BuildJob {
 			continue
 		}
 
+		reason := d.reapReason(jobID, wid, dead[wid], now)
 		delete(d.dispatchedJobs, jobID)
 		delete(d.jobWorkers, jobID)
 		delete(d.dispatchedAt, jobID)
@@ -312,7 +335,7 @@ func (d *Dispatcher) ReapStaleJobs(now time.Time) []*v1.BuildJob {
 
 		d.signalAbort(jobID, "WORKER_LEASE_EXPIRED")
 		d.queue.Push(job)
-		reaped = append(reaped, job)
+		reaped = append(reaped, ReapedJob{BuildJob: job, WorkerID: wid, Reason: reason})
 	}
 
 	return reaped
