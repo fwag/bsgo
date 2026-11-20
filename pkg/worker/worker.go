@@ -32,7 +32,9 @@ type WorkerDaemon struct {
 	stopChan     chan struct{}
 	stopOnce     sync.Once
 	cachedHashes []string
-	wg           sync.WaitGroup
+	// heartbeatFailing is set while publishing the heartbeat fails.
+	heartbeatFailing bool
+	wg               sync.WaitGroup
 }
 
 func NewWorkerDaemon(cfg WorkerConfig, nc *nats.Conn, sandbox Sandbox) *WorkerDaemon {
@@ -171,7 +173,7 @@ func (w *WorkerDaemon) emitHeartbeat() {
 		ActiveJobID:     activeID,
 		ActiveJobIDs:    activeIDs,
 		Hardware:        w.cfg.Hardware,
-		CachedRPMHashes: w.cachedHashes,
+		CachedRPMHashes: append([]string(nil), w.cachedHashes...),
 		ConstrainedOnly: w.cfg.ConstrainedOnly,
 		TimestampUnix:   time.Now().Unix(),
 	}
@@ -179,11 +181,49 @@ func (w *WorkerDaemon) emitHeartbeat() {
 
 	data, err := json.Marshal(hb)
 	if err == nil {
-		_ = w.nc.Publish("bsgo.workers.heartbeat", data)
+		w.publishHeartbeat(data)
 		if w.cfg.StateDir != "" {
 			_ = os.MkdirAll(w.cfg.StateDir, 0750)
 			_ = os.WriteFile(filepath.Join(w.cfg.StateDir, "status.json"), data, 0600)
 		}
+	}
+}
+
+// maxCachedHashes bounds the artifact digests a heartbeat advertises. The
+// heartbeat is a single NATS message: left to grow with every build it
+// exceeds the server's max_payload (1 MiB by default, about 15000 digests),
+// the publish fails and the worker goes silent while it keeps building.
+const maxCachedHashes = 4096
+
+// rememberHash records the digest of a built artifact for the heartbeat. The
+// list holds each digest once and drops the oldest beyond maxCachedHashes.
+// The caller holds w.mu.
+func (w *WorkerDaemon) rememberHash(sha string) {
+	for i, h := range w.cachedHashes {
+		if h == sha {
+			w.cachedHashes = append(w.cachedHashes[:i], w.cachedHashes[i+1:]...)
+			break
+		}
+	}
+	w.cachedHashes = append(w.cachedHashes, sha)
+	if over := len(w.cachedHashes) - maxCachedHashes; over > 0 {
+		w.cachedHashes = append(w.cachedHashes[:0], w.cachedHashes[over:]...)
+	}
+}
+
+// publishHeartbeat sends a heartbeat. A failure is logged when it starts and
+// when it ends, not on every 2 second tick.
+func (w *WorkerDaemon) publishHeartbeat(data []byte) {
+	err := w.nc.Publish("bsgo.workers.heartbeat", data)
+	w.mu.Lock()
+	failing := w.heartbeatFailing
+	w.heartbeatFailing = err != nil
+	w.mu.Unlock()
+	switch {
+	case err != nil && !failing:
+		fmt.Printf("[%s] [ERROR] heartbeat publish failed (%d bytes): %v\n", time.Now().Format("15:04:05"), len(data), err)
+	case err == nil && failing:
+		fmt.Printf("[%s] [INFO] heartbeat publish recovered\n", time.Now().Format("15:04:05"))
 	}
 }
 
@@ -214,7 +254,7 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 	w.mu.Lock()
 	if phase == "SUCCEEDED" && res != nil {
 		for _, a := range res.Artifacts {
-			w.cachedHashes = append(w.cachedHashes, a.SHA256)
+			w.rememberHash(a.SHA256)
 		}
 	}
 	w.mu.Unlock()
