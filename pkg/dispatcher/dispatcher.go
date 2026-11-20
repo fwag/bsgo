@@ -95,6 +95,17 @@ func (d *Dispatcher) IsRunning(jobID string) bool {
 	return d.runningLocked(jobID)
 }
 
+// Tracks reports whether the dispatcher has the job in flight: queued,
+// dispatched and not finished, or reported running by a live worker.
+func (d *Dispatcher) Tracks(jobID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, ok := d.dispatchedJobs[jobID]; ok {
+		return true
+	}
+	return d.queue.Contains(jobID) || d.runningLocked(jobID)
+}
+
 func (d *Dispatcher) runningLocked(jobID string) bool {
 	w, ok := d.running[jobID]
 	return ok && time.Since(d.reportedAt[w]) <= 2*d.workerTTL

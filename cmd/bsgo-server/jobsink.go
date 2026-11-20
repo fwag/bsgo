@@ -15,36 +15,39 @@ import (
 	"github.com/openSUSE/bsgo/pkg/scheduler/checker"
 )
 
-// maxRemembered bounds the job IDs the sink remembers for deduplication.
+// maxRemembered bounds the job IDs the sink counts publish attempts for.
 const maxRemembered = 4096
 
+// streamPublisher is the part of jetstream.JetStream the sink needs.
+type streamPublisher interface {
+	Publish(ctx context.Context, subject string, payload []byte, opts ...jetstream.PublishOpt) (*jetstream.PubAck, error)
+}
+
 // jobSink is the checker's JobSink: it publishes jobs to the JOBS_PENDING
-// stream (deduplicated by job ID) and enqueues them in the local dispatcher.
+// stream and enqueues them in the local dispatcher.
 type jobSink struct {
-	js     jetstream.JetStream
+	js     streamPublisher
 	nc     *nats.Conn
 	disp   *dispatcher.Dispatcher
 	bucket string
 
-	mu   sync.Mutex
-	seen map[string]int32 // emitted job ID -> highest priority emitted
+	mu       sync.Mutex
+	attempts map[string]int // job ID -> times the job was emitted by this process
 }
 
-func newJobSink(js jetstream.JetStream, nc *nats.Conn, disp *dispatcher.Dispatcher, bucket string) *jobSink {
-	return &jobSink{js: js, nc: nc, disp: disp, bucket: bucket, seen: map[string]int32{}}
+func newJobSink(js streamPublisher, nc *nats.Conn, disp *dispatcher.Dispatcher, bucket string) *jobSink {
+	return &jobSink{js: js, nc: nc, disp: disp, bucket: bucket, attempts: map[string]int{}}
 }
 
-// Emit implements checker.JobSink. A job ID that was already emitted by this
-// process is ignored; across restarts the stream deduplicates by message ID.
+// Emit implements checker.JobSink. The dispatcher is the authority on whether
+// a job is already in flight (queued, dispatched or reported running): such a
+// job is only reprioritised. A job the dispatcher no longer knows is emitted
+// again even if this process emitted its ID before, because an aborted job
+// returns to scheduled with the same ID and must be dispatched again.
 func (s *jobSink) Emit(ctx context.Context, spec *checker.JobSpec) error {
-	s.mu.Lock()
-	prio, dup := s.seen[spec.JobID]
-	if dup && spec.Priority > prio {
-		s.seen[spec.JobID] = spec.Priority
-	}
-	s.mu.Unlock()
-	if dup {
-		return s.reprioritise(spec, prio)
+	if s.disp.Tracks(spec.JobID) {
+		s.reprioritise(spec)
+		return nil
 	}
 	job, err := jobFromSpec(spec, s.bucket, time.Now())
 	if err != nil {
@@ -54,35 +57,41 @@ func (s *jobSink) Emit(ctx context.Context, spec *checker.JobSpec) error {
 	if err != nil {
 		return fmt.Errorf("marshal job %s: %w", job.JobID, err)
 	}
-	if _, err := s.js.Publish(ctx, natsqueue.SubjectJobsPending, data, jetstream.WithMsgID(job.JobID)); err != nil {
+	msgID := s.messageID(job.JobID)
+	if _, err := s.js.Publish(ctx, natsqueue.SubjectJobsPending, data, jetstream.WithMsgID(msgID)); err != nil {
 		return fmt.Errorf("publish job %s: %w", job.JobID, err)
 	}
 	s.disp.EnqueueJob(job)
-	s.mu.Lock()
-	if len(s.seen) >= maxRemembered {
-		clear(s.seen)
-	}
-	s.seen[spec.JobID] = spec.Priority
-	s.mu.Unlock()
 	logf("DISPATCHER", "enqueued job %s (%s/%s %s, priority %d, %s)",
 		job.JobID, job.Project, job.Package, job.Target+"/"+job.Architecture, job.Priority, spec.Explain)
 	return nil
 }
 
-// reprioritise passes a re-emitted job to the dispatcher when its priority
-// rose (a forced rebuild request with a higher tier): the queued job takes the
-// priority, nothing is published again.
-func (s *jobSink) reprioritise(spec *checker.JobSpec, was int32) error {
-	if spec.Priority <= was {
-		return nil
+// messageID returns the stream message ID of the next emission of a job. The
+// first emission uses the job ID, so a restarted server does not publish
+// duplicates; later ones carry the attempt number, so the stream's duplicate
+// window never swallows the re-send of an aborted job.
+func (s *jobSink) messageID(jobID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.attempts) >= maxRemembered {
+		clear(s.attempts)
 	}
-	job, err := jobFromSpec(spec, s.bucket, time.Now())
-	if err != nil {
-		return err
+	n := s.attempts[jobID]
+	s.attempts[jobID] = n + 1
+	if n == 0 {
+		return jobID
 	}
-	s.disp.EnqueueJob(job)
-	logf("DISPATCHER", "raised job %s priority %d -> %d", job.JobID, was, job.Priority)
-	return nil
+	return fmt.Sprintf("%s#%d", jobID, n)
+}
+
+// reprioritise passes a re-emitted in-flight job to the dispatcher: a queued
+// job takes a higher priority (a forced rebuild request with a higher tier),
+// nothing is published again.
+func (s *jobSink) reprioritise(spec *checker.JobSpec) {
+	if s.disp.Queue().Raise(spec.JobID, spec.Priority) {
+		logf("DISPATCHER", "raised job %s priority to %d", spec.JobID, spec.Priority)
+	}
 }
 
 // Cancel implements checker.JobSink: the job leaves the dispatcher queue and a
