@@ -355,7 +355,7 @@ func (m *watchModel) renderFleet() string {
 	fleet := buildFleet(m.workers, m.active, time.Now())
 	var lines []string
 	for _, w := range fleet {
-		lines = append(lines, fmt.Sprintf("  %s %s %s", w.ID, w.Arch, w.Status))
+		lines = append(lines, fmt.Sprintf("  %s %s %s%s", w.ID, w.Arch, w.Status, formatHeartbeatAge(w.HeartbeatAge)))
 		for _, j := range w.Jobs {
 			lines = append(lines, "    "+formatFleetJob(j))
 		}
@@ -368,6 +368,13 @@ func (m *watchModel) renderFleet() string {
 	}
 	title := fmt.Sprintf("  Worker fleet (%d)", len(fleet))
 	return titleStyle.MarginBottom(0).Render(title) + "\n" + strings.Join(lines, "\n") + "\n"
+}
+
+func formatHeartbeatAge(age int) string {
+	if age < 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (heartbeat %ds ago)", age)
 }
 
 func formatFleetJob(j fleetJob) string {

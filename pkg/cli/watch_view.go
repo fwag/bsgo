@@ -305,7 +305,9 @@ type fleetJob struct {
 // fleetWorker is one worker with all of its active jobs.
 type fleetWorker struct {
 	ID, Arch, Status string
-	Jobs             []fleetJob
+	// HeartbeatAge is the seconds since the last heartbeat, -1 when unknown.
+	HeartbeatAge int
+	Jobs         []fleetJob
 }
 
 // workerStaleAfter is how long after its last heartbeat a worker is dropped.
@@ -319,7 +321,10 @@ func buildFleet(heartbeats map[string]v1.WorkerHeartbeat, active map[string]Pack
 		if hb.TimestampUnix > 0 && now.Sub(time.Unix(hb.TimestampUnix, 0)) > workerStaleAfter {
 			continue
 		}
-		w := fleetWorker{ID: id, Arch: hb.Architecture, Status: hb.Status}
+		w := fleetWorker{ID: id, Arch: hb.Architecture, Status: hb.Status, HeartbeatAge: -1}
+		if hb.TimestampUnix > 0 {
+			w.HeartbeatAge = max(0, int(now.Unix()-hb.TimestampUnix))
+		}
 		jobs := append([]string(nil), hb.ActiveJobIDs...)
 		if hb.ActiveJobID != "" && !containsString(jobs, hb.ActiveJobID) {
 			jobs = append(jobs, hb.ActiveJobID)

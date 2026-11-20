@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -18,6 +19,10 @@ type WorkerRecord struct {
 	ConsecutiveErrors int
 	QuarantineUntil   time.Time
 	Allocations       map[string]jobAllocation
+	// silenceLogged and statusLogged mark that the current silence was
+	// already reported, so it is logged once rather than on every pass.
+	silenceLogged bool
+	statusLogged  bool
 }
 
 type WorkerRegistry struct {
@@ -27,6 +32,29 @@ type WorkerRegistry struct {
 	ttl                  time.Duration
 	maxConsecutiveErrors int
 	quarantineDuration   time.Duration
+	now                  func() time.Time
+	logf                 func(msg string)
+}
+
+// SetClock replaces the clock used for heartbeat times; for tests.
+func (r *WorkerRegistry) SetClock(now func() time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.now = now
+}
+
+// SetLogger sets the sink for worker liveness lines, which are plain text
+// without a component or timestamp prefix. The default discards them.
+func (r *WorkerRegistry) SetLogger(logf func(msg string)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.logf = logf
+}
+
+func (r *WorkerRegistry) logLocked(format string, args ...any) {
+	if r.logf != nil {
+		r.logf(fmt.Sprintf(format, args...))
+	}
 }
 
 func NewWorkerRegistry(ttl time.Duration) *WorkerRegistry {
@@ -46,6 +74,7 @@ func NewWorkerRegistryWithConfig(ttl, quarantineDuration time.Duration, maxConse
 		ttl:                  ttl,
 		maxConsecutiveErrors: maxConsecutiveErrors,
 		quarantineDuration:   quarantineDuration,
+		now:                  time.Now,
 	}
 }
 
@@ -63,13 +92,67 @@ func (r *WorkerRegistry) UpdateHeartbeat(hb v1.WorkerHeartbeat) {
 	if !exists {
 		r.workers[hb.WorkerID] = &WorkerRecord{
 			WorkerHeartbeat: hb,
-			LastSeen:        time.Now(),
+			LastSeen:        r.now(),
 		}
 		return
 	}
 
+	now := r.now()
+	if w.silenceLogged || w.statusLogged {
+		r.logLocked("worker %s heartbeat resumed after %ds", hb.WorkerID, seconds(now.Sub(w.LastSeen)))
+	}
+	w.silenceLogged, w.statusLogged = false, false
 	w.WorkerHeartbeat = hb
-	w.LastSeen = time.Now()
+	w.LastSeen = now
+}
+
+func seconds(d time.Duration) int { return int(d / time.Second) }
+
+// WarnSilentWorkers logs once per silence each known worker whose last
+// heartbeat is older than the TTL.
+func (r *WorkerRegistry) WarnSilentWorkers(now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, w := range r.workers {
+		silent := now.Sub(w.LastSeen)
+		if silent <= r.ttl || w.silenceLogged {
+			continue
+		}
+		w.silenceLogged = true
+		r.logLocked("WARN worker %s silent for %ds (TTL %ds, last heartbeat %s, %d jobs dispatched)",
+			id, seconds(silent), seconds(r.ttl), w.LastSeen.Format("15:04:05"), len(w.Allocations))
+	}
+}
+
+// NoteJobStatus records a job status message from a worker. When the worker's
+// heartbeats have stopped while it still reports jobs, it logs once per
+// silence that heartbeat publishing is probably failing.
+func (r *WorkerRegistry) NoteJobStatus(workerID string, now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	w, ok := r.workers[workerID]
+	if !ok || w.statusLogged {
+		return
+	}
+	silent := now.Sub(w.LastSeen)
+	if silent <= r.ttl {
+		return
+	}
+	w.statusLogged = true
+	r.logLocked("WARN worker %s sends job status but no heartbeats for %ds (heartbeat publish failing?)",
+		workerID, seconds(silent))
+}
+
+// HeartbeatAge is the time since the worker's last heartbeat; false for an
+// unknown worker.
+func (r *WorkerRegistry) HeartbeatAge(workerID string, now time.Time) (time.Duration, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	w, ok := r.workers[workerID]
+	if !ok {
+		return 0, false
+	}
+	return now.Sub(w.LastSeen), true
 }
 
 // LastSeen is the time of the worker's last heartbeat, the zero time for an

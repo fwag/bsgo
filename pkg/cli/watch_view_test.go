@@ -216,11 +216,11 @@ func TestBuildFleet(t *testing.T) {
 	}
 	got := buildFleet(hbs, active, now)
 	want := []fleetWorker{
-		{ID: "w1", Arch: "x86_64", Status: "BUSY", Jobs: []fleetJob{
+		{ID: "w1", Arch: "x86_64", Status: "BUSY", HeartbeatAge: 5, Jobs: []fleetJob{
 			{JobID: "job-a", Name: "glibc", RepoArch: "standard/x86_64", Elapsed: "47m12s"},
 			{JobID: "job-b"},
 		}},
-		{ID: "w2", Arch: "aarch64", Status: "IDLE"},
+		{ID: "w2", Arch: "aarch64", Status: "IDLE", HeartbeatAge: 0},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v\nwant %+v", got, want)

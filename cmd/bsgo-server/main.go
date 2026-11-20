@@ -351,6 +351,7 @@ func startDispatchLoop(ctx context.Context, disp *dispatcher.Dispatcher, nc *nat
 			case <-ctx.Done():
 				return
 			case <-reaperTicker.C:
+				disp.Registry().WarnSilentWorkers(time.Now())
 				reaped := disp.ReapStaleJobs(time.Now())
 				for _, rj := range reaped {
 					// The job is back in the queue with the same ID: REQUEUED

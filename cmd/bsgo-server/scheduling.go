@@ -61,6 +61,7 @@ func subscribeDispatcherResults(nc *nats.Conn, disp *dispatcher.Dispatcher) {
 		if err := json.Unmarshal(msg.Data, &st); err != nil {
 			return
 		}
+		disp.Registry().NoteJobStatus(st.WorkerID, time.Now())
 		switch st.Phase {
 		case "SUCCEEDED", "FAILED", "ABORTED":
 		default:
