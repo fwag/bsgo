@@ -141,6 +141,10 @@ passes them to obs-build with `--rpmlist`.
 
 ## 5. meta: has anything changed since the last build?
 
+For a guided explanation with real data from the SLFO 1.2 bootstrap (depth,
+ripple, deduplication, cycle cut, the migration case) see
+[meta-trees-explained.md](meta-trees-explained.md).
+
 The meta of a build is a small tree flattened into lines, the same format as
 the OBS `.meta` file (`BSSched/BuildJob/Package.pm`, `BSBuild.pm`):
 
