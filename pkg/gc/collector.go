@@ -162,11 +162,11 @@ func (c *Collector) protectedFor(prefix string) Protected {
 }
 
 func (c *Collector) report(r Result) {
-	mode := ""
+	verb, freed := "deleted", "freed"
 	if r.DryRun {
-		mode = " (dry run)"
+		verb, freed = "would delete", "would free"
 	}
-	c.logf("[GC] %s%s: kept %d, deleted %d objects, freed %s in %ds", r.Prefix, mode, r.Kept, r.Deleted,
+	c.logf("[GC] %s: kept %d, %s %d objects, %s %s in %ds", r.Prefix, r.Kept, verb, r.Deleted, freed,
 		FormatBytes(r.FreedBytes), int(r.Duration.Round(time.Second)/time.Second))
 	for _, p := range r.Plans {
 		for _, w := range p.Warnings {

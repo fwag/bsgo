@@ -96,6 +96,9 @@ func (p *Plan) drop(o Object) {
 }
 
 func (p *Plan) finish() {
+	if p.Delete == nil {
+		p.Delete = []string{}
+	}
 	sort.Strings(p.Keep)
 	sort.Strings(p.Delete)
 	p.Kept = len(p.Keep)

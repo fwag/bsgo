@@ -20,6 +20,7 @@ import (
 	"github.com/openSUSE/bsgo/pkg/dispatcher"
 	"github.com/openSUSE/bsgo/pkg/dod"
 	"github.com/openSUSE/bsgo/pkg/gateway"
+	"github.com/openSUSE/bsgo/pkg/gc"
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/publisher"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
@@ -77,6 +78,14 @@ type ServerConfig struct {
 	SignHelper string
 	// SignWorkers bounds the jobs this instance signs concurrently.
 	SignWorkers int
+	// GCInterval is the time between garbage collection runs of old build
+	// repository indexes and artifacts (0 disables).
+	GCInterval time.Duration
+	// GCGrace is the minimum age of an object before GC may delete it.
+	GCGrace time.Duration
+	// GCKeepIndexVersions is the number of superseded index versions kept per
+	// prpa besides the current one.
+	GCKeepIndexVersions int
 }
 
 func parseServerConfig() ServerConfig {
@@ -114,6 +123,9 @@ func parseServerConfig() ServerConfig {
 	flag.IntVar(&cfg.SignMaxDeliver, "sign-max-deliver", signing.DefaultMaxDeliver, "Deliveries of a signing request before the job fails")
 	flag.StringVar(&cfg.SignHelper, "sign-helper", getEnv("BSGO_SIGN_HELPER", ""), "Path of bsgo-sign-helper (default: next to this binary, then $PATH)")
 	flag.IntVar(&cfg.SignWorkers, "sign-workers", 2, "Jobs signed concurrently by this instance")
+	flag.DurationVar(&cfg.GCInterval, "gc-interval", getEnvDuration("BSGO_GC_INTERVAL", 6*time.Hour), "Interval between garbage collection runs of unreachable build repository indexes and superseded artifacts; 0 disables")
+	flag.DurationVar(&cfg.GCGrace, "gc-grace", getEnvDuration("BSGO_GC_GRACE", gc.DefaultGrace), "Minimum age of an object before garbage collection may delete it")
+	flag.IntVar(&cfg.GCKeepIndexVersions, "gc-keep-index-versions", gc.DefaultKeepVersions, "Superseded build repository index versions kept per prpa besides the current one")
 	flag.Parse()
 
 	if subcmd != "" {
@@ -171,6 +183,7 @@ func runControlPlane(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js je
 	}
 
 	startSchedulerAndDispatcher(ctx, cfg, nc, js, store)
+	startGC(ctx, cfg, js, store)
 	startHTTPServer(ctx, cfg.HTTPPort, store, nc)
 
 	fmt.Printf("bsgo Control Plane is LIVE and listening for triggers and workers\n")
