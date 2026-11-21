@@ -15,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newAdminCmd(store storage.Store, opts *OutputOptions, buildRepo BuildRepoOpener) *cobra.Command {
+func newAdminCmd(store storage.Store, opts *OutputOptions, buildRepo BuildRepoOpener, gcOpen GCOpener) *cobra.Command {
 	adminCmd := &cobra.Command{
 		Use:   "admin",
 		Short: "Administrative management and event injection commands",
@@ -27,6 +27,7 @@ triggers, force package rebuilds, and manage queue priorities.`,
 	adminCmd.AddCommand(newAdminTriggerCmd(store, opts))
 	adminCmd.AddCommand(newAdminPurgeCmd(opts))
 	adminCmd.AddCommand(newAdminBuildRepoCmd(store, opts, buildRepo))
+	adminCmd.AddCommand(newAdminGCCmd(store, opts, gcOpen))
 	return adminCmd
 }
 

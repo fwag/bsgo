@@ -8,7 +8,10 @@ import (
 // RootOption customizes NewRootCommand.
 type RootOption func(*rootConfig)
 
-type rootConfig struct{ buildRepo BuildRepoOpener }
+type rootConfig struct {
+	buildRepo BuildRepoOpener
+	gc        GCOpener
+}
 
 // WithBuildRepoOpener replaces the environment-driven S3/NATS connection of
 // "admin buildrepo" (used by tests).
@@ -16,8 +19,14 @@ func WithBuildRepoOpener(o BuildRepoOpener) RootOption {
 	return func(c *rootConfig) { c.buildRepo = o }
 }
 
+// WithGCOpener replaces the environment-driven S3/NATS connection of
+// "admin gc" (used by tests).
+func WithGCOpener(o GCOpener) RootOption {
+	return func(c *rootConfig) { c.gc = o }
+}
+
 func NewRootCommand(store storage.Store, options ...RootOption) *cobra.Command {
-	cfg := rootConfig{buildRepo: openBuildRepoFromEnv}
+	cfg := rootConfig{buildRepo: openBuildRepoFromEnv, gc: openGCFromEnv}
 	for _, o := range options {
 		o(&cfg)
 	}
@@ -35,7 +44,7 @@ func NewRootCommand(store storage.Store, options ...RootOption) *cobra.Command {
 
 	rootCmd.AddCommand(newProjectCmd(store, &opts))
 	rootCmd.AddCommand(newPackageCmd(store, &opts))
-	rootCmd.AddCommand(newAdminCmd(store, &opts, cfg.buildRepo))
+	rootCmd.AddCommand(newAdminCmd(store, &opts, cfg.buildRepo, cfg.gc))
 	rootCmd.AddCommand(newAuthCmd(&opts))
 	rootCmd.AddCommand(newWatchCmd(store, &opts))
 	rootCmd.AddCommand(newJobCmd(&opts))
