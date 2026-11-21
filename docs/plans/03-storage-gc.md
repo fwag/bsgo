@@ -132,7 +132,15 @@ deleted after grace, dry run.
   Rich `--help` with examples. Scope it with an admin token permission
   (`admin:gc`, see `docs/specs/04-access-control-and-auth.md`).
 
-### G4. One-time cleanup on aisrv (operator step, after merge and deploy)
+### G4. One-time cleanup on aisrv (operator step, after merge and deploy) - DONE 2026-11-21
+
+Result: dry run first (no overlap between planned artifact deletions and the
+current entries.json keys of x86_64/i586), then `--prefix buildrepo --yes`:
+deleted 8,102 objects, freed 4.3 GiB (2,448 kept: versions superseded within the
+24h grace during the glibc rebuild wave); checker and publisher verified; then
+`--prefix artifacts --yes`: deleted 11,901 objects, freed 25.7 GiB (13,968
+kept). No missing-bdep errors afterwards. Background loop enabled with
+`-gc-interval 6h` in hack/systemd/bsgo-server.service.
 
 1. `bsgo admin gc --prefix all --dry-run --json > gc-plan.json`; review totals
    (expected: `buildrepo/` from 6.7 GiB to a few MB; `artifacts/` roughly to the
