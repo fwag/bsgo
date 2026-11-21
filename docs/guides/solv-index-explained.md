@@ -174,11 +174,16 @@ artifacts, including every old RPM release of every unit.
 
 `pkg/gc` removes what no current pointer can reach. The rules:
 
-- **Grace period** (default 24h): nothing younger is ever deleted, so a checker
-  pass, a publisher run or a job that loaded a pointer a moment ago never finds
-  an object missing. Jobs that are queued or running resolved their build
-  dependencies from the index when they were scheduled; the grace period is what
-  protects them, the dispatcher is not consulted.
+- **Grace period** (default 24h, minimum 1h): nothing younger is ever deleted,
+  and grace counts from the moment an object stopped being current, not from its
+  upload. An index version is deleted only when the version that superseded it is
+  older than the grace period (independent of the N kept versions), and every RPM
+  that such a still-retained version lists stays as well. So a checker pass, a
+  publisher run or a job that loaded the previous pointer finds its objects for
+  at least the grace period. Job bdeps are not stored anywhere GC can read, so a
+  job that waits in the queue longer than the grace period after its bdeps were
+  superseded can find one gone: its download fails and the job fails, to be
+  scheduled again by the next checker pass against the current index.
 - **`buildrepo/`**: the pair referenced by the `build_repo_index` row of a prpa
   is kept, plus the last N superseded pairs of that prpa by modification time
   (default 3, for debugging). `.solv` and `.entries.json` of a version are
@@ -191,14 +196,21 @@ artifacts, including every old RPM release of every unit.
   the unit (listed in the unit's current `bininfo.json`, which includes
   debuginfo, debugsource and source RPMs that are not in the index), or when it
   is a metadata file (`bininfo.json`, `_slsa_provenance.json`, `_statistics`,
-  `build.log`). Older RPMs of the unit are deleted. Units that no longer exist
+  `build.log`), or has the version-release of a binary an index still lists for
+  that unit (so the debuginfo and source RPM of the indexed build stay even if a
+  newer build that never reached the index replaced `bininfo.json`). Older RPMs
+  of the unit are deleted. Units that no longer exist
   (no referenced binary and no package of that name in the project) lose all
   files older than the grace period. A unit that has no `bininfo.json` is kept
   as a whole.
 - Never touched: `repos/` (owned by the publisher), `backup/`, `recipes/`, `dod/`.
 - A run refuses to start when the pointer table is empty while objects exist, so
   a server that fell back to an empty store cannot declare everything garbage.
-- Pointers are read again right before each batch of deletions
+- A project that has build repositories but no packages in the package listing
+  is refused rather than treated as fully removed; a unit with a
+  `package_build_state` row counts as existing.
+- Pointers are read again, and the objects of the plan are listed again, right
+  before each batch of deletions
   (S3 `DeleteObjects`, up to 1000 keys), so a pointer swap during a run never
   loses the new current objects.
 - Only one run happens at a time: the `gc` lease in NATS KV, shared by all server
@@ -212,8 +224,8 @@ The server runs it in the background; one plain log line per prefix:
 
 | Server flag | Default | Meaning |
 |---|---|---|
-| `--gc-interval` | 6h | time between runs, `0` disables |
-| `--gc-grace` | 24h | minimum object age before deletion |
+| `--gc-interval` | 0 (disabled) | time between runs, for example `6h`; enable only after reviewing `bsgo admin gc --dry-run --json` |
+| `--gc-grace` | 24h | grace period, minimum 1h |
 | `--gc-keep-index-versions` | 3 | superseded index versions kept per prpa |
 
 By hand, with the CLI (access tokens need the scope `admin:gc`):
@@ -224,7 +236,8 @@ bsgo admin gc --prefix buildrepo --yes
 bsgo admin gc --prefix artifacts --project SUSE:SLFO:1.2 --grace 48h --yes
 ```
 
-Without `--yes` it asks on a terminal and fails otherwise; `--dry-run` never
+Without `--yes` it asks on a terminal, then deletes exactly the plan it showed,
+and fails when not interactive; `--dry-run` never
 deletes. With the index kept to the current version plus three, the steady state
 is a few MB of index per architecture.
 

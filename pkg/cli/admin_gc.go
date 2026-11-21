@@ -135,7 +135,7 @@ Examples:
 	}
 	cmd.Flags().StringVar(&flags.prefix, "prefix", "all", "What to collect: buildrepo, artifacts or all")
 	cmd.Flags().StringVar(&flags.project, "project", "", "Restrict the run to one project (default: all projects)")
-	cmd.Flags().DurationVar(&flags.grace, "grace", gc.DefaultGrace, "Never delete objects younger than this")
+	cmd.Flags().DurationVar(&flags.grace, "grace", gc.DefaultGrace, "Never delete objects younger than this, and keep index versions until their successor is this old (minimum 1h)")
 	cmd.Flags().IntVar(&flags.keepVersions, "keep-index-versions", gc.DefaultKeepVersions, "Superseded index versions kept per prpa besides the current one")
 	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false, "Compute and report the plan but delete nothing")
 	cmd.Flags().BoolVarP(&flags.yes, "yes", "y", false, "Delete without asking for confirmation")
@@ -145,6 +145,9 @@ Examples:
 func runAdminGC(cmd *cobra.Command, store storage.Store, opts *OutputOptions, open GCOpener, flags adminGCFlags) error {
 	prefixes, err := flags.prefixes()
 	if err != nil {
+		return err
+	}
+	if err := flags.options().Validate(); err != nil {
 		return err
 	}
 	interactive := isTerminal(cmd.InOrStdin()) && !opts.JSON
@@ -164,17 +167,14 @@ func runAdminGC(cmd *cobra.Command, store storage.Store, opts *OutputOptions, op
 	}
 	adm.Collector.Logf = func(format string, args ...any) { fmt.Fprintf(cmd.ErrOrStderr(), format+"\n", args...) }
 
-	if !flags.dryRun && !flags.yes {
-		ok, err := confirmGC(ctx, cmd, adm.Collector, prefixes, flags.options())
-		if err != nil || !ok {
-			return err
-		}
-	}
 	var results []gc.Result
-	if flags.dryRun {
+	switch {
+	case flags.dryRun:
 		results, err = adm.Collector.Plan(ctx, prefixes, flags.options())
-	} else {
+	case flags.yes:
 		results, err = adm.Collector.Run(ctx, prefixes, flags.options())
+	default:
+		results, err = confirmAndExecute(ctx, cmd, adm.Collector, prefixes, flags.options())
 	}
 	if renderErr := renderGC(cmd.OutOrStdout(), results, flags.dryRun, *opts); renderErr != nil {
 		return renderErr
@@ -190,16 +190,21 @@ func runAdminGC(cmd *cobra.Command, store storage.Store, opts *OutputOptions, op
 	return nil
 }
 
-// confirmGC shows what a run would delete and asks whether to go on.
-func confirmGC(ctx context.Context, cmd *cobra.Command, c *gc.Collector, prefixes []string, o gc.Options) (bool, error) {
+// confirmAndExecute shows what a run would delete, asks whether to go on and
+// then deletes exactly the confirmed plan, nothing more.
+func confirmAndExecute(ctx context.Context, cmd *cobra.Command, c *gc.Collector, prefixes []string, o gc.Options) ([]gc.Result, error) {
 	plan, err := c.Plan(ctx, prefixes, o)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if err := renderGC(cmd.ErrOrStderr(), plan, true, OutputOptions{}); err != nil {
-		return false, err
+		return nil, err
 	}
-	return confirmDeletion(cmd.InOrStdin(), cmd.ErrOrStderr())
+	ok, err := confirmDeletion(cmd.InOrStdin(), cmd.ErrOrStderr())
+	if err != nil || !ok {
+		return nil, err
+	}
+	return c.Execute(ctx, plan, o)
 }
 
 func confirmDeletion(in io.Reader, w io.Writer) (bool, error) {

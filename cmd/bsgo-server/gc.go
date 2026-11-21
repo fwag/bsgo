@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/openSUSE/bsgo/pkg/gc"
+	"github.com/openSUSE/bsgo/pkg/scheduler/coord"
 	"github.com/openSUSE/bsgo/pkg/storage"
 	"github.com/openSUSE/bsgo/pkg/storage/s3"
 )
@@ -21,19 +22,27 @@ func startGC(ctx context.Context, cfg ServerConfig, js jetstream.JetStream, stor
 		logf("GC", "disabled (--gc-interval=0)")
 		return
 	}
+	opts := gc.Options{Grace: cfg.GCGrace, KeepVersions: cfg.GCKeepIndexVersions}
+	if err := opts.Validate(); err != nil {
+		logf("GC", "disabled: %v", err)
+		return
+	}
 	st, err := s3.NewS3Storage(ctx, cfg.S3Endpoint, "garage", cfg.S3Bucket, "", "")
 	if err != nil {
 		logf("GC", "disabled: object storage unavailable: %v", err)
 		return
 	}
+	leases := newCoordinator(ctx, js)
+	if _, local := leases.(*coord.Memory); local {
+		logf("GC", "WARNING: run lease is local to this process; several replicas could collect at the same time")
+	}
 	c := &gc.Collector{
-		Objects: s3.GCObjects{Store: st}, Store: store, Leases: newCoordinator(ctx, js),
+		Objects: s3.GCObjects{Store: st}, Store: store, Leases: leases,
 		Owner: "bsgo-server-gc-" + uuid.NewString(),
 		Logf: func(format string, args ...any) {
 			fmt.Printf("[%s] %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
 		},
 	}
-	opts := gc.Options{Grace: cfg.GCGrace, KeepVersions: cfg.GCKeepIndexVersions}
 	go gcLoop(ctx, c, opts, cfg.GCInterval)
 }
 

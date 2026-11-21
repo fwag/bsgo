@@ -123,7 +123,7 @@ func parseServerConfig() ServerConfig {
 	flag.IntVar(&cfg.SignMaxDeliver, "sign-max-deliver", signing.DefaultMaxDeliver, "Deliveries of a signing request before the job fails")
 	flag.StringVar(&cfg.SignHelper, "sign-helper", getEnv("BSGO_SIGN_HELPER", ""), "Path of bsgo-sign-helper (default: next to this binary, then $PATH)")
 	flag.IntVar(&cfg.SignWorkers, "sign-workers", 2, "Jobs signed concurrently by this instance")
-	flag.DurationVar(&cfg.GCInterval, "gc-interval", getEnvDuration("BSGO_GC_INTERVAL", 6*time.Hour), "Interval between garbage collection runs of unreachable build repository indexes and superseded artifacts; 0 disables")
+	flag.DurationVar(&cfg.GCInterval, "gc-interval", getEnvDuration("BSGO_GC_INTERVAL", 0), "Interval between garbage collection runs of unreachable build repository indexes and superseded artifacts, for example 6h; 0 (default) disables. Enable only after reviewing a dry run: bsgo admin gc --dry-run --json")
 	flag.DurationVar(&cfg.GCGrace, "gc-grace", getEnvDuration("BSGO_GC_GRACE", gc.DefaultGrace), "Minimum age of an object before garbage collection may delete it")
 	flag.IntVar(&cfg.GCKeepIndexVersions, "gc-keep-index-versions", gc.DefaultKeepVersions, "Superseded build repository index versions kept per prpa besides the current one")
 	flag.Parse()

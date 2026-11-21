@@ -120,7 +120,7 @@ deleted after grace, dry run.
 
 ### G3. Scheduling and CLI
 
-- Server background loop: run GC every `--gc-interval` (default 6h; `0`
+- Server background loop: run GC every `--gc-interval` (default 6h in this plan, implemented as `0` = disabled until the G4 dry run is reviewed; `0`
   disables), with `--gc-grace` (default 24h) and `--gc-keep-index-versions`
   (default 3). One plain log line per run per prefix:
   `[GC] buildrepo: kept 6, deleted 10234 objects, freed 6.6 GiB in 41s`.
@@ -160,6 +160,14 @@ rules, grace period, flags, CLI.
   current `bininfo.json` of each live unit, the metadata names, and the grace
   period. The dispatcher is not consulted (job bdeps are not derivable from job
   IDs); the grace period covers queued and running jobs.
+- Review fixes: grace counts from supersession (an index version is deleted
+  only when its successor is older than the grace period, and the RPMs listed by
+  such versions stay); files of the indexed build stay when a newer bininfo.json
+  replaced the indexed one; the plan's objects are listed again before deleting
+  and re-uploaded keys are skipped; grace below 1h is rejected; package listing
+  errors or a project with pointers but no packages abort that prpa's plan; a
+  unit with a build state row exists; `--gc-interval` defaults to 0; the CLI
+  deletes exactly the confirmed plan.
 - Safeguards beyond the plan: refusal when the pointer table is empty while
   objects exist; a live unit without `bininfo.json` or with an unreadable one is
   kept whole (warning); keys that do not have the

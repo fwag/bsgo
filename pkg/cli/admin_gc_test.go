@@ -64,6 +64,8 @@ func TestAdminGC(t *testing.T) {
 		{"--yes deletes", []string{"--prefix", "buildrepo", "--keep-index-versions", "0", "--yes"}, "", 2},
 		{"all prefixes", []string{"--prefix", "all", "--keep-index-versions", "0", "--yes"}, "", 2},
 		{"project filter without match", []string{"--project", "other", "--yes"}, "", 4},
+		{"zero grace is refused", []string{"--grace", "0", "--yes"}, "below the minimum", 4},
+		{"negative grace is refused", []string{"--grace=-1h", "--dry-run"}, "below the minimum", 4},
 		{"invalid prefix", []string{"--prefix", "repos", "--yes"}, "invalid --prefix", 4},
 	}
 	for _, tt := range tests {
