@@ -91,6 +91,9 @@ Source and debug RPMs are never in this index (OBS "useforbuild").
 
 ## 3. The solv blob: the same set with dependencies
 
+Details on the binary format, the custom `bsgo:unit` key, the delta update and
+storage: [solv-index-explained.md](solv-index-explained.md).
+
 The scheduler does not parse JSON or XML per pass. It loads the solv blob, a
 libsolv binary repository (703 bytes here). From
 [`full.solv.dump.txt`](examples/build-repo-demo/out/full.solv.dump.txt):
