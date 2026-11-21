@@ -189,9 +189,13 @@ func (s *PostgresStore) ListPackages(ctx context.Context, projectName string) ([
 			return nil, err
 		}
 		pkg, err := manifest.ParsePackage([]byte(yamlStr))
-		if err == nil {
-			list = append(list, pkg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse a package manifest of project %s: %w", projectName, err)
 		}
+		list = append(list, pkg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to list packages: %w", err)
 	}
 	return list, nil
 }
