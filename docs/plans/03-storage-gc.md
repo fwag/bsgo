@@ -1,6 +1,6 @@
 # Plan: Garbage collection of build repository indexes and old build artifacts
 
-Status: proposed
+Status: G1, G2, G3 and G5 implemented; G4 (operator cleanup) pending
 Audience: implementation agents (Sonnet) + human reviewer
 Depends on: plan 01 (indexer, build repository, publisher), plan 02 (signing stage)
 
@@ -147,6 +147,33 @@ deleted after grace, dry run.
 
 Update `docs/guides/solv-index-explained.md` §7 and the walkthrough: retention
 rules, grace period, flags, CLI.
+
+### Implementation summary (G1, G2, G3, G5)
+
+- `pkg/gc`: `PlanIndexGC`, `PlanArtifactGC`, `Apply` (batches of 1000, protected
+  set re-read before each plan's deletions), `Collector` (run lease `gc` in the
+  coordinator, renewed while running; dry run via `Plan`), in-memory objects for
+  tests. `storage.Store.ListBuildRepoIndexes` is the root set; S3
+  `DeleteObjects` and the `s3.GCObjects` adapter are in `pkg/storage/s3`.
+- Artifact references come from the current `entries.json` of every prpa (global
+  key set, so exports and imports are covered by key, not by directory), the
+  current `bininfo.json` of each live unit, the metadata names, and the grace
+  period. The dispatcher is not consulted (job bdeps are not derivable from job
+  IDs); the grace period covers queued and running jobs.
+- Safeguards beyond the plan: refusal when the pointer table is empty while
+  objects exist; a live unit without `bininfo.json` or with an unreadable one is
+  kept whole (warning); keys that do not have the
+  `artifacts/<prj>/<repo>/<arch>/<unit>/<file>` shape are not touched.
+- Server flags `--gc-interval`, `--gc-grace`, `--gc-keep-index-versions`; CLI
+  `bsgo admin gc` with `--prefix`, `--project`, `--grace`, `--keep-index-versions`,
+  `--dry-run`, `--json`, `--yes`; scope `admin:gc` documented in the access
+  control spec.
+- Finding: unit directories of flavors are doubled (`gcc13:cross-aarch64-gcc13:
+  cross-aarch64-gcc13/`). The checker already passes `Package = "pkg:flavor"` in
+  the job and the worker's `artifactPrefix` appends `:<flavor>` again. GC does
+  not depend on the name, it works on the directory and on entry keys. Fixing the
+  worker needs a coordinated change (the bininfo/entries keys of existing builds
+  contain the doubled name) and is a follow-up.
 
 ## 4. Out of scope
 

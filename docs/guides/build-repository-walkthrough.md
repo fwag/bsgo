@@ -304,6 +304,18 @@ publisher
   -> publishes the current entries as an rpm-md repository
 ```
 
+## Cleanup: garbage collection
+
+New index versions and new releases of a unit's RPMs never replace the old
+objects, so the bucket would grow forever. OBS avoids that by replacing the
+package directory on integration; bsgo collects afterwards (`pkg/gc`, the server
+loop, `bsgo admin gc`). Per prpa it keeps the index pair the pointer references
+plus the last 3 older ones, and per unit the RPMs that any current entries list
+(including exports into other architectures), the current build's files listed
+in `bininfo.json` (with debuginfo, debugsource and source RPMs) and the metadata
+files. Nothing younger than 24h is deleted. Details and flags:
+[solv-index-explained.md, section 7](solv-index-explained.md#7-space-garbage-collection).
+
 ## Run it yourself
 
 ```bash
@@ -327,4 +339,5 @@ The sha256 values differ on every run because rpmbuild embeds build times.
 | Path layering, shadowing | `pkg/solv/pathpool.go` | `BSSched/Checker.pm:createpool` |
 | Expansion | `pkg/solv/expand.go` | `/usr/lib/build/Build/Expand.pm` |
 | Integration of a finished build | `pkg/scheduler/indexer` | `BSSched/BuildJob.pm:jobfinished` |
+| Garbage collection of old versions | `pkg/gc` | package directory replacement in `jobfinished` |
 | meta, cycles | `pkg/scheduler/checker/meta.go`, `metatree.go`, `decide.go` | `BSSched/BuildJob/Package.pm:check`, `BSBuild.pm` (`add_meta`, `gen_meta`, `diffdepth`), `BSSched/Checker.pm:handlecycle` |

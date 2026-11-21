@@ -163,20 +163,70 @@ like obs-build. That expansion decides:
 A rebuild "ripples" at the next checker pass after the indexer has swapped in
 the new index: the expansion finds the new binaries and the trees change.
 
-## 7. Space: old versions are kept
+## 7. Space: garbage collection
 
 Every finished build writes a new `.solv` (about 1.1 MB for SLFO 1.2 x86_64) and
-`.entries.json` (about 1.3 MB). Nothing deletes old versions yet. On aisrv on
-2026-11-21 the x86_64 index history was 10,088 objects, 6.5 GiB; old RPM
-releases in `artifacts/` were 46.8 GiB.
+`.entries.json` (about 1.3 MB). Writing new objects is what makes updates safe
+(no in-place modification, readers always see a complete version, one-row
+switch), and builds never delete anything themselves. Before garbage collection
+existed, aisrv held on 2026-11-21 10,240 index objects (6.7 GiB) and 46.8 GiB of
+artifacts, including every old RPM release of every unit.
 
-Writing new objects is what makes updates safe (no in-place modification,
-readers always see a complete version, one-row switch). The missing piece is
-garbage collection: delete every index object that is neither the current
-pointer nor younger than a grace period (or one of the last N versions), and
-RPMs that are in neither the current index nor the published repository. With
-it the steady state is a few MB of index per architecture. This is the open item
-"old artifact GC" of the bootstrap plan.
+`pkg/gc` removes what no current pointer can reach. The rules:
+
+- **Grace period** (default 24h): nothing younger is ever deleted, so a checker
+  pass, a publisher run or a job that loaded a pointer a moment ago never finds
+  an object missing. Jobs that are queued or running resolved their build
+  dependencies from the index when they were scheduled; the grace period is what
+  protects them, the dispatcher is not consulted.
+- **`buildrepo/`**: the pair referenced by the `build_repo_index` row of a prpa
+  is kept, plus the last N superseded pairs of that prpa by modification time
+  (default 3, for debugging). `.solv` and `.entries.json` of a version are
+  deleted together. A prpa without a row (removed project, repository or
+  architecture) is garbage after the grace period.
+- **`artifacts/`**: a file in `artifacts/<project>/<repo>/<arch>/<unit>/` is
+  kept when the current `entries.json` of any prpa lists its key (this covers
+  binaries exported into another architecture's repository, whose object lives
+  in the exporting unit's directory), when it belongs to the current build of
+  the unit (listed in the unit's current `bininfo.json`, which includes
+  debuginfo, debugsource and source RPMs that are not in the index), or when it
+  is a metadata file (`bininfo.json`, `_slsa_provenance.json`, `_statistics`,
+  `build.log`). Older RPMs of the unit are deleted. Units that no longer exist
+  (no referenced binary and no package of that name in the project) lose all
+  files older than the grace period. A unit that has no `bininfo.json` is kept
+  as a whole.
+- Never touched: `repos/` (owned by the publisher), `backup/`, `recipes/`, `dod/`.
+- A run refuses to start when the pointer table is empty while objects exist, so
+  a server that fell back to an empty store cannot declare everything garbage.
+- Pointers are read again right before each batch of deletions
+  (S3 `DeleteObjects`, up to 1000 keys), so a pointer swap during a run never
+  loses the new current objects.
+- Only one run happens at a time: the `gc` lease in NATS KV, shared by all server
+  replicas and the CLI. Errors of single prpas are logged and the run continues.
+
+The server runs it in the background; one plain log line per prefix:
+
+```
+[GC] buildrepo: kept 6, deleted 10234 objects, freed 6.6 GiB in 41s
+```
+
+| Server flag | Default | Meaning |
+|---|---|---|
+| `--gc-interval` | 6h | time between runs, `0` disables |
+| `--gc-grace` | 24h | minimum object age before deletion |
+| `--gc-keep-index-versions` | 3 | superseded index versions kept per prpa |
+
+By hand, with the CLI (access tokens need the scope `admin:gc`):
+
+```bash
+bsgo admin gc --prefix all --dry-run --json > gc-plan.json   # review first
+bsgo admin gc --prefix buildrepo --yes
+bsgo admin gc --prefix artifacts --project SUSE:SLFO:1.2 --grace 48h --yes
+```
+
+Without `--yes` it asks on a terminal and fails otherwise; `--dry-run` never
+deletes. With the index kept to the current version plus three, the steady state
+is a few MB of index per architecture.
 
 ## Code to read
 

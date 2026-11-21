@@ -46,6 +46,7 @@ This specification defines the authentication mechanism, authorization model, an
     - `project:write:home:ai-agent`: Write/mutation access restricted strictly to personal project `home:ai-agent`.
     - `build:trigger:openSUSE:Factory`: Rebuild trigger authority granted only for `openSUSE:Factory`.
     - `package:resources:update`: Permission to update VM resource constraints.
+    - `admin:gc`: Permission to run storage garbage collection (`bsgo admin gc`), which deletes unreachable build repository indexes and superseded artifacts. It is global, not per project; the project-scoped form is `admin:gc:<project>`. The CLI of an operator talks to Postgres and S3 directly with the deployment credentials; an API that exposes GC must require this scope.
   - An agent operating on a staging fork cannot modify release distribution projects even if the owning user has permissions.
 
 ### 1.3. Just-In-Time (JIT) Provisioning
