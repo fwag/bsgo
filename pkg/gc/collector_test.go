@@ -151,3 +151,37 @@ func TestFormatBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestCollectorRejectsUnsafeOptions(t *testing.T) {
+	c, objs, _ := collectorEnv(t)
+	for _, o := range []gc.Options{{}, {Grace: -day}, {Grace: time.Minute}} {
+		if _, err := c.Run(context.Background(), []string{gc.PrefixBuildRepo}, o); err == nil {
+			t.Errorf("Run accepted %+v", o)
+		}
+		if _, err := c.Plan(context.Background(), []string{gc.PrefixBuildRepo}, o); err == nil {
+			t.Errorf("Plan accepted %+v", o)
+		}
+	}
+	if len(objs.Keys()) != 8 {
+		t.Error("objects deleted")
+	}
+}
+
+// Execute deletes the confirmed plan and nothing that became garbage later.
+func TestCollectorExecuteAppliesOnlyThePlan(t *testing.T) {
+	c, objs, _ := collectorEnv(t)
+	opts := gc.Options{Grace: day}
+	plan, err := c.Plan(context.Background(), []string{gc.PrefixBuildRepo}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := buildrepo.Prpa{Project: "q", Repo: "standard", Arch: "x86_64"}
+	putIndex(objs, later, "extra", 30*day)
+	res, err := c.Execute(context.Background(), plan, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].Deleted != 4 || !objs.Has(buildrepo.SolvKey(later, "extra")) {
+		t.Errorf("deleted %d, objects %v", res[0].Deleted, objs.Keys())
+	}
+}

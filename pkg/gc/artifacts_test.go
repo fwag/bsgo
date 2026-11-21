@@ -3,6 +3,8 @@ package gc_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"sort"
 	"testing"
 	"time"
 
@@ -69,7 +71,22 @@ func (e *artEnv) bininfo(dir string, age time.Duration, files ...string) {
 	e.objs.Put(dir+bininfo.FileName, raw, ago(age))
 }
 
-func (e *artEnv) refs() *gc.Refs { return &gc.Refs{Pointers: e.store, Objects: e.objs} }
+func (e *artEnv) refs() *gc.Refs {
+	return &gc.Refs{Pointers: e.store, Objects: e.objs, Now: func() time.Time { return now }, Grace: day}
+}
+
+// indexAt is like index but stores the version with the given age and lets
+// the entries carry versions and releases.
+func (e *artEnv) indexAt(p buildrepo.Prpa, hash string, age time.Duration, entries ...buildrepo.Entry) {
+	e.t.Helper()
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.objs.Put(buildrepo.EntriesKey(p, hash), raw, ago(age))
+	e.objs.Put(buildrepo.SolvKey(p, hash), []byte("solv"), ago(age))
+	point(e.t, e.store, p, hash)
+}
 
 func (e *artEnv) plan(opts gc.Options) []gc.Plan {
 	e.t.Helper()
@@ -272,5 +289,153 @@ func TestApplyArtifactsHonoursPointerSwapSincePlanning(t *testing.T) {
 	res := gc.Apply(context.Background(), e.objs, plans, false, refs.Keys)
 	if !e.objs.Has(unitDir+"patch-1-1.x86_64.rpm") || res[0].Deleted != 0 {
 		t.Errorf("newly referenced binary deleted: %+v", res[0])
+	}
+}
+
+func entry(key, ver, rel string) buildrepo.Entry {
+	return buildrepo.Entry{Unit: "patch", Key: key, Name: "patch", Version: ver, Release: rel}
+}
+
+// An RPM uploaded long ago that dropped out of the index a minute ago is still
+// needed by jobs and publisher runs that loaded the previous pointer.
+func TestPlanArtifactGCKeepsBinariesOfRecentlySupersededIndex(t *testing.T) {
+	tests := []struct {
+		name       string
+		currentAge time.Duration
+		want       []string
+	}{
+		{"superseded a minute ago", time.Minute, nil},
+		{"superseded long ago", 2 * day, []string{unitDir + "patch-1-1.x86_64.rpm"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newArtEnv(t, "patch")
+			e.indexAt(testPrpa, "h1", 30*day, entry(unitDir+"patch-1-1.x86_64.rpm", "1", "1"))
+			e.indexAt(testPrpa, "h2", tc.currentAge, entry(unitDir+"patch-2-2.x86_64.rpm", "2", "2"))
+			e.put(unitDir+"patch-1-1.x86_64.rpm", 30*day)
+			e.put(unitDir+"patch-2-2.x86_64.rpm", tc.currentAge)
+			e.bininfo(unitDir, tc.currentAge, "patch-2-2.x86_64.rpm")
+			if got := deleted(e.plan(gc.Options{Grace: day})); !sameSet(got, tc.want) {
+				t.Errorf("delete %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Build N+1 uploaded its bininfo.json and then failed: the debug and source
+// RPMs of build N, which the index still references, must stay.
+func TestPlanArtifactGCKeepsFilesOfIndexedBuildWhenBininfoIsNewer(t *testing.T) {
+	e := newArtEnv(t, "patch")
+	e.indexAt(testPrpa, "h", 30*day, entry(unitDir+"patch-2-2.x86_64.rpm", "2", "2"))
+	for _, f := range []string{"patch-2-2.x86_64.rpm", "patch-debuginfo-2-2.x86_64.rpm", "patch-debugsource-2-2.x86_64.rpm", "patch-2-2.src.rpm"} {
+		e.put(unitDir+f, 9*day)
+	}
+	for _, f := range []string{"patch-debuginfo-1-1.x86_64.rpm", "patch-1-1.src.rpm"} {
+		e.put(unitDir+f, 20*day)
+	}
+	e.bininfo(unitDir, 2*day, "patch-3-3.x86_64.rpm", "patch-debuginfo-3-3.x86_64.rpm")
+	want := []string{unitDir + "patch-debuginfo-1-1.x86_64.rpm", unitDir + "patch-1-1.src.rpm"}
+	if got := deleted(e.plan(gc.Options{Grace: day})); !sameSet(got, want) {
+		t.Errorf("delete %v, want %v", got, want)
+	}
+}
+
+func TestPlanArtifactGCMissingModTimeCountsAsYoung(t *testing.T) {
+	e := newArtEnv(t, "patch")
+	e.index(testPrpa, "h", unitDir+"patch-2-2.x86_64.rpm")
+	e.put(unitDir+"patch-2-2.x86_64.rpm", 3*day)
+	e.bininfo(unitDir, 3*day, "patch-2-2.x86_64.rpm")
+	e.objs.Put(unitDir+"patch-1-1.x86_64.rpm", []byte("x"), time.Time{})
+	if got := deleted(e.plan(gc.Options{Grace: day})); len(got) != 0 {
+		t.Errorf("delete %v", got)
+	}
+}
+
+// A key uploaded again between planning and deleting (same name, same index
+// hash) must be skipped.
+func TestApplySkipsKeysUploadedAgainSincePlanning(t *testing.T) {
+	e := newArtEnv(t, "patch")
+	e.index(testPrpa, "h", unitDir+"patch-2-2.x86_64.rpm")
+	e.put(unitDir+"patch-2-2.x86_64.rpm", 3*day)
+	e.put(unitDir+"patch-1-1.x86_64.rpm", 9*day)
+	e.put(unitDir+"patch-0-0.x86_64.rpm", 9*day)
+	e.bininfo(unitDir, 3*day, "patch-2-2.x86_64.rpm")
+	refs := e.refs()
+	plans, err := gc.PlanArtifactGC(context.Background(), refs, e.store, now, gc.Options{Grace: day})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.put(unitDir+"patch-1-1.x86_64.rpm", 0)
+	res := gc.Apply(context.Background(), e.objs, plans, false, refs.Keys)
+	if !e.objs.Has(unitDir+"patch-1-1.x86_64.rpm") || e.objs.Has(unitDir+"patch-0-0.x86_64.rpm") || res[0].Deleted != 1 {
+		t.Errorf("objects %v, result %+v", e.objs.Keys(), res[0])
+	}
+}
+
+type failingProjects struct {
+	gc.Projects
+	err error
+}
+
+func (f failingProjects) ListPackages(context.Context, string) ([]*manifest.PackageManifest, error) {
+	return nil, f.err
+}
+
+func TestPlanArtifactGCPackageListingProblemsDeleteNothing(t *testing.T) {
+	gone := "artifacts/p/standard/x86_64/gone/"
+	setup := func(e *artEnv) {
+		e.index(testPrpa, "h", unitDir+"patch-2-2.x86_64.rpm")
+		e.put(unitDir+"patch-2-2.x86_64.rpm", 3*day)
+		e.put(gone+"gone-1-1.x86_64.rpm", 9*day)
+	}
+	t.Run("listing error", func(t *testing.T) {
+		e := newArtEnv(t, "patch")
+		setup(e)
+		plans, err := gc.PlanArtifactGC(context.Background(), e.refs(), failingProjects{Projects: e.store, err: errors.New("db down")}, now, gc.Options{Grace: day})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(deleted(plans)) != 0 || plans[0].Error == "" {
+			t.Errorf("plans %+v", plans)
+		}
+	})
+	t.Run("project with pointers but no packages", func(t *testing.T) {
+		e := newArtEnv(t)
+		setup(e)
+		plans := e.plan(gc.Options{Grace: day})
+		if len(deleted(plans)) != 0 || plans[0].Error == "" {
+			t.Errorf("plans %+v", plans)
+		}
+		res := gc.Apply(context.Background(), e.objs, plans, false, e.refs().Keys)
+		if res[0].Deleted != 0 || !e.objs.Has(gone+"gone-1-1.x86_64.rpm") {
+			t.Errorf("an errored plan deleted objects: %+v", res[0])
+		}
+	})
+	t.Run("unit with a build state row exists", func(t *testing.T) {
+		e := newArtEnv(t, "other")
+		setup(e)
+		st := &storage.PackageBuildState{Project: "p", Repo: "standard", Arch: "x86_64", Package: "gone", State: "succeeded"}
+		if err := e.store.UpsertBuildState(context.Background(), st); err != nil {
+			t.Fatal(err)
+		}
+		e.put(gone+"gone-0-0.x86_64.rpm", 9*day)
+		e.bininfo(gone, 5*day, "gone-1-1.x86_64.rpm")
+		if got := deleted(e.plan(gc.Options{Grace: day})); !sameSet(got, []string{gone + "gone-0-0.x86_64.rpm"}) {
+			t.Errorf("delete %v", got)
+		}
+	})
+}
+
+func TestPlanWarningsAreSorted(t *testing.T) {
+	e := newArtEnv(t, "patch", "tool")
+	e.index(testPrpa, "h", unitDir+"patch-2-2.x86_64.rpm")
+	for _, d := range []string{unitDir, "artifacts/p/standard/x86_64/tool/", "artifacts/p/standard/x86_64/patch2/"} {
+		e.put(d+"x-1-1.x86_64.rpm", 9*day)
+		e.objs.Put(d+bininfo.FileName, []byte("bad"), ago(9*day))
+	}
+	e.put(unitDir+"patch-2-2.x86_64.rpm", 3*day)
+	w := e.plan(gc.Options{Grace: day})[0].Warnings
+	if len(w) < 2 || !sort.StringsAreSorted(w) {
+		t.Errorf("warnings %v", w)
 	}
 }

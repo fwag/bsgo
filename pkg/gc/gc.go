@@ -30,6 +30,10 @@ const (
 	DefaultKeepVersions = 3
 )
 
+// MinGrace is the smallest grace period accepted. A shorter one could delete
+// an index pair that was uploaded but whose pointer swap is still pending.
+const MinGrace = time.Hour
+
 // MaxBatch is the number of keys deleted per call, the S3 DeleteObjects limit.
 const MaxBatch = 1000
 
@@ -64,6 +68,23 @@ type Options struct {
 	Project string
 }
 
+// Validate rejects options that could make GC delete live data.
+func (o Options) Validate() error {
+	if o.Grace < MinGrace {
+		return fmt.Errorf("grace period %s is below the minimum of %s", o.Grace, MinGrace)
+	}
+	if o.KeepVersions < 0 {
+		return fmt.Errorf("keep-index-versions must not be negative, got %d", o.KeepVersions)
+	}
+	return nil
+}
+
+// young reports whether o is too recent to delete. An object without a
+// modification time counts as young.
+func young(o Object, now time.Time, grace time.Duration) bool {
+	return o.LastModified.IsZero() || now.Sub(o.LastModified) < grace
+}
+
 // Plan is what GC does to one prpa (project/repo/arch) below one prefix.
 type Plan struct {
 	Prefix string `json:"prefix"`
@@ -83,6 +104,12 @@ type Plan struct {
 	Warnings []string `json:"warnings,omitempty"`
 	// Error is set when planning or applying this prpa failed.
 	Error string `json:"error,omitempty"`
+
+	// scope is the listing prefix that contains every object of the plan; seen
+	// holds the objects as listed while planning, so that Apply can skip those
+	// that were uploaded again since.
+	scope string
+	seen  map[string]Object
 }
 
 func (p *Plan) keep(o Object) {
@@ -91,8 +118,18 @@ func (p *Plan) keep(o Object) {
 }
 
 func (p *Plan) drop(o Object) {
+	if p.seen == nil {
+		p.seen = map[string]Object{}
+	}
+	p.seen[o.Key] = o
 	p.Delete = append(p.Delete, o.Key)
 	p.FreeBytes += o.Size
+}
+
+// abort records err and cancels every deletion of the plan.
+func (p *Plan) abort(err error) {
+	p.Error = err.Error()
+	p.Delete, p.FreeBytes, p.seen = nil, 0, nil
 }
 
 func (p *Plan) finish() {
@@ -101,6 +138,7 @@ func (p *Plan) finish() {
 	}
 	sort.Strings(p.Keep)
 	sort.Strings(p.Delete)
+	sort.Strings(p.Warnings)
 	p.Kept = len(p.Keep)
 }
 
@@ -157,9 +195,13 @@ func applyPlan(ctx context.Context, objs Objects, p *Plan, protected Protected) 
 	if err != nil {
 		return 0, fmt.Errorf("re-reading pointers: %w", err)
 	}
+	unchanged, err := unchangedSincePlanning(ctx, objs, p)
+	if err != nil {
+		return 0, err
+	}
 	keys := make([]string, 0, len(p.Delete))
 	for _, k := range p.Delete {
-		if _, ok := cur[k]; !ok {
+		if _, ok := cur[k]; !ok && unchanged(k) {
 			keys = append(keys, k)
 		}
 	}
@@ -172,6 +214,29 @@ func applyPlan(ctx context.Context, objs Objects, p *Plan, protected Protected) 
 		deleted += len(batch)
 	}
 	return deleted, nil
+}
+
+// unchangedSincePlanning lists the plan's scope again and reports, per key,
+// whether the object still has the modification time and size it had while
+// planning. A key uploaded again in between (same name, new content or time)
+// is skipped. Plans without a recorded listing are not rechecked.
+func unchangedSincePlanning(ctx context.Context, objs Objects, p *Plan) (func(string) bool, error) {
+	if p.scope == "" || p.seen == nil {
+		return func(string) bool { return true }, nil
+	}
+	now, err := objs.List(ctx, p.scope)
+	if err != nil {
+		return nil, fmt.Errorf("re-listing %s: %w", p.scope, err)
+	}
+	cur := make(map[string]Object, len(now))
+	for _, o := range now {
+		cur[o.Key] = o
+	}
+	return func(k string) bool {
+		o, ok := cur[k]
+		was := p.seen[k]
+		return !ok || (o.LastModified.Equal(was.LastModified) && o.Size == was.Size)
+	}, nil
 }
 
 // summarize fills the totals of a Result from its plans.

@@ -78,11 +78,29 @@ func TestPlanIndexGC(t *testing.T) {
 			wantDelete: pair(testPrpa, "old"),
 		},
 		{
-			name:     "orphan prpa deleted after grace, young orphan kept",
+			name:     "orphan prpa deleted after grace",
 			versions: map[string]time.Duration{"cur": 30 * day}, current: "cur", keepN: 3,
-			orphans:    map[string]time.Duration{"a": 3 * day, "b": 2 * time.Hour},
-			wantKeep:   append(pair(testPrpa, "cur"), pair(other, "b")...),
-			wantDelete: pair(other, "a"),
+			orphans:    map[string]time.Duration{"a": 5 * day, "b": 3 * day},
+			wantKeep:   pair(testPrpa, "cur"),
+			wantDelete: append(pair(other, "a"), pair(other, "b")...),
+		},
+		{
+			name:     "young orphan kept, and the older version it superseded with it",
+			versions: map[string]time.Duration{"cur": 30 * day}, current: "cur", keepN: 3,
+			orphans:  map[string]time.Duration{"a": 5 * day, "b": 2 * time.Hour},
+			wantKeep: append(append(pair(testPrpa, "cur"), pair(other, "a")...), pair(other, "b")...),
+		},
+		{
+			name:     "version superseded less than grace ago is kept whatever its age and KeepVersions",
+			versions: map[string]time.Duration{"cur": time.Minute, "old": 90 * day, "older": 91 * day}, current: "cur", keepN: 0,
+			wantKeep:   append(pair(testPrpa, "cur"), pair(testPrpa, "old")...),
+			wantDelete: pair(testPrpa, "older"),
+		},
+		{
+			name:     "version superseded longer than grace ago is deleted",
+			versions: map[string]time.Duration{"cur": 2 * day, "old": 90 * day}, current: "cur", keepN: 0,
+			wantKeep:   pair(testPrpa, "cur"),
+			wantDelete: pair(testPrpa, "old"),
 		},
 	}
 	for _, tc := range tests {
@@ -108,6 +126,41 @@ func TestPlanIndexGC(t *testing.T) {
 				t.Errorf("keep %v, delete %v\nwant keep %v, delete %v", keep, del, tc.wantKeep, tc.wantDelete)
 			}
 		})
+	}
+}
+
+func TestPlanIndexGCMissingModTimeCountsAsYoung(t *testing.T) {
+	objs, store := gc.NewMemoryObjects(), storage.NewMemoryStore()
+	putIndex(objs, testPrpa, "cur", 30*day)
+	point(t, store, testPrpa, "cur")
+	objs.Put(buildrepo.SolvKey(testPrpa, "nots"), []byte("x"), time.Time{})
+	objs.Put(buildrepo.EntriesKey(testPrpa, "nots"), []byte("x"), time.Time{})
+	plans, err := gc.PlanIndexGC(context.Background(), store, objs, now, gc.Options{Grace: day})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans[0].Delete) != 0 {
+		t.Errorf("deleted %v", plans[0].Delete)
+	}
+}
+
+func TestOptionsValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    gc.Options
+		wantErr bool
+	}{
+		{"default", gc.Options{Grace: gc.DefaultGrace, KeepVersions: 3}, false},
+		{"minimum", gc.Options{Grace: gc.MinGrace}, false},
+		{"zero grace", gc.Options{}, true},
+		{"negative grace", gc.Options{Grace: -time.Hour}, true},
+		{"below minimum", gc.Options{Grace: 59 * time.Minute}, true},
+		{"negative versions", gc.Options{Grace: day, KeepVersions: -1}, true},
+	}
+	for _, tc := range tests {
+		if err := tc.opts.Validate(); (err != nil) != tc.wantErr {
+			t.Errorf("%s: got %v, wantErr %v", tc.name, err, tc.wantErr)
+		}
 	}
 }
 

@@ -73,12 +73,52 @@ func (c *Collector) Plan(ctx context.Context, prefixes []string, opts Options) (
 // ErrBusy when another run holds the lease. Errors of single prpas are
 // recorded in their plan and do not stop the run.
 func (c *Collector) Run(ctx context.Context, prefixes []string, opts Options) ([]Result, error) {
+	var out []Result
+	err := c.withLease(ctx, func(ctx context.Context) error {
+		var err error
+		out, err = c.run(ctx, prefixes, opts, false)
+		return err
+	})
+	return out, err
+}
+
+// Execute deletes exactly what planned (the result of Plan) lists, under the
+// GC lease. Objects that were uploaded again or became referenced since
+// planning are skipped; nothing outside the plan is ever deleted.
+func (c *Collector) Execute(ctx context.Context, planned []Result, opts Options) ([]Result, error) {
+	if err := opts.Validate(); err != nil {
+		return nil, err
+	}
+	var out []Result
+	err := c.withLease(ctx, func(ctx context.Context) error {
+		c.configureRefs(opts)
+		for _, r := range planned {
+			start := time.Now()
+			plans := make([]Plan, len(r.Plans))
+			copy(plans, r.Plans)
+			for i := range plans {
+				plans[i].Deleted = 0
+			}
+			plans = Apply(ctx, c.Objects, plans, false, c.protectedFor(r.Prefix))
+			res := summarize(r.Prefix, plans, false, time.Since(start))
+			c.report(res)
+			out = append(out, res)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
+		return nil
+	})
+	return out, err
+}
+
+func (c *Collector) withLease(ctx context.Context, fn func(context.Context) error) error {
 	lease, err := c.Leases.TryLease(ctx, LeaseKey, c.Owner)
 	if errors.Is(err, coord.ErrHeld) {
-		return nil, ErrBusy
+		return ErrBusy
 	}
 	if err != nil {
-		return nil, fmt.Errorf("gc lease: %w", err)
+		return fmt.Errorf("gc lease: %w", err)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -87,7 +127,14 @@ func (c *Collector) Run(ctx context.Context, prefixes []string, opts Options) ([
 		stop()
 		_ = lease.Release(context.WithoutCancel(ctx))
 	}()
-	return c.run(runCtx, prefixes, opts, false)
+	return fn(runCtx)
+}
+
+// configureRefs hands the run's clock and grace period to the reference
+// computation.
+func (c *Collector) configureRefs(opts Options) {
+	r := c.refsCache()
+	r.Now, r.Grace = c.now, opts.Grace
 }
 
 // keepLease renews the lease until stopped; losing it cancels the run.
@@ -124,6 +171,10 @@ func (c *Collector) keepLease(ctx context.Context, lease coord.Lease, cancel con
 }
 
 func (c *Collector) run(ctx context.Context, prefixes []string, opts Options, dryRun bool) ([]Result, error) {
+	if err := opts.Validate(); err != nil {
+		return nil, err
+	}
+	c.configureRefs(opts)
 	var out []Result
 	for _, prefix := range prefixes {
 		start := time.Now()
