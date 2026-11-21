@@ -226,6 +226,9 @@ type Store interface {
 	SaveBuildRepoIndex(ctx context.Context, idx *BuildRepoIndex) error
 	// GetBuildRepoIndex returns ErrNotFound when nothing was indexed yet.
 	GetBuildRepoIndex(ctx context.Context, project, repo, arch string) (*BuildRepoIndex, error)
+	// ListBuildRepoIndexes returns every index pointer, ordered by project,
+	// repo and arch. Garbage collection uses it as the root set.
+	ListBuildRepoIndexes(ctx context.Context) ([]*BuildRepoIndex, error)
 
 	// SetPrpaState inserts or replaces the repository state of a prpa.
 	SetPrpaState(ctx context.Context, st *PrpaState) error

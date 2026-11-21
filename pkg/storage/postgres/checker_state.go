@@ -139,6 +139,26 @@ func (s *PostgresStore) SaveBuildRepoIndex(ctx context.Context, idx *storage.Bui
 	return nil
 }
 
+// ListBuildRepoIndexes returns every index pointer ordered by project, repo and arch.
+func (s *PostgresStore) ListBuildRepoIndexes(ctx context.Context) ([]*storage.BuildRepoIndex, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT project, repo, arch, content_hash, solv_key, entries_key, updated_at
+		FROM build_repo_index ORDER BY project, repo, arch`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list build repo indexes: %w", err)
+	}
+	defer rows.Close()
+	var out []*storage.BuildRepoIndex
+	for rows.Next() {
+		var idx storage.BuildRepoIndex
+		if err := rows.Scan(&idx.Project, &idx.Repo, &idx.Arch, &idx.ContentHash, &idx.SolvKey, &idx.EntriesKey, &idx.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to read build repo index: %w", err)
+		}
+		out = append(out, &idx)
+	}
+	return out, rows.Err()
+}
+
 // GetBuildRepoIndex returns the index pointer of one prpa or storage.ErrNotFound.
 func (s *PostgresStore) GetBuildRepoIndex(ctx context.Context, project, repo, arch string) (*storage.BuildRepoIndex, error) {
 	var idx storage.BuildRepoIndex

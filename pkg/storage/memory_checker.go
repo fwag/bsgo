@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -142,6 +143,28 @@ func (s *MemoryStore) GetBuildRepoIndex(_ context.Context, project, repo, arch s
 	}
 	cp := *idx
 	return &cp, nil
+}
+
+// ListBuildRepoIndexes implements Store.
+func (s *MemoryStore) ListBuildRepoIndexes(_ context.Context) ([]*BuildRepoIndex, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*BuildRepoIndex, 0, len(s.indexes))
+	for _, idx := range s.indexes {
+		cp := *idx
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Project != b.Project {
+			return a.Project < b.Project
+		}
+		if a.Repo != b.Repo {
+			return a.Repo < b.Repo
+		}
+		return a.Arch < b.Arch
+	})
+	return out, nil
 }
 
 // GetBuildState implements Store.
