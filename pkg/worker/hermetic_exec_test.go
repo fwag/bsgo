@@ -48,9 +48,9 @@ func TestExecuteBuildInfoInvokesObsBuildHermetically(t *testing.T) {
 		BuildInfo: bi,
 	}
 	s := &ProcessSandbox{WorkDir: work, SandboxMode: "obs-build", AllowUnisolatedChroot: true, ObsBuildBin: fake, S3Storage: store}
-	_, err := s.Execute(context.Background(), job, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "no artifacts") {
-		t.Fatalf("err = %v, want 'no artifacts' (the fake build produces none)", err)
+	res, err := s.Execute(context.Background(), job, io.Discard)
+	if err != nil || res == nil || res.ExitCode != 0 {
+		t.Fatalf("res = %+v, err = %v, want success (a build without binaries still succeeds)", res, err)
 	}
 	data, readErr := os.ReadFile(record)
 	if readErr != nil {

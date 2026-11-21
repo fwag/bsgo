@@ -157,6 +157,15 @@ func (s *Stage) sleep(ctx context.Context, d time.Duration) {
 	}
 }
 
+func hasProvenance(arts []indexer.Artifact) bool {
+	for _, a := range arts {
+		if a.Filename == ProvenanceFile {
+			return true
+		}
+	}
+	return false
+}
+
 func isRPM(name string) bool { return strings.HasSuffix(name, ".rpm") }
 
 // safeName rejects artifact names that would escape the working directory.
@@ -173,6 +182,9 @@ func safeName(name string) error {
 // already verify against the project key (a previous attempt uploaded them)
 // are kept as they are, and signing is deterministic.
 func (s *Stage) Sign(ctx context.Context, j Job) ([]indexer.Artifact, error) {
+	if !HasRPMs(j.Artifacts) && !hasProvenance(j.Artifacts) {
+		return j.Artifacts, nil // nothing to sign, no key needed
+	}
 	key, err := s.Keys.ResolveKey(ctx, j.Project, signer.DefaultFlavor)
 	if err != nil {
 		return nil, fmt.Errorf("resolving signing key of %s: %w", j.Project, err)

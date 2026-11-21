@@ -68,7 +68,6 @@ func TestPublishHermeticResultsFailures(t *testing.T) {
 		arts  []v1.ChrootRPM
 	}{
 		{"no store", nil, arts},
-		{"no artifacts", newMemStore(), nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,4 +86,53 @@ func keys(m *memStore) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestPublishHermeticResultsWithoutBinaries covers a build that exits 0 and
+// produces no binary packages (a test-only flavor): it succeeds, uploads
+// provenance and log, and reports no bininfo.json so nothing is integrated.
+func TestPublishHermeticResultsWithoutBinaries(t *testing.T) {
+	tests := []struct {
+		name  string
+		log   bool
+		wants []string
+	}{
+		{"nothing but provenance", false, []string{"_slsa_provenance.json"}},
+		{"provenance and log", true, []string{"_slsa_provenance.json", "build.log"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			jobDir := t.TempDir()
+			pkgDir := filepath.Join(jobDir, "packages")
+			if err := os.MkdirAll(pkgDir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if tc.log {
+				if err := os.WriteFile(filepath.Join(jobDir, "build.log"), []byte("log"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bi := fixtureBuildInfo()
+			job := &v1.BuildJob{JobID: "j", Project: "P", Package: "c-ares", Target: "T", Architecture: "A", BuildInfo: bi}
+			store := newMemStore()
+			s := &ProcessSandbox{WorkDir: t.TempDir(), S3Storage: store}
+
+			res, err := s.publishHermeticResults(context.Background(), jobDir, jobDir, pkgDir, job, nil, bi.SourceCommit, io.Discard, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.ExitCode != 0 || res.Meta != bi.Meta || res.SourceCommit != bi.SourceCommit {
+				t.Errorf("result %+v is not a plain success", res)
+			}
+			prefix := "artifacts/P/T/A/c-ares:gcc13/"
+			if len(store.objects) != len(tc.wants) || len(res.Artifacts) != len(tc.wants) {
+				t.Errorf("objects %v, artifacts %v, want %v", keys(store), res.Artifacts, tc.wants)
+			}
+			for _, name := range tc.wants {
+				if _, ok := store.objects[prefix+name]; !ok {
+					t.Errorf("%s%s not uploaded; have %v", prefix, name, keys(store))
+				}
+			}
+		})
+	}
 }

@@ -342,3 +342,30 @@ func TestRunHelperRejectsBadEnvironment(t *testing.T) {
 		t.Error("a non numeric creation time must be an error")
 	}
 }
+
+func TestSignWithoutRPMsSignsNothing(t *testing.T) {
+	tests := []struct {
+		name string
+		arts []indexer.Artifact
+	}{
+		{"no artifacts", nil},
+		{"only log and statistics", []indexer.Artifact{{Filename: "build.log", S3Key: "k/build.log"}, {Filename: "_statistics", S3Key: "k/stat"}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			objs := memObjects{}
+			tool := &fakeTool{}
+			// A key lookup failure proves that no key is needed.
+			s := fakeStage(t, tool, objs)
+			s.Keys = fakeKeys{err: errors.New("must not be called")}
+			j := Job{JobID: "j", Project: "p", Package: "foo", Target: "std", Architecture: "x86_64", Artifacts: tc.arts}
+			out := s.Process(context.Background(), j)
+			if out.Error != "" || len(out.Artifacts) != len(tc.arts) {
+				t.Fatalf("answer %+v, want the artifacts unchanged and no error", out)
+			}
+			if len(objs) != 0 {
+				t.Errorf("signing uploaded %v", objs)
+			}
+		})
+	}
+}

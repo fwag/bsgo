@@ -109,10 +109,14 @@ func TestIntegrateReplacesUnitSet(t *testing.T) {
 		{"identical rebuild changes nothing", "a", []bininfo.BinInfo{rpm("a", "2")},
 			false, "a:a-2-1.x86_64.rpm,b:b-1-1.x86_64.rpm"},
 		{"a build without binaries empties the unit", "b", nil, true, "a:a-2-1.x86_64.rpm"},
+		{"emptying an unknown unit changes nothing", "b", nil, false, "a:a-2-1.x86_64.rpm"},
+		{"a build with an empty bininfo empties the unit", "a", []bininfo.BinInfo{}, true, ""},
+		{"an empty bininfo on an empty repository changes nothing", "a", []bininfo.BinInfo{}, false, ""},
 	}
 	for _, tc := range steps {
 		before := len(e.rec.prpas)
-		var arts []indexer.Artifact
+		// A build without binaries reports only its log and provenance.
+		arts := []indexer.Artifact{{Filename: "build.log", S3Key: "k/build.log"}, {Filename: "_slsa_provenance.json", S3Key: "k/prov"}}
 		if tc.bins != nil {
 			arts = e.upload(tc.unit, tc.bins...)
 		}

@@ -406,3 +406,24 @@ func TestPublishAnnouncesAndGarbageCollects(t *testing.T) {
 		t.Errorf("superseded metadata %s survived garbage collection", old[0])
 	}
 }
+
+func TestPublishAfterBuildWithoutBinaries(t *testing.T) {
+	h := newHarness(t, publishAll)
+	h.idx.builds(t, h.store, testPrpa, "bash", rpmx("bash", "5.2"))
+	h.idx.builds(t, h.store, testPrpa, "curl", rpmx("curl", "8.0"))
+	h.publish(t)
+
+	// curl is rebuilt by a flavor that only runs tests: no binaries remain.
+	h.idx.builds(t, h.store, testPrpa, "curl")
+	res := h.publish(t)
+	if got, want := names(primaryOf(t, h.store, stdPrefix)), []string{"bash-5.2-1.1.x86_64.rpm"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("publish lists %v, want %v", got, want)
+	}
+	if h.store.Has(stdPrefix + "curl-8.0-1.1.x86_64.rpm") {
+		t.Error("the RPM of the emptied unit is still published")
+	}
+	if res.SubRepos[publisher.SubRepoStandard].Deleted == nil {
+		t.Error("the emptied unit's RPM was not reported as deleted")
+	}
+	h.assertTempEmpty(t)
+}

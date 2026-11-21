@@ -305,9 +305,9 @@ func (s *ProcessSandbox) publishHermeticResults(ctx context.Context, buildRoot, 
 	if s.S3Storage == nil {
 		return failed(errors.New("buildinfo job needs an object store to deliver its results"))
 	}
-	if len(artifacts) == 0 {
-		return failed(errors.New("build succeeded but produced no artifacts"))
-	}
+	// A successful build without binary packages (a test-only flavor) is a
+	// success as in OBS: it keeps its logs and provenance and integrates no
+	// binaries, so the previous binaries of the unit leave the build repository.
 	prefix := artifactPrefix(job, target, arch)
 	if err := s.uploadBinInfo(ctx, job, pkgDir, target, arch, artifacts, w); err != nil {
 		return failed(err)
