@@ -427,3 +427,47 @@ func TestPublishAfterBuildWithoutBinaries(t *testing.T) {
 	}
 	h.assertTempEmpty(t)
 }
+
+func TestPublishSameFileNameFromSeveralUnits(t *testing.T) {
+	same := rpmSpec{name: "kernel-livepatch", version: "1", release: "1.1", arch: "x86_64"}
+	old, newer := same, same
+	old.content, newer.content = "from the first unit", "from the second unit"
+	tests := []struct {
+		name      string
+		units     map[string]rpmSpec
+		wantBody  string
+		conflicts int
+	}{
+		{"identical copies are no conflict", map[string]rpmSpec{"a": same, "b": same}, "rpm:" + same.filename(), 0},
+		{"different content: last unit wins", map[string]rpmSpec{"a": old, "b": newer}, "from the second unit", 1},
+		{"three units, last wins", map[string]rpmSpec{"a": old, "b": newer, "c": old}, "from the first unit", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t, publishAll)
+			for _, u := range []string{"c", "b", "a"} { // listing order must not matter
+				if spec, ok := tt.units[u]; ok {
+					h.idx.builds(t, h.store, testPrpa, u, spec)
+				}
+			}
+			res := h.publish(t)
+			if got := len(res.Conflicts); got != tt.conflicts {
+				t.Fatalf("%d conflicts, want %d: %+v", got, tt.conflicts, res.Conflicts)
+			}
+			if res.SubRepos[publisher.SubRepoStandard].Packages != 1 {
+				t.Errorf("want exactly one published binary: %+v", res.SubRepos)
+			}
+			key := stdPrefix + same.filename()
+			raw, err := h.store.ReadObject(context.Background(), key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(raw) != tt.wantBody {
+				t.Errorf("published %q, want %q", raw, tt.wantBody)
+			}
+			if tt.conflicts == 1 && !strings.HasSuffix(res.Conflicts[0].Kept, same.filename()) {
+				t.Errorf("conflict does not name the kept binary: %+v", res.Conflicts[0])
+			}
+		})
+	}
+}

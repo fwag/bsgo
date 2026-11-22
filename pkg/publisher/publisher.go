@@ -138,6 +138,9 @@ type Result struct {
 	Skipped string
 	// SubRepos is keyed by sub-repository.
 	SubRepos map[SubRepoType]SubRepoResult
+	// Conflicts lists file names that units produced with different content;
+	// the binary of the last unit in artifact key order was published.
+	Conflicts []NameConflict
 }
 
 // Publish publishes the current build repository of prpa. Callers serialize
@@ -160,6 +163,7 @@ func (p *Publisher) Publish(ctx context.Context, prpa buildrepo.Prpa) (*Result, 
 	if err != nil {
 		return nil, errors.Join(err, p.setState(ctx, prpa, storage.RepoFinished, "publish failed: "+err.Error(), pl.hash))
 	}
+	res.Conflicts = pl.conflicts
 	if err := p.setState(ctx, prpa, storage.RepoPublished, "", pl.hash); err != nil {
 		return res, err
 	}
@@ -179,6 +183,8 @@ func (p *Publisher) Publish(ctx context.Context, prpa buildrepo.Prpa) (*Result, 
 type publishPlan struct {
 	pol Policy
 	sel Selection
+	// conflicts are the file names that several units produced differently.
+	conflicts []NameConflict
 	// skipped is the reason when there is nothing to do.
 	skipped string
 	// hash is the content hash of the build repository index being published.
@@ -211,11 +217,11 @@ func (p *Publisher) plan(ctx context.Context, prpa buildrepo.Prpa) (*publishPlan
 	if err != nil {
 		return nil, err
 	}
-	sel, err := selectBinaries(cands, pol, prpa.Arch)
+	sel, conflicts, err := selectBinaries(cands, pol, prpa.Arch)
 	if err != nil {
 		return nil, fmt.Errorf("selecting binaries of %s: %w", prpa, err)
 	}
-	return &publishPlan{pol: pol, sel: sel, hash: idx.Hash}, nil
+	return &publishPlan{pol: pol, sel: sel, conflicts: conflicts, hash: idx.Hash}, nil
 }
 
 // setState records the repository state of prpa; it does nothing without a

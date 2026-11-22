@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -84,6 +85,10 @@ func logPublished(res *publisher.Result) {
 	if res.Skipped != "" {
 		logf("PUBLISHER", "%s: not published (%s)", res.Prpa, res.Skipped)
 		return
+	}
+	for _, c := range res.Conflicts {
+		logf("PUBLISHER", "%s: file name %s is produced by different units, published %s, ignored %s",
+			res.Prpa, c.Filename, c.Kept, strings.Join(c.Dropped, ", "))
 	}
 	for sr, r := range res.SubRepos {
 		logf("PUBLISHER", "%s: published %s repository with %d binaries (%d copied, %d removed)",

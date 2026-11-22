@@ -145,39 +145,69 @@ func exportedToArch(r *buildconfig.ExportRouter, filename string) bool {
 // file name.
 type Selection map[SubRepoType][]Binary
 
+// NameConflict records that several units produced different binaries under
+// one file name. Only one of them can be published.
+type NameConflict struct {
+	Filename string
+	// Kept is the S3 key of the published binary, Dropped the keys of the
+	// binaries that lost.
+	Kept    string
+	Dropped []string
+}
+
 // selectBinaries applies the publication policy to the candidates: source
 // packages are dropped (no source sub-repository is requested), debug
 // packages only with flags.debuginfo, and ExportFilter for the own
-// architecture. Two binaries with the same file name must be identical.
-func selectBinaries(cands []Binary, pol Policy, arch string) (Selection, error) {
-	sel := Selection{}
-	seen := map[string]string{}
+// architecture.
+//
+// Several units can build a binary with the same file name (for example the
+// kernel-livepatch units of SUSE:SLFO). Like OBS, which lets a later binary
+// replace an earlier one of the same name, this never fails the repository:
+// the candidates are ordered by their artifact key (which starts with the
+// unit name) and the last one wins. The order does not depend on the
+// listing order of the index, so repeated publishes choose the same binary
+// and do not make the published file flap. Identical copies are no conflict.
+func selectBinaries(cands []Binary, pol Policy, arch string) (Selection, []NameConflict, error) {
 	router, err := exportRouter(pol.ExportFilter, arch)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	for _, c := range cands {
+	ordered := append([]Binary(nil), cands...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Source < ordered[j].Source })
+	chosen := map[string]Binary{}
+	dropped := map[string][]string{}
+	for _, c := range ordered {
 		sr := classifyBinary(c.BinInfo)
 		if sr == SubRepoSource || (sr == SubRepoDebug && !pol.Debuginfo) {
 			continue
 		}
 		if !isValidPathSegment(c.Filename) || !strings.HasSuffix(c.Filename, ".rpm") {
-			return nil, fmt.Errorf("invalid binary file name %q", c.Filename)
+			return nil, nil, fmt.Errorf("invalid binary file name %q", c.Filename)
 		}
 		if !exportedToArch(router, c.Filename) {
 			continue
 		}
-		if sha, dup := seen[c.Filename]; dup {
-			if sha != c.SHA256 {
-				return nil, fmt.Errorf("two different binaries are named %s", c.Filename)
-			}
-			continue
+		if prev, dup := chosen[c.Filename]; dup && prev.SHA256 != c.SHA256 {
+			dropped[c.Filename] = append(dropped[c.Filename], prev.Source)
 		}
-		seen[c.Filename] = c.SHA256
+		chosen[c.Filename] = c
+	}
+	sel := Selection{}
+	for _, c := range chosen {
+		sr := classifyBinary(c.BinInfo)
 		sel[sr] = append(sel[sr], c)
 	}
 	for _, list := range sel {
 		sort.Slice(list, func(i, j int) bool { return list[i].Filename < list[j].Filename })
 	}
-	return sel, nil
+	return sel, nameConflicts(chosen, dropped), nil
+}
+
+func nameConflicts(chosen map[string]Binary, dropped map[string][]string) []NameConflict {
+	out := make([]NameConflict, 0, len(dropped))
+	for name, keys := range dropped {
+		out = append(out, NameConflict{Filename: name, Kept: chosen[name].Source, Dropped: keys})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Filename < out[j].Filename })
+	return out
 }
