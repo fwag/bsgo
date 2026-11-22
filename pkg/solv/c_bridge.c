@@ -122,10 +122,31 @@ Id bsgo_repo_add_solvable(Repo *repo, const char *name, const char *evr, const c
     return sid;
 }
 
-int bsgo_solvable_add_dep(Repo *repo, Id sid, int kind, const char *dep, int pre) {
-    if (!repo || sid <= 0 || !dep) return -1;
+/* Dependency of an RPM header entry. Like libsolv's rpm and rpm-md readers
+ * this takes the name verbatim: capabilities such as
+ * "firmware(brcm/x.raspberrypi,3-model-a-plus.txt)" or the fragments rpm
+ * leaves of them are legal names, so only rich dependencies are parsed. */
+static Id header_dep(Pool *pool, const char *name, const char *op, const char *evr) {
+    if (!name || !*name) return 0;
+    if (*name == '(') return pool_parserpmrichdep(pool, name);
+    int flags = 0;
+    if (op && *op) {
+        for (const char *c = op; *c; c++) {
+            if (*c == '<') flags |= REL_LT;
+            else if (*c == '>') flags |= REL_GT;
+            else if (*c == '=') flags |= REL_EQ;
+            else return 0;
+        }
+    }
+    Id nid = pool_str2id(pool, name, 1);
+    if (!flags || !evr || !*evr) return nid;
+    return pool_rel2id(pool, nid, pool_str2id(pool, evr, 1), flags, 1);
+}
+
+int bsgo_solvable_add_dep(Repo *repo, Id sid, int kind, const char *name, const char *op, const char *evr, int pre) {
+    if (!repo || sid <= 0 || !name) return -1;
     Pool *pool = repo->pool;
-    Id id = bsgo_str2dep(pool, dep);
+    Id id = header_dep(pool, name, op, evr);
     if (!id) return -1;
     Solvable *s = pool->solvables + sid;
     switch (kind) {

@@ -135,3 +135,39 @@ func TestBuildSolvErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildSolvOddCapabilityNames covers names that rpm writes into headers
+// and that no dependency parser may split: a comma inside parentheses (rpm
+// leaves the fragments of such a spec line as separate entries) and spaces.
+func TestBuildSolvOddCapabilityNames(t *testing.T) {
+	tests := []struct {
+		name string
+		dep  bininfo.Dep
+		want string
+	}{
+		{"comma capability", bininfo.Dep{Name: "firmware(brcm/brcmfmac43455-sdio.raspberrypi,3-model-a-plus.txt)"},
+			"firmware(brcm/brcmfmac43455-sdio.raspberrypi,3-model-a-plus.txt)"},
+		{"fragment with closing paren", bininfo.Dep{Name: "3-model-a-plus.txt)"}, "3-model-a-plus.txt)"},
+		{"fragment with opening paren", bininfo.Dep{Name: "firmware(brcm/brcmfmac43430-sdio.raspberrypi"},
+			"firmware(brcm/brcmfmac43430-sdio.raspberrypi"},
+		{"space in parentheses", bininfo.Dep{Name: "font(foo bar)"}, "font(foo bar)"},
+		{"versioned", bininfo.Dep{Name: "firmware(a,b)", Op: ">=", EVR: "1.0-1"}, "firmware(a,b) >= 1.0-1"},
+		{"rich dependency", bininfo.Dep{Name: "(foo if bar)"}, "(foo if bar)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			infos := []bininfo.BinInfo{{
+				Name: "pkg", Version: "1", Release: "1", Arch: "noarch", Filename: "pkg.rpm", SHA256: sumA,
+				Provides: []bininfo.Dep{tc.dep},
+			}}
+			idx, err := solv.BuildSolv("x86_64", infos)
+			if err != nil {
+				t.Fatalf("BuildSolv: %v", err)
+			}
+			got := strings.Join(provides(t, solv.RepoBlob{Name: "idx", Data: idx}), "\n")
+			if !strings.Contains(got, "pkg: "+tc.want+"\n") && !strings.HasSuffix(got, "pkg: "+tc.want) {
+				t.Errorf("provide %q missing in:\n%s", tc.want, got)
+			}
+		})
+	}
+}

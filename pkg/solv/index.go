@@ -218,16 +218,19 @@ func (r *Repo) addDeps(sid C.Id, kind int, deps []bininfo.Dep) error {
 		if kind == addRequires && strings.HasPrefix(d.Name, "rpmlib(") {
 			continue
 		}
-		s := d.String()
-		cs := C.CString(s)
+		cn := C.CString(d.Name)
+		co := C.CString(d.Op)
+		ce := C.CString(d.EVR)
 		pre := C.int(0)
 		if d.Pre {
 			pre = 1
 		}
-		rc := C.bsgo_solvable_add_dep(r.ptr, sid, C.int(kind), cs, pre)
-		C.free(unsafe.Pointer(cs))
+		rc := C.bsgo_solvable_add_dep(r.ptr, sid, C.int(kind), cn, co, ce, pre)
+		C.free(unsafe.Pointer(cn))
+		C.free(unsafe.Pointer(co))
+		C.free(unsafe.Pointer(ce))
 		if rc != 0 {
-			return fmt.Errorf("cannot parse dependency %q", s)
+			return fmt.Errorf("cannot parse dependency %q", d.String())
 		}
 	}
 	return nil
