@@ -125,10 +125,16 @@ Id bsgo_repo_add_solvable(Repo *repo, const char *name, const char *evr, const c
 /* Dependency of an RPM header entry. Like libsolv's rpm and rpm-md readers
  * this takes the name verbatim: capabilities such as
  * "firmware(brcm/x.raspberrypi,3-model-a-plus.txt)" or the fragments rpm
- * leaves of them are legal names, so only rich dependencies are parsed. */
+ * leaves of them are legal names, so only rich dependencies are parsed (and kept verbatim if
+ * they do not parse). */
 static Id header_dep(Pool *pool, const char *name, const char *op, const char *evr) {
     if (!name || !*name) return 0;
-    if (*name == '(') return pool_parserpmrichdep(pool, name);
+    if (*name == '(') {
+        /* A name that does not parse as a rich dependency stays a plain
+         * capability name instead of failing the whole package. */
+        Id rich = pool_parserpmrichdep(pool, name);
+        if (rich) return rich;
+    }
     int flags = 0;
     if (op && *op) {
         for (const char *c = op; *c; c++) {

@@ -122,10 +122,6 @@ func TestBuildSolvErrors(t *testing.T) {
 	}{
 		{"no arch", "", testInfos()},
 		{"incomplete identity", "x86_64", []bininfo.BinInfo{{Name: "x"}}},
-		{"bad dependency", "x86_64", []bininfo.BinInfo{{
-			Name: "x", Version: "1", Release: "1", Arch: "noarch",
-			Requires: []bininfo.Dep{{Name: "(unbalanced"}},
-		}}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,6 +149,7 @@ func TestBuildSolvOddCapabilityNames(t *testing.T) {
 		{"space in parentheses", bininfo.Dep{Name: "font(foo bar)"}, "font(foo bar)"},
 		{"versioned", bininfo.Dep{Name: "firmware(a,b)", Op: ">=", EVR: "1.0-1"}, "firmware(a,b) >= 1.0-1"},
 		{"rich dependency", bininfo.Dep{Name: "(foo if bar)"}, "(foo if bar)"},
+		{"unparsable rich dependency stays a name", bininfo.Dep{Name: "(unbalanced"}, "(unbalanced"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
