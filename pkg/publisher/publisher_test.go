@@ -465,6 +465,9 @@ func TestPublishSameFileNameFromSeveralUnits(t *testing.T) {
 			if string(raw) != tt.wantBody {
 				t.Errorf("published %q, want %q", raw, tt.wantBody)
 			}
+			if tt.name == "three units, last wins" && len(res.Conflicts[0].Dropped) != 1 {
+				t.Errorf("a loser identical to the winner must not be reported: %+v", res.Conflicts[0])
+			}
 			if tt.conflicts == 1 && !strings.HasSuffix(res.Conflicts[0].Kept, same.filename()) {
 				t.Errorf("conflict does not name the kept binary: %+v", res.Conflicts[0])
 			}

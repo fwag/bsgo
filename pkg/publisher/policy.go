@@ -175,7 +175,7 @@ func selectBinaries(cands []Binary, pol Policy, arch string) (Selection, []NameC
 	ordered := append([]Binary(nil), cands...)
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Source < ordered[j].Source })
 	chosen := map[string]Binary{}
-	dropped := map[string][]string{}
+	dropped := map[string][]Binary{}
 	for _, c := range ordered {
 		sr := classifyBinary(c.BinInfo)
 		if sr == SubRepoSource || (sr == SubRepoDebug && !pol.Debuginfo) {
@@ -188,7 +188,7 @@ func selectBinaries(cands []Binary, pol Policy, arch string) (Selection, []NameC
 			continue
 		}
 		if prev, dup := chosen[c.Filename]; dup && prev.SHA256 != c.SHA256 {
-			dropped[c.Filename] = append(dropped[c.Filename], prev.Source)
+			dropped[c.Filename] = append(dropped[c.Filename], prev)
 		}
 		chosen[c.Filename] = c
 	}
@@ -203,10 +203,21 @@ func selectBinaries(cands []Binary, pol Policy, arch string) (Selection, []NameC
 	return sel, nameConflicts(chosen, dropped), nil
 }
 
-func nameConflicts(chosen map[string]Binary, dropped map[string][]string) []NameConflict {
+// nameConflicts reports the names whose winner differs in content from at
+// least one loser; a loser identical to the winner is no conflict.
+func nameConflicts(chosen map[string]Binary, dropped map[string][]Binary) []NameConflict {
 	out := make([]NameConflict, 0, len(dropped))
-	for name, keys := range dropped {
-		out = append(out, NameConflict{Filename: name, Kept: chosen[name].Source, Dropped: keys})
+	for name, losers := range dropped {
+		win := chosen[name]
+		var keys []string
+		for _, l := range losers {
+			if l.SHA256 != win.SHA256 {
+				keys = append(keys, l.Source)
+			}
+		}
+		if len(keys) > 0 {
+			out = append(out, NameConflict{Filename: name, Kept: win.Source, Dropped: keys})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Filename < out[j].Filename })
 	return out

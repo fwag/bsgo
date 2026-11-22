@@ -139,7 +139,7 @@ type Result struct {
 	// SubRepos is keyed by sub-repository.
 	SubRepos map[SubRepoType]SubRepoResult
 	// Conflicts lists file names that units produced with different content;
-	// the binary of the last unit in artifact key order was published.
+	// the binary that is last in artifact key order was published.
 	Conflicts []NameConflict
 }
 

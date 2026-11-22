@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -81,14 +80,16 @@ func startPublisher(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jet
 	go svc.Run(ctx)
 }
 
+// publishConflicts remembers the last reported conflicts of every prpa.
+var publishConflicts conflictReporter
+
 func logPublished(res *publisher.Result) {
 	if res.Skipped != "" {
 		logf("PUBLISHER", "%s: not published (%s)", res.Prpa, res.Skipped)
 		return
 	}
-	for _, c := range res.Conflicts {
-		logf("PUBLISHER", "%s: file name %s is produced by different units, published %s, ignored %s",
-			res.Prpa, c.Filename, c.Kept, strings.Join(c.Dropped, ", "))
+	for _, line := range publishConflicts.lines(res.Prpa.String(), res.Conflicts) {
+		logf("PUBLISHER", "%s", line)
 	}
 	for sr, r := range res.SubRepos {
 		logf("PUBLISHER", "%s: published %s repository with %d binaries (%d copied, %d removed)",
