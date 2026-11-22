@@ -11,9 +11,9 @@ import (
 func TestSandboxArgsNspawn(t *testing.T) {
 	s := &ProcessSandbox{SandboxMode: "nspawn"}
 	job := &v1.BuildJob{Resources: v1.ResourceRequirements{MemoryMB: 8192, DiskGB: 40, VCPUs: 4}}
-	got := s.sandboxArgs(job, "/root", "/d.img", "/d.swap", "/cache")
-	want := []string{"--clean", "--changelog", "--vm-type", "nspawn", "--root", "/root", "--cachedir", "/cache",
-		"--vm-args", `'--bind=/root/tmp:/tmp'`}
+	got := s.sandboxArgs(job, "/jobs/a/root-a", "/d.img", "/d.swap", "/cache")
+	want := []string{"--clean", "--changelog", "--vm-type", "nspawn", "--root", "/jobs/a/root-a", "--cachedir", "/cache",
+		"--vm-args", `'--bind=/jobs/a/tmp:/tmp'`}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("args = %v, want %v", got, want)
 	}

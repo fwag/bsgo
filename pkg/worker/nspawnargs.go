@@ -148,35 +148,71 @@ func shellQuoteArgs(args []string) string {
 	return strings.Join(q, " ")
 }
 
+// nspawnTmpDir is the host directory bound over the container's /tmp. It is
+// a sibling of the build root (not below it, where nspawn's own /tmp tmpfs
+// could shadow it) and lives in the job directory.
+func nspawnTmpDir(buildRoot string) string {
+	return filepath.Join(filepath.Dir(buildRoot), "tmp")
+}
+
 // nspawnVMArgs returns the configured nspawn arguments plus a bind mount of
-// the build root's own /tmp onto /tmp. systemd-nspawn otherwise mounts a
-// tmpfs there that is limited to 10% of the host memory (3 GiB on a 32 GiB
-// host) and fills up when a large Go or C++ build compiles through /tmp
-// ("No space left on device"). OBS builds in a chroot or a KVM disk, where
-// /tmp lives on the build root, and the bound directory is wiped with the
-// build root. A configured argument that already mounts /tmp (a bind or a
-// tmpfs with another size) wins.
+// a per-job directory onto /tmp. systemd-nspawn otherwise mounts a tmpfs
+// there that is limited to 10% of the host memory (3 GiB on a 32 GiB host)
+// and fills up when a large Go or C++ build compiles through /tmp ("No space
+// left on device"). OBS builds in a chroot or a KVM disk, where /tmp is on
+// disk. A configured argument that already mounts /tmp (a bind or a tmpfs
+// with another size) wins.
 func nspawnVMArgs(configured []string, buildRoot string) []string {
 	out := append([]string(nil), configured...)
 	if mountsTmp(configured) {
 		return out
 	}
-	src := strings.ReplaceAll(filepath.Join(buildRoot, "tmp"), ":", `\:`)
+	src := strings.ReplaceAll(nspawnTmpDir(buildRoot), ":", `\:`)
 	return append(out, "--bind="+src+":/tmp")
 }
 
 // mountsTmp reports whether an nspawn argument sets up the container's /tmp.
 func mountsTmp(args []string) bool {
 	for _, a := range args {
-		if a == "--tmpfs=/tmp" || strings.HasPrefix(a, "--tmpfs=/tmp:") {
-			return true
+		if v, ok := strings.CutPrefix(a, "--tmpfs="); ok {
+			if isTmpPath(strings.Split(v, ":")[0]) {
+				return true
+			}
+			continue
 		}
 		for _, opt := range []string{"--bind=", "--bind-ro=", "--overlay=", "--overlay-ro="} {
 			v, ok := strings.CutPrefix(a, opt)
-			if ok && (strings.HasSuffix(v, ":/tmp") || strings.Contains(v, ":/tmp:")) {
+			if !ok {
+				continue
+			}
+			parts := strings.Split(strings.ReplaceAll(v, `\:`, "\x00"), ":")
+			if len(parts) >= 2 && isTmpPath(parts[1]) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func isTmpPath(p string) bool { return strings.TrimRight(p, "/") == "/tmp" }
+
+// prepareNspawnTmp creates the empty per-job /tmp directory (mode 1777) as a
+// new directory owned by the worker; an existing entry, symlink or not, is an
+// error. A previous attempt's directory is wiped before (see wipeBuildRoot).
+func prepareNspawnTmp(buildRoot string) error {
+	dir := nspawnTmpDir(buildRoot)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return fmt.Errorf("create nspawn /tmp directory: %w", err)
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("nspawn /tmp directory %s is not a plain directory", dir)
+	}
+	if err := os.Chmod(dir, os.ModeSticky|0o777); err != nil {
+		return fmt.Errorf("chmod nspawn /tmp directory: %w", err)
+	}
+	return nil
 }

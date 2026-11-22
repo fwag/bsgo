@@ -178,6 +178,13 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 	// attempt that was interrupted (host reboot, killed container) is
 	// root-owned and must be wiped through obs-build before reuse.
 	wipeBuildRoot(ctx, obsBin, buildRoot, w)
+	if s.SandboxMode == "nspawn" {
+		// Its contents are written by root in the container; obs-build wipes it.
+		wipeBuildRoot(ctx, obsBin, nspawnTmpDir(buildRoot), w)
+		if err := prepareNspawnTmp(buildRoot); err != nil {
+			return nil, err
+		}
+	}
 	vmDisk, vmSwap, err := s.setupKVMDisks(job)
 	if err != nil {
 		return nil, fmt.Errorf("failed configuring VM disks: %w", err)
@@ -201,6 +208,9 @@ func (s *ProcessSandbox) buildWithKVM(ctx context.Context, job *v1.BuildJob, job
 			return
 		}
 		wipeBuildRoot(context.Background(), obsBin, buildRoot, w)
+		if s.SandboxMode == "nspawn" {
+			wipeBuildRoot(context.Background(), obsBin, nspawnTmpDir(buildRoot), w)
+		}
 		_ = os.RemoveAll(filepath.Join(jobDir, "repo_snapshot"))
 		_ = os.RemoveAll(filepath.Join(jobDir, "packages"))
 		_ = os.RemoveAll(filepath.Join(jobDir, "bdeps"))

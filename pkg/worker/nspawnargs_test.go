@@ -93,29 +93,31 @@ func TestPrepareNspawnArgs(t *testing.T) {
 
 func TestSandboxArgsNspawnVMArgs(t *testing.T) {
 	s := &ProcessSandbox{SandboxMode: "nspawn", NspawnArgs: []string{"--hostname=h", "--bind-ro=/a b:/c", "--x=it's"}}
-	got := s.sandboxArgs(&v1.BuildJob{}, "/root", "", "", "/cache")
-	want := []string{"--clean", "--changelog", "--vm-type", "nspawn", "--root", "/root", "--cachedir", "/cache",
-		"--vm-args", `'--hostname=h' '--bind-ro=/a b:/c' '--x=it'\''s' '--bind=/root/tmp:/tmp'`}
+	got := s.sandboxArgs(&v1.BuildJob{}, "/jobs/a/root-a", "", "", "/cache")
+	want := []string{"--clean", "--changelog", "--vm-type", "nspawn", "--root", "/jobs/a/root-a", "--cachedir", "/cache",
+		"--vm-args", `'--hostname=h' '--bind-ro=/a b:/c' '--x=it'\''s' '--bind=/jobs/a/tmp:/tmp'`}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
 
 func TestNspawnVMArgsTmp(t *testing.T) {
-	bind := "--bind=/jobs/a/root/tmp:/tmp"
+	bind := "--bind=/jobs/a/tmp:/tmp"
 	tests := []struct {
 		name       string
 		configured []string
 		root       string
 		want       []string
 	}{
-		{"default binds the root tmp", nil, "/jobs/a/root", []string{bind}},
-		{"added after configured", []string{"--hostname=h"}, "/jobs/a/root", []string{"--hostname=h", bind}},
-		{"colon in path escaped", nil, "/jobs/a:b/root", []string{`--bind=/jobs/a\:b/root/tmp:/tmp`}},
-		{"own bind wins", []string{"--bind=/x:/tmp"}, "/jobs/a/root", []string{"--bind=/x:/tmp"}},
-		{"own bind with options wins", []string{"--bind=/x:/tmp:norbind"}, "/jobs/a/root", []string{"--bind=/x:/tmp:norbind"}},
-		{"own tmpfs wins", []string{"--tmpfs=/tmp:size=20G"}, "/jobs/a/root", []string{"--tmpfs=/tmp:size=20G"}},
-		{"other tmp paths do not count", []string{"--bind=/x:/var/tmp", "--tmpfs=/tmpx"}, "/jobs/a/root",
+		{"default binds the root tmp", nil, "/jobs/a/root-a", []string{bind}},
+		{"added after configured", []string{"--hostname=h"}, "/jobs/a/root-a", []string{"--hostname=h", bind}},
+		{"colon in path escaped", nil, "/jobs/a:b/root-a", []string{`--bind=/jobs/a\:b/tmp:/tmp`}},
+		{"own bind wins", []string{"--bind=/x:/tmp"}, "/jobs/a/root-a", []string{"--bind=/x:/tmp"}},
+		{"own bind with options wins", []string{"--bind=/x:/tmp:norbind"}, "/jobs/a/root-a", []string{"--bind=/x:/tmp:norbind"}},
+		{"own bind with trailing slash wins", []string{"--bind=/x:/tmp/"}, "/jobs/a/root-a", []string{"--bind=/x:/tmp/"}},
+		{"own tmpfs with trailing slash wins", []string{"--tmpfs=/tmp/"}, "/jobs/a/root-a", []string{"--tmpfs=/tmp/"}},
+		{"own tmpfs wins", []string{"--tmpfs=/tmp:size=20G"}, "/jobs/a/root-a", []string{"--tmpfs=/tmp:size=20G"}},
+		{"other tmp paths do not count", []string{"--bind=/x:/var/tmp", "--tmpfs=/tmpx"}, "/jobs/a/root-a",
 			[]string{"--bind=/x:/var/tmp", "--tmpfs=/tmpx", bind}},
 	}
 	for _, tc := range tests {
@@ -129,5 +131,27 @@ func TestNspawnVMArgsTmp(t *testing.T) {
 				t.Errorf("configured arguments modified: %v", tc.configured)
 			}
 		})
+	}
+}
+
+func TestPrepareNspawnTmp(t *testing.T) {
+	jobDir := t.TempDir()
+	root := filepath.Join(jobDir, "root-x")
+	if err := prepareNspawnTmp(root); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(filepath.Join(jobDir, "tmp"))
+	if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSticky == 0 || fi.Mode().Perm() != 0o777 {
+		t.Fatalf("want a sticky 1777 directory, got %v, %v", fi, err)
+	}
+	if err := prepareNspawnTmp(root); err == nil {
+		t.Error("an existing directory must be refused")
+	}
+	other := t.TempDir()
+	if err := os.Symlink(t.TempDir(), filepath.Join(other, "tmp")); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareNspawnTmp(filepath.Join(other, "root-y")); err == nil {
+		t.Error("a symlink must be refused")
 	}
 }
