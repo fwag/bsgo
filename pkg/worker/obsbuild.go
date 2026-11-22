@@ -30,8 +30,8 @@ func (s *ProcessSandbox) sandboxArgs(job *v1.BuildJob, buildRoot, vmDisk, vmSwap
 		// or user knobs: systemd-nspawn runs directly on the build root with
 		// --private-network, so no --vm-disk/--vm-swap/--vm-memory/--vm-user.
 		args := []string{"--clean", "--changelog", "--vm-type", "nspawn", "--root", buildRoot, "--cachedir", cacheDir}
-		if len(s.NspawnArgs) > 0 {
-			args = append(args, "--vm-args", shellQuoteArgs(s.NspawnArgs))
+		if vmArgs := nspawnVMArgs(s.NspawnArgs, buildRoot); len(vmArgs) > 0 {
+			args = append(args, "--vm-args", shellQuoteArgs(vmArgs))
 		}
 		return args
 	}

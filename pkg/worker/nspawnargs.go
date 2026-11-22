@@ -147,3 +147,36 @@ func shellQuoteArgs(args []string) string {
 	}
 	return strings.Join(q, " ")
 }
+
+// nspawnVMArgs returns the configured nspawn arguments plus a bind mount of
+// the build root's own /tmp onto /tmp. systemd-nspawn otherwise mounts a
+// tmpfs there that is limited to 10% of the host memory (3 GiB on a 32 GiB
+// host) and fills up when a large Go or C++ build compiles through /tmp
+// ("No space left on device"). OBS builds in a chroot or a KVM disk, where
+// /tmp lives on the build root, and the bound directory is wiped with the
+// build root. A configured argument that already mounts /tmp (a bind or a
+// tmpfs with another size) wins.
+func nspawnVMArgs(configured []string, buildRoot string) []string {
+	out := append([]string(nil), configured...)
+	if mountsTmp(configured) {
+		return out
+	}
+	src := strings.ReplaceAll(filepath.Join(buildRoot, "tmp"), ":", `\:`)
+	return append(out, "--bind="+src+":/tmp")
+}
+
+// mountsTmp reports whether an nspawn argument sets up the container's /tmp.
+func mountsTmp(args []string) bool {
+	for _, a := range args {
+		if a == "--tmpfs=/tmp" || strings.HasPrefix(a, "--tmpfs=/tmp:") {
+			return true
+		}
+		for _, opt := range []string{"--bind=", "--bind-ro=", "--overlay=", "--overlay-ro="} {
+			v, ok := strings.CutPrefix(a, opt)
+			if ok && (strings.HasSuffix(v, ":/tmp") || strings.Contains(v, ":/tmp:")) {
+				return true
+			}
+		}
+	}
+	return false
+}

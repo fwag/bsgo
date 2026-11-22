@@ -95,8 +95,39 @@ func TestSandboxArgsNspawnVMArgs(t *testing.T) {
 	s := &ProcessSandbox{SandboxMode: "nspawn", NspawnArgs: []string{"--hostname=h", "--bind-ro=/a b:/c", "--x=it's"}}
 	got := s.sandboxArgs(&v1.BuildJob{}, "/root", "", "", "/cache")
 	want := []string{"--clean", "--changelog", "--vm-type", "nspawn", "--root", "/root", "--cachedir", "/cache",
-		"--vm-args", `'--hostname=h' '--bind-ro=/a b:/c' '--x=it'\''s'`}
+		"--vm-args", `'--hostname=h' '--bind-ro=/a b:/c' '--x=it'\''s' '--bind=/root/tmp:/tmp'`}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestNspawnVMArgsTmp(t *testing.T) {
+	bind := "--bind=/jobs/a/root/tmp:/tmp"
+	tests := []struct {
+		name       string
+		configured []string
+		root       string
+		want       []string
+	}{
+		{"default binds the root tmp", nil, "/jobs/a/root", []string{bind}},
+		{"added after configured", []string{"--hostname=h"}, "/jobs/a/root", []string{"--hostname=h", bind}},
+		{"colon in path escaped", nil, "/jobs/a:b/root", []string{`--bind=/jobs/a\:b/root/tmp:/tmp`}},
+		{"own bind wins", []string{"--bind=/x:/tmp"}, "/jobs/a/root", []string{"--bind=/x:/tmp"}},
+		{"own bind with options wins", []string{"--bind=/x:/tmp:norbind"}, "/jobs/a/root", []string{"--bind=/x:/tmp:norbind"}},
+		{"own tmpfs wins", []string{"--tmpfs=/tmp:size=20G"}, "/jobs/a/root", []string{"--tmpfs=/tmp:size=20G"}},
+		{"other tmp paths do not count", []string{"--bind=/x:/var/tmp", "--tmpfs=/tmpx"}, "/jobs/a/root",
+			[]string{"--bind=/x:/var/tmp", "--tmpfs=/tmpx", bind}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			orig := append([]string(nil), tc.configured...)
+			got := nspawnVMArgs(tc.configured, tc.root)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+			if !reflect.DeepEqual(tc.configured, orig) && len(orig) > 0 {
+				t.Errorf("configured arguments modified: %v", tc.configured)
+			}
+		})
 	}
 }
