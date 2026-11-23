@@ -19,8 +19,11 @@ func (ps *pass) expandUnits() error {
 		if u.fixed != nil {
 			continue
 		}
-		u.deps = directDeps(u.buildDeps())
-		res, err := ps.pool.GetDeps(ps.exp, u.info.Subpacks, u.buildDeps())
+		// Buildtime service packages are not expanded here: like OBS
+		// (BSSched::BuildJob btdeps) they only join the job's build
+		// expansion, so they stay out of the meta and the blocking decision.
+		u.deps = directDeps(u.info.Deps)
+		res, err := ps.pool.GetDeps(ps.exp, u.info.Subpacks, u.info.Deps)
 		var ee *solv.ExpandError
 		switch {
 		case err == nil:
@@ -117,8 +120,9 @@ func (ps *pass) ownIndex() *buildrepo.Index {
 	return nil
 }
 
-// buildDeps returns the dependencies expanded into the build root: the recipe
-// requirements plus the packages of the buildtime source services.
+// buildDeps returns the dependencies expanded into the job's build root: the
+// recipe requirements plus the packages of the buildtime source services.
+// Only the job uses it; meta and blocking use the recipe requirements alone.
 func (u *unit) buildDeps() []string {
 	if len(u.svcDeps) == 0 {
 		return u.info.Deps
