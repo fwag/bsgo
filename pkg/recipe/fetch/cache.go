@@ -22,7 +22,7 @@ type MemoryCache struct {
 	m  map[string]Files
 }
 
-func memKey(url, commit string) string { return url + "\x00" + commit }
+func memKey(url, commit string) string { return selectionID() + "\x00" + url + "\x00" + commit }
 
 // Get implements Cache.
 func (c *MemoryCache) Get(_ context.Context, url, commit string) (Files, bool, error) {
@@ -57,7 +57,9 @@ type ObjectStore interface {
 const markerName = ".complete"
 
 // S3Cache stores recipe files in S3 under
-// recipes/<sha256(url)>/<commit>/<file>.
+// recipes/<selectionID>/<sha256(url)>/<commit>/<file>. Entries written before
+// the selection id existed live under recipes/<sha256(url)>/ and are ignored
+// (garbage; pkg/gc does not manage recipes/).
 type S3Cache struct {
 	Store ObjectStore
 }
@@ -65,7 +67,7 @@ type S3Cache struct {
 // KeyPrefix returns the S3 key prefix of an entry.
 func KeyPrefix(url, commit string) string {
 	h := sha256.Sum256([]byte(url))
-	return "recipes/" + hex.EncodeToString(h[:]) + "/" + commit + "/"
+	return "recipes/" + selectionID() + "/" + hex.EncodeToString(h[:]) + "/" + commit + "/"
 }
 
 // Get implements Cache.

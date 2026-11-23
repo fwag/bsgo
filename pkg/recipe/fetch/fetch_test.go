@@ -281,3 +281,54 @@ func TestFetchNonTipCommitFromStrictServer(t *testing.T) {
 		})
 	}
 }
+
+// legacyPrefix is the key prefix of entries written before the selection id
+// existed: recipes/<sha256(url)>/<commit>/.
+const goldenSelection = "v47e30f5b"
+
+func legacyPrefix(t *testing.T, url, commit string) string {
+	t.Helper()
+	cur := fetch.KeyPrefix(url, commit)
+	parts := strings.Split(cur, "/") // recipes, <selection id>, <sha>, <commit>, ""
+	if len(parts) != 5 || !strings.HasPrefix(parts[1], "v") {
+		t.Fatalf("key prefix %q carries no selection id", cur)
+	}
+	return strings.Join(append([]string{parts[0]}, parts[2:]...), "/")
+}
+
+// TestLegacyCacheEntryIsRefetched ties the cache key to the file selection:
+// an entry written before _service was selected must be a miss that is
+// refetched and stored under the current key.
+func TestLegacyCacheEntryIsRefetched(t *testing.T) {
+	bare, _, second := fixtureRepo(t)
+	store := &fakeS3{}
+	cache := &fetch.S3Cache{Store: store}
+	ctx := context.Background()
+	old := legacyPrefix(t, bare, second)
+	store.objs = map[string][]byte{old + "foo.spec": []byte("stale"), old + ".complete": []byte(`["foo.spec"]`)}
+
+	if _, ok, err := cache.Get(ctx, bare, second); ok || err != nil {
+		t.Fatalf("legacy entry must miss: ok=%v err=%v", ok, err)
+	}
+	files, err := (&fetch.Fetcher{Cache: cache}).Fetch(ctx, bare, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(files["_service"]) != "<services/>" || string(files["foo.spec"]) == "stale" {
+		t.Errorf("refetch returned %v", files)
+	}
+	if got, ok, err := cache.Get(ctx, bare, second); err != nil || !ok || !reflect.DeepEqual(got, files) {
+		t.Errorf("not cached under the current rule: %v ok=%v err=%v", got, ok, err)
+	}
+}
+
+// TestSelectionKeyGolden pins the key prefix. It fails whenever recipeNameRe
+// or selectionRev changes: update the expected id then, which documents that
+// all existing cache entries are invalidated.
+func TestSelectionKeyGolden(t *testing.T) {
+	const url, commit = "u", "0123456789012345678901234567890123456789"
+	parts := strings.Split(fetch.KeyPrefix(url, commit), "/")
+	if got, want := parts[1], goldenSelection; got != want {
+		t.Errorf("selection id %s, want %s: the file selection rule changed, so cached recipe sets are stale", got, want)
+	}
+}

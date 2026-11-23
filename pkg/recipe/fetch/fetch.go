@@ -7,6 +7,8 @@ package fetch
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,7 +22,9 @@ import (
 type Files map[string][]byte
 
 // Cache stores fetched recipe files by repository URL and commit id. A commit
-// id identifies immutable content, so entries never need invalidation.
+// id identifies immutable content, but the set of files kept per entry depends
+// on the selection rule (selectionID): an implementation must treat entries
+// written under another rule as misses.
 type Cache interface {
 	// Get returns the cached files; ok is false on a miss.
 	Get(ctx context.Context, url, commit string) (files Files, ok bool, err error)
@@ -39,6 +43,19 @@ var (
 	// recipeNameRe selects the files the scheduler reads.
 	recipeNameRe = regexp.MustCompile(`^(?:[^/\n]+\.spec|_multibuild|_constraints|_service)$`)
 )
+
+// selectionRev must be bumped by hand when the file selection changes in a way
+// recipeNameRe does not capture (size limits, directory handling, ...).
+const selectionRev = 1
+
+// selectionID names the file selection rule: it is derived from recipeNameRe
+// and selectionRev, so editing the pattern invalidates every cache entry
+// written under the old rule without anyone having to remember it. The S3
+// cache embeds it in the key prefix; entries of other rules are never read.
+func selectionID() string {
+	h := sha256.Sum256([]byte(strconv.Itoa(selectionRev) + "\x00" + recipeNameRe.String()))
+	return "v" + hex.EncodeToString(h[:4])
+}
 
 // Fetcher fetches recipe files, consulting an optional cache first.
 type Fetcher struct {
