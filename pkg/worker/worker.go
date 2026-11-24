@@ -231,10 +231,16 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 	jobCtx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
-	reqMem, reqVCPUs, ok := w.allocateJob(job, cancel)
-	if !ok {
+	reqMem, reqVCPUs, outcome := w.allocateJob(job, cancel)
+	switch outcome {
+	case allocDuplicate:
 		fmt.Printf("[%s] [JOB] %s: already running, ignoring the repeated dispatch\n",
 			time.Now().Format("15:04:05"), job.JobID)
+		return
+	case allocNoCapacity:
+		fmt.Printf("[%s] [JOB] %s: does not fit the free capacity, refusing it for requeue\n",
+			time.Now().Format("15:04:05"), job.JobID)
+		w.publishRefusal(job)
 		return
 	}
 	defer w.releaseJob(job.JobID, reqMem, reqVCPUs)
@@ -262,17 +268,57 @@ func (w *WorkerDaemon) processJob(parentCtx context.Context, job *v1.BuildJob) {
 	logJobCompletion(job, phase, exitCode, res)
 }
 
+type allocOutcome int
+
+const (
+	allocOK allocOutcome = iota
+	// allocDuplicate: the worker already runs a job with this ID.
+	allocDuplicate
+	// allocNoCapacity: the job does not fit the worker's free capacity.
+	allocNoCapacity
+)
+
+// fitsFree reports whether the granted vCPUs and memory fit what the worker
+// has left. A worker that states no total for a resource is not checked for it.
+func fitsFree(hw v1.WorkerHardware, vcpus int32, mem int64) bool {
+	if hw.TotalVCPUs > 0 && vcpus > hw.AvailableVCPUs {
+		return false
+	}
+	return hw.TotalMemoryMB <= 0 || mem <= hw.AvailableMemoryMB
+}
+
+// publishRefusal tells the dispatcher the job was not started for lack of
+// capacity; it queues the job again and does not count a failure.
+func (w *WorkerDaemon) publishRefusal(job *v1.BuildJob) {
+	data, _ := json.Marshal(map[string]any{
+		"job_id":       job.JobID,
+		"project":      job.Project,
+		"package":      job.Package,
+		"target":       job.Target,
+		"architecture": job.Architecture,
+		"worker_id":    w.cfg.WorkerID,
+		"phase":        "REQUEUED",
+		"reason":       v1.ReasonWorkerCapacity,
+	})
+	_ = w.nc.Publish("bsgo.status", data)
+}
+
 // allocateJob reserves the resources of job and registers it as active. It
-// reports false, changing nothing, when the worker already runs a job with
-// this ID: a repeated dispatch must neither start a second build in the same
-// job directory nor disturb the running one.
-func (w *WorkerDaemon) allocateJob(job *v1.BuildJob, cancel context.CancelFunc) (int64, int32, bool) {
+// changes nothing when the worker already runs a job with this ID (a
+// repeated dispatch must neither start a second build in the same job
+// directory nor disturb the running one) or when the job does not fit the
+// capacity left.
+func (w *WorkerDaemon) allocateJob(job *v1.BuildJob, cancel context.CancelFunc) (int64, int32, allocOutcome) {
 	w.mu.Lock()
 	if _, running := w.activeJobs[job.JobID]; running {
 		w.mu.Unlock()
-		return 0, 0, false
+		return 0, 0, allocDuplicate
 	}
 	reqVCPUs, reqMem := grantResources(job.Resources, w.cfg.Hardware)
+	if !fitsFree(w.cfg.Hardware, reqVCPUs, reqMem) {
+		w.mu.Unlock()
+		return 0, 0, allocNoCapacity
+	}
 	job.Resources.VCPUs = reqVCPUs
 	job.Resources.MemoryMB = reqMem
 	w.cfg.Hardware.AvailableMemoryMB -= reqMem
@@ -300,7 +346,7 @@ func (w *WorkerDaemon) allocateJob(job *v1.BuildJob, cancel context.CancelFunc) 
 
 	fmt.Printf("[%s] [JOB] %s: started build for %s/%s (arch: %s)\n",
 		time.Now().Format("15:04:05"), job.JobID, job.Project, job.Package, job.Architecture)
-	return reqMem, reqVCPUs, true
+	return reqMem, reqVCPUs, allocOK
 }
 
 func (w *WorkerDaemon) releaseJob(jobID string, reqMem int64, reqVCPUs int32) {

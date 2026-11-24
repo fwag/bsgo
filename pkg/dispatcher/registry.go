@@ -8,9 +8,19 @@ import (
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 )
 
+// pendingAckTimeout bounds how long a dispatched job keeps its resources
+// reserved on the server while no heartbeat of the worker lists it. After
+// that the worker is taken to have dropped the job (the watchdog requeues it).
+const pendingAckTimeout = 2 * time.Minute
+
+// jobAllocation is the capacity a dispatched job claims on a worker. It is
+// pending until a heartbeat of the worker lists the job: before that the
+// availability the heartbeat reports does not yet include the job.
 type jobAllocation struct {
-	memoryMB int64
-	vcpus    int32
+	memoryMB     int64
+	vcpus        int32
+	dispatched   time.Time
+	acknowledged bool
 }
 
 type WorkerRecord struct {
@@ -19,6 +29,10 @@ type WorkerRecord struct {
 	ConsecutiveErrors int
 	QuarantineUntil   time.Time
 	Allocations       map[string]jobAllocation
+	// noAvailability marks a worker whose last heartbeat lists no job and
+	// reports no free capacity: it does not advertise availability and runs
+	// one job at a time.
+	noAvailability bool
 	// silenceLogged and statusLogged mark that the current silence was
 	// already reported, so it is logged once rather than on every pass.
 	silenceLogged bool
@@ -85,6 +99,8 @@ func IsHostInfrastructureFailure(exitCode int) bool {
 }
 
 func (r *WorkerRegistry) UpdateHeartbeat(hb v1.WorkerHeartbeat) {
+	legacy := reportsNoAvailability(&hb)
+	hb = withIdleAvailability(hb)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -93,6 +109,7 @@ func (r *WorkerRegistry) UpdateHeartbeat(hb v1.WorkerHeartbeat) {
 		r.workers[hb.WorkerID] = &WorkerRecord{
 			WorkerHeartbeat: hb,
 			LastSeen:        r.now(),
+			noAvailability:  legacy,
 		}
 		return
 	}
@@ -104,6 +121,61 @@ func (r *WorkerRegistry) UpdateHeartbeat(hb v1.WorkerHeartbeat) {
 	w.silenceLogged, w.statusLogged = false, false
 	w.WorkerHeartbeat = hb
 	w.LastSeen = now
+	w.noAvailability = legacy
+	acknowledgeAllocations(w)
+}
+
+// withIdleAvailability fills in the availability of a worker that lists no
+// job and reports none free: it does not advertise availability (an older
+// worker), and a worker without jobs has all its capacity free. A worker that
+// lists jobs and reports 0 free is really full and stays so.
+func withIdleAvailability(hb v1.WorkerHeartbeat) v1.WorkerHeartbeat {
+	hw := &hb.Hardware
+	if reportsNoAvailability(&hb) {
+		hw.AvailableVCPUs = hw.TotalVCPUs
+		hw.AvailableMemoryMB = hw.TotalMemoryMB
+	}
+	return hb
+}
+
+func reportsNoAvailability(hb *v1.WorkerHeartbeat) bool {
+	hw := &hb.Hardware
+	return hw.AvailableVCPUs == 0 && hw.AvailableMemoryMB == 0 && hb.ActiveJobID == "" && len(hb.ActiveJobIDs) == 0
+}
+
+// acknowledgeAllocations marks the allocations of the jobs the worker's
+// heartbeat lists as active: its availability now accounts for them.
+func acknowledgeAllocations(w *WorkerRecord) {
+	for _, id := range append([]string{w.ActiveJobID}, w.ActiveJobIDs...) {
+		if a, ok := w.Allocations[id]; ok && !a.acknowledged {
+			a.acknowledged = true
+			w.Allocations[id] = a
+		}
+	}
+}
+
+// advertisesCapacity reports whether the worker states its capacity. A worker
+// that does not (no totals) is treated as a single-job worker.
+func advertisesCapacity(hw *v1.WorkerHardware) bool {
+	return hw.TotalVCPUs > 0 || hw.TotalMemoryMB > 0
+}
+
+// freeCapacity is the worker's free capacity as its heartbeat reports it,
+// less the jobs dispatched but not yet listed by a heartbeat.
+func freeCapacity(w *WorkerRecord, now time.Time) v1.WorkerHardware {
+	hw := w.Hardware
+	for _, a := range w.Allocations {
+		if a.acknowledged || now.Sub(a.dispatched) > pendingAckTimeout {
+			continue
+		}
+		hw.AvailableMemoryMB -= a.memoryMB
+		hw.AvailableVCPUs -= a.vcpus
+	}
+	return hw
+}
+
+func hasRoom(hw *v1.WorkerHardware) bool {
+	return hw.AvailableMemoryMB >= 1024 && hw.AvailableVCPUs >= 1
 }
 
 func seconds(d time.Duration) int { return int(d / time.Second) }
@@ -182,7 +254,10 @@ func (r *WorkerRegistry) SetWorkerStatus(workerID, status, activeJob string) {
 	}
 }
 
-// AllocateJobResources deducts resources from the worker's capacity pool upon dispatch.
+// AllocateJobResources records the capacity of a dispatched job as pending on
+// the worker. It stays pending until a heartbeat lists the job, so a
+// heartbeat sent before the worker started the job does not hand its capacity
+// out again.
 func (r *WorkerRegistry) AllocateJobResources(workerID string, job *v1.BuildJob) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -192,8 +267,8 @@ func (r *WorkerRegistry) AllocateJobResources(workerID string, job *v1.BuildJob)
 		return
 	}
 
-	// If worker did not advertise dynamic available capacity, treat as single-job worker
-	if w.Hardware.AvailableMemoryMB <= 0 && w.Hardware.AvailableVCPUs <= 0 && len(w.ActiveJobIDs) == 0 {
+	// A worker that does not advertise availability runs one job at a time.
+	if (w.noAvailability || !advertisesCapacity(&w.Hardware)) && len(w.ActiveJobIDs) == 0 {
 		w.Status = "BUSY"
 		w.ActiveJobID = job.JobID
 		w.ActiveJobIDs = []string{job.JobID}
@@ -208,33 +283,28 @@ func (r *WorkerRegistry) AllocateJobResources(workerID string, job *v1.BuildJob)
 	if reqVCPUs <= 0 {
 		reqVCPUs = 1
 	}
-
-	w.Hardware.AvailableMemoryMB -= reqMem
-	if w.Hardware.AvailableMemoryMB < 0 {
-		w.Hardware.AvailableMemoryMB = 0
-	}
-	w.Hardware.AvailableVCPUs -= reqVCPUs
-	if w.Hardware.AvailableVCPUs < 0 {
-		w.Hardware.AvailableVCPUs = 0
-	}
-
 	if w.Allocations == nil {
 		w.Allocations = make(map[string]jobAllocation)
 	}
-	w.Allocations[job.JobID] = jobAllocation{memoryMB: reqMem, vcpus: reqVCPUs}
+	w.Allocations[job.JobID] = jobAllocation{memoryMB: reqMem, vcpus: reqVCPUs, dispatched: r.now()}
 
 	w.ActiveJobID = job.JobID
 	w.ActiveJobIDs = append(w.ActiveJobIDs, job.JobID)
-
-	if w.Hardware.AvailableMemoryMB < 1024 || w.Hardware.AvailableVCPUs < 1 {
-		w.Status = "BUSY"
-	} else {
-		w.Status = "IDLE"
-	}
+	w.Status = statusFor(w, r.now())
 }
 
-// ReleaseJobResources restores resources back to the worker's capacity pool upon completion.
-func (r *WorkerRegistry) ReleaseJobResources(workerID, jobID string, req *v1.ResourceRequirements) {
+func statusFor(w *WorkerRecord, now time.Time) string {
+	free := freeCapacity(w, now)
+	if !advertisesCapacity(&w.Hardware) || hasRoom(&free) {
+		return "IDLE"
+	}
+	return "BUSY"
+}
+
+// ReleaseJobResources forgets the allocation of a job that finished, failed,
+// was refused or taken back. The worker's own availability returns with its
+// next heartbeat.
+func (r *WorkerRegistry) ReleaseJobResources(workerID, jobID string, _ *v1.ResourceRequirements) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -242,29 +312,7 @@ func (r *WorkerRegistry) ReleaseJobResources(workerID, jobID string, req *v1.Res
 	if !exists {
 		return
 	}
-
-	var reqMem int64
-	var reqVCPUs int32
-	if alloc, ok := w.Allocations[jobID]; ok {
-		reqMem = alloc.memoryMB
-		reqVCPUs = alloc.vcpus
-		delete(w.Allocations, jobID)
-	} else if req != nil {
-		reqMem = int64(req.MemoryMB)
-		reqVCPUs = int32(req.VCPUs)
-	} else {
-		reqMem = 2048
-		reqVCPUs = 1
-	}
-
-	w.Hardware.AvailableMemoryMB += reqMem
-	if w.Hardware.AvailableMemoryMB > w.Hardware.TotalMemoryMB {
-		w.Hardware.AvailableMemoryMB = w.Hardware.TotalMemoryMB
-	}
-	w.Hardware.AvailableVCPUs += reqVCPUs
-	if w.Hardware.AvailableVCPUs > w.Hardware.TotalVCPUs {
-		w.Hardware.AvailableVCPUs = w.Hardware.TotalVCPUs
-	}
+	delete(w.Allocations, jobID)
 
 	var remaining []string
 	for _, id := range w.ActiveJobIDs {
@@ -273,16 +321,12 @@ func (r *WorkerRegistry) ReleaseJobResources(workerID, jobID string, req *v1.Res
 		}
 	}
 	w.ActiveJobIDs = remaining
+	w.ActiveJobID = ""
 	if len(remaining) > 0 {
 		w.ActiveJobID = remaining[len(remaining)-1]
-	} else {
-		w.ActiveJobID = ""
 	}
-
-	if w.Hardware.AvailableMemoryMB >= 1024 && w.Hardware.AvailableVCPUs >= 1 {
-		w.Status = "IDLE"
-	} else {
-		w.Status = "BUSY"
+	if w.Status == "BUSY" || w.Status == "IDLE" {
+		w.Status = statusFor(w, r.now())
 	}
 }
 
@@ -368,7 +412,7 @@ func (r *WorkerRegistry) FindBestIdleWorkerExcluding(job *v1.BuildJob, excluded 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := time.Now()
+	now := r.now()
 	var bestWorker *v1.WorkerHeartbeat
 	bestScore := -1.0
 
@@ -392,10 +436,11 @@ func (r *WorkerRegistry) isWorkerEligible(w *WorkerRecord, job *v1.BuildJob, now
 	if !r.isWorkerUsable(w, job, now) {
 		return false
 	}
-	if w.Status == "BUSY" && (w.Hardware.AvailableMemoryMB < 1024 || w.Hardware.AvailableVCPUs < 1) {
+	free := freeCapacity(w, now)
+	if w.Status == "BUSY" && (w.noAvailability || !hasRoom(&free)) {
 		return false
 	}
-	return matchesConstraints(&w.Hardware, &job.Resources)
+	return matchesConstraints(&free, &job.Resources)
 }
 
 // isWorkerUsable checks everything but free resources: liveness, health,
@@ -502,21 +547,17 @@ func acceptsSandbox(w *v1.WorkerHeartbeat, c *v1.JobConstraints) bool {
 	return c.SandboxAllows(w.Hardware.SandboxType)
 }
 
+// matchesConstraints reports whether the free capacity hw meets req. A fully
+// allocated worker (available 0) has no room; only a worker that states no
+// capacity at all is not checked by vCPUs and memory.
 func matchesConstraints(hw *v1.WorkerHardware, req *v1.ResourceRequirements) bool {
-	availMem := hw.AvailableMemoryMB
-	if availMem <= 0 && hw.TotalMemoryMB > 0 {
-		availMem = hw.TotalMemoryMB
-	}
-	if req.MemoryMB > 0 && availMem < int64(req.MemoryMB) {
-		return false
-	}
-
-	availVCPUs := hw.AvailableVCPUs
-	if availVCPUs <= 0 && hw.TotalVCPUs > 0 {
-		availVCPUs = hw.TotalVCPUs
-	}
-	if req.VCPUs > 0 && availVCPUs < int32(req.VCPUs) {
-		return false
+	if advertisesCapacity(hw) {
+		if req.MemoryMB > 0 && hw.AvailableMemoryMB < int64(req.MemoryMB) {
+			return false
+		}
+		if req.VCPUs > 0 && hw.AvailableVCPUs < int32(req.VCPUs) {
+			return false
+		}
 	}
 
 	if req.DiskGB > 0 && hw.AvailableDiskGB < int64(req.DiskGB) {

@@ -263,11 +263,16 @@ func (h WorkerHeartbeat) CanBuild(arch string) bool {
 	return false
 }
 
+// ReasonWorkerCapacity is the reason of a REQUEUED job status a worker sends
+// for a job that does not fit its free capacity: the dispatcher queues the job
+// again; it is not a build failure.
+const ReasonWorkerCapacity = "WORKER_CAPACITY"
+
 type WorkerHardware struct {
 	TotalVCPUs        int32    `json:"total_vcpus"`
 	TotalMemoryMB     int64    `json:"total_memory_mb"`
-	AvailableVCPUs    int32    `json:"available_vcpus,omitempty"`
-	AvailableMemoryMB int64    `json:"available_memory_mb,omitempty"`
+	AvailableVCPUs    int32    `json:"available_vcpus"`
+	AvailableMemoryMB int64    `json:"available_memory_mb"`
 	AvailableDiskGB   int64    `json:"available_disk_gb"`
 	SandboxType       string   `json:"sandbox_type"`
 	CPUFeatures       []string `json:"cpu_features"`

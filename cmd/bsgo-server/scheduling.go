@@ -57,11 +57,18 @@ func subscribeDispatcherResults(nc *nats.Conn, disp *dispatcher.Dispatcher) {
 			Phase    string `json:"phase"`
 			WorkerID string `json:"worker_id"`
 			ExitCode *int   `json:"exit_code"`
+			Reason   string `json:"reason"`
 		}
 		if err := json.Unmarshal(msg.Data, &st); err != nil {
 			return
 		}
 		disp.Registry().NoteJobStatus(st.WorkerID, time.Now())
+		if st.Phase == "REQUEUED" && st.Reason == v1.ReasonWorkerCapacity {
+			if disp.RequeueRefused(st.JobID, st.WorkerID) {
+				logf("STATUS", "job %s (%s) refused by worker %s for lack of capacity, requeued", st.JobID, st.Package, st.WorkerID)
+			}
+			return
+		}
 		switch st.Phase {
 		case "SUCCEEDED", "FAILED", "ABORTED":
 		default:

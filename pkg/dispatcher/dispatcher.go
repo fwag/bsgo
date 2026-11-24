@@ -158,6 +158,27 @@ func (d *Dispatcher) RecordJobResult(jobID, workerID, project string, exitCode i
 	}
 }
 
+// RequeueRefused puts a job back into the queue after the worker it was sent
+// to refused it for lack of capacity. The job did not run, so it is neither a
+// failure nor a badhost. It reports false when the job is not dispatched to
+// that worker (a stale or repeated refusal).
+func (d *Dispatcher) RequeueRefused(jobID, workerID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	job := d.dispatchedJobs[jobID]
+	if job == nil || d.jobWorkers[jobID] != workerID {
+		return false
+	}
+	delete(d.dispatchedJobs, jobID)
+	delete(d.jobWorkers, jobID)
+	delete(d.dispatchedAt, jobID)
+	delete(d.activeBuilds, fmt.Sprintf("%s:%s:%s:%s", job.Project, job.Package, job.Target, job.Architecture))
+	d.registry.ReleaseJobResources(workerID, jobID, nil)
+	d.queue.Push(job)
+	return true
+}
+
 func (d *Dispatcher) OnAbort(fn func(jobID, reason string)) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
