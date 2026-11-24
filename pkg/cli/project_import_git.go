@@ -30,14 +30,15 @@ mode-160000 tree entries, and _meta when present. Without _meta in the ref, pass
 Package manifests carry the git URL (relative .gitmodules URLs are resolved against
 --gitea-base, or else the origin remote of --repo, with git semantics), the .gitmodules
 branch (or --default-branch), and the full pinned commit id of the tree entry. They have no
-recipe (auto-detected), no resources (nothing in the source defines them), and build
+recipe (auto-detected), no resources unless overridden, and build
 enabled. Packages listed in .gitmodules but absent from the tree, or the reverse, are
 skipped with a diagnostic on stderr and listed in the --json report.
 
 Package overrides: an optional file _bsgo/packages.yaml in --ref maps package names to
 manifest overrides applied to the generated package manifests, so they live in the OBS
 project git. Supported: build.constraints.sandbox (for example kvm, secure, "secure !chroot",
-none). Unknown keys are an error; overrides for packages that were not imported are
+none) and resources (memory such as 24Gi, vcpus, disk, timeout such as 12h; same format
+as the package manifest, only the set fields are applied). Unknown keys are an error; overrides for packages that were not imported are
 reported (stderr, "unused_overrides" in --json).
 
   packages:
@@ -45,6 +46,10 @@ reported (stderr, "unused_overrides" in --json).
       build:
         constraints:
           sandbox: kvm
+    llvm19:
+      resources:
+        vcpus: 8
+        memory: 24Gi
 
 Bootstrap Dependency: --bootstrap-url with --bootstrap-name and --bootstrap-targets appends
 a url dependency after the project's own path entries on each listed target. Remove it later

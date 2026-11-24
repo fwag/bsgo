@@ -284,8 +284,15 @@ packages:
     build:
       constraints:
         sandbox: kvm
+  llvm19:
+    resources:        # same fields and format as the manifest `resources:`
+      vcpus: 8
+      memory: 24Gi
 ```
 
+Supported keys per package: `build.constraints.sandbox` and `resources`
+(`memory`, `vcpus`, `disk`, `timeout`; set fields replace the generated
+manifest's, values are validated at import). Unset `timeout` means no limit.
 Unknown keys are rejected; entries for packages that were not imported are
 reported (stderr and `unused_overrides` in `--json`).
 

@@ -348,7 +348,8 @@ func TestImportOBSGitPackageOverrides(t *testing.T) {
 		{name: "two packages and an unknown one",
 			overrides: "packages:\n  alpha: {build: {constraints: {sandbox: secure !chroot}}}\n  beta: {build: {constraints: {sandbox: none}}}\n  zzz: {build: {constraints: {sandbox: kvm}}}\n",
 			wantAlpha: "secure !chroot", wantBeta: "none", wantApplied: 2, wantUnused: "zzz"},
-		{name: "unknown key", overrides: "packages:\n  alpha:\n    resources: {vcpus: 2}\n", wantErr: "resources"},
+		{name: "unknown key", overrides: "packages:\n  alpha:\n    sources: {x: 1}\n", wantErr: "sources"},
+		{name: "invalid resources", overrides: "packages:\n  alpha: {resources: {memory: lots}}\n", wantErr: "resources.memory"},
 		{name: "invalid sandbox", overrides: "packages:\n  alpha: {build: {constraints: {sandbox: 'kvm;x'}}}\n", wantErr: "sandbox"},
 	}
 	for _, tc := range tests {

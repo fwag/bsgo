@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"math"
 	"net/url"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/openSUSE/bsgo/pkg/constraints"
@@ -129,68 +127,25 @@ func resourcesOf(l manifest.ResourceLimits) (v1.ResourceRequirements, error) {
 		r.VCPUs = int32(min(l.VCPUs, 1<<20))
 	}
 	if l.Memory != "" {
-		mb, err := quantity(l.Memory, 1)
+		mb, err := manifest.ParseQuantity(l.Memory, 1)
 		if err != nil {
 			return r, fmt.Errorf("memory: %w", err)
 		}
 		r.MemoryMB = mb
 	}
 	if l.Disk != "" {
-		gb, err := quantity(l.Disk, 1<<10)
+		gb, err := manifest.ParseQuantity(l.Disk, 1<<10)
 		if err != nil {
 			return r, fmt.Errorf("disk: %w", err)
 		}
 		r.DiskGB = gb
 	}
 	if l.Timeout != "" {
-		secs, err := timeoutSeconds(l.Timeout)
+		secs, err := manifest.ParseTimeoutSeconds(l.Timeout)
 		if err != nil {
 			return r, fmt.Errorf("timeout: %w", err)
 		}
 		r.TimeoutSeconds = secs
 	}
 	return r, nil
-}
-
-var quantityUnits = []struct {
-	suffix string
-	mb     int64 // size of the unit in MiB
-}{
-	{"Ti", 1 << 20}, {"Gi", 1 << 10}, {"Mi", 1}, {"T", 1 << 20}, {"G", 1 << 10}, {"M", 1},
-}
-
-// quantity parses "<n>[Ti|Gi|Mi|T|G|M]" and returns the amount in units of
-// per MiB: with per=1 the result is MiB, with per=1024 it is GiB. A plain
-// number is in the result unit.
-func quantity(s string, per int64) (int64, error) {
-	s = strings.TrimSpace(s)
-	for _, u := range quantityUnits {
-		if num, ok := strings.CutSuffix(s, u.suffix); ok {
-			n, err := strconv.ParseInt(strings.TrimSpace(num), 10, 64)
-			if err != nil || n <= 0 {
-				return 0, fmt.Errorf("invalid quantity %q", s)
-			}
-			return max(n*u.mb/per, 1), nil
-		}
-	}
-	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("invalid quantity %q", s)
-	}
-	return n, nil
-}
-
-func timeoutSeconds(s string) (int32, error) {
-	s = strings.TrimSpace(s)
-	if n, err := strconv.ParseInt(s, 10, 32); err == nil {
-		if n < 0 {
-			return 0, fmt.Errorf("negative timeout %q", s)
-		}
-		return int32(n), nil
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil || d < 0 || d > 1<<30*time.Second {
-		return 0, fmt.Errorf("invalid timeout %q", s)
-	}
-	return int32(d / time.Second), nil
 }

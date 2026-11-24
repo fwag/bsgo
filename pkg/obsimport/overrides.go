@@ -17,11 +17,13 @@ import (
 const OverridesFile = "_bsgo/packages.yaml"
 
 // PackageOverride is what the overrides file can set on one generated package
-// manifest. Only build.constraints.sandbox is supported.
+// manifest: build.constraints.sandbox and resources (memory, vcpus, disk,
+// timeout; same format as the package manifest, set fields only).
 type PackageOverride struct {
 	Build struct {
 		Constraints manifest.BuildConstraints `yaml:"constraints"`
 	} `yaml:"build"`
+	Resources manifest.ResourceLimits `yaml:"resources"`
 }
 
 // Overrides maps a package name to its overrides.
@@ -36,6 +38,10 @@ type Overrides struct {
 //	    build:
 //	      constraints:
 //	        sandbox: kvm
+//	  llvm19:
+//	    resources:
+//	      vcpus: 8
+//	      memory: 24Gi
 //
 // Unknown keys are rejected so typos do not pass silently.
 func ParseOverrides(data []byte) (*Overrides, error) {
@@ -46,11 +52,21 @@ func ParseOverrides(data []byte) (*Overrides, error) {
 		return nil, fmt.Errorf("parse %s: %w", OverridesFile, err)
 	}
 	for name, p := range o.Packages {
-		if err := constraints.ValidateSandbox(p.Build.Constraints.Sandbox); err != nil {
-			return nil, fmt.Errorf("%s: package %s: build.constraints.sandbox: %w", OverridesFile, name, err)
+		if err := validateOverride(p); err != nil {
+			return nil, fmt.Errorf("%s: package %s: %w", OverridesFile, name, err)
 		}
 	}
 	return &o, nil
+}
+
+func validateOverride(p PackageOverride) error {
+	if err := constraints.ValidateSandbox(p.Build.Constraints.Sandbox); err != nil {
+		return fmt.Errorf("build.constraints.sandbox: %w", err)
+	}
+	if err := p.Resources.Validate(); err != nil {
+		return fmt.Errorf("resources.%w", err)
+	}
+	return nil
 }
 
 // Apply sets the overrides on the package manifests. It returns the number of
@@ -68,6 +84,7 @@ func (o *Overrides) Apply(pkgs []*manifest.PackageManifest) (applied int, unused
 		if s := ov.Build.Constraints.Sandbox; s != "" {
 			p.Build.Constraints.Sandbox = s
 		}
+		p.Resources = p.Resources.Merge(ov.Resources)
 	}
 	unused = []string{}
 	for name := range o.Packages {
