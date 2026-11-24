@@ -33,6 +33,9 @@ type WorkerRecord struct {
 	// reports no free capacity: it does not advertise availability and runs
 	// one job at a time.
 	noAvailability bool
+	// holdUntilSeq keeps the worker out of placement after it refused a job,
+	// until a heartbeat with a higher sequence number arrives.
+	holdUntilSeq int64
 	// silenceLogged and statusLogged mark that the current silence was
 	// already reported, so it is logged once rather than on every pass.
 	silenceLogged bool
@@ -98,7 +101,9 @@ func IsHostInfrastructureFailure(exitCode int) bool {
 	return exitCode != 0 && exitCode != 1 && exitCode != 137
 }
 
-func (r *WorkerRegistry) UpdateHeartbeat(hb v1.WorkerHeartbeat) {
+// UpdateHeartbeat applies a heartbeat. It reports false when the heartbeat
+// was overtaken by a newer one (lower Seq) and only counted as a sign of life.
+func (r *WorkerRegistry) UpdateHeartbeat(hb v1.WorkerHeartbeat) bool {
 	legacy := reportsNoAvailability(&hb)
 	hb = withIdleAvailability(hb)
 	r.mu.Lock()
@@ -111,18 +116,34 @@ func (r *WorkerRegistry) UpdateHeartbeat(hb v1.WorkerHeartbeat) {
 			LastSeen:        r.now(),
 			noAvailability:  legacy,
 		}
-		return
+		return true
 	}
 
 	now := r.now()
 	if w.silenceLogged || w.statusLogged {
 		r.logLocked("worker %s heartbeat resumed after %ds", hb.WorkerID, seconds(now.Sub(w.LastSeen)))
 	}
+	if hb.Seq != 0 && hb.Seq < w.Seq {
+		w.LastSeen = now
+		return false
+	}
 	w.silenceLogged, w.statusLogged = false, false
 	w.WorkerHeartbeat = hb
 	w.LastSeen = now
 	w.noAvailability = legacy
 	acknowledgeAllocations(w)
+	return true
+}
+
+// HoldAfterRefusal keeps the worker out of placement until a heartbeat newer
+// than seq (the sequence number the worker had when it refused) arrives: the
+// availability known before the refusal was wrong.
+func (r *WorkerRegistry) HoldAfterRefusal(workerID string, seq int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if w, ok := r.workers[workerID]; ok {
+		w.holdUntilSeq = seq
+	}
 }
 
 // withIdleAvailability fills in the availability of a worker that lists no
@@ -275,14 +296,7 @@ func (r *WorkerRegistry) AllocateJobResources(workerID string, job *v1.BuildJob)
 		return
 	}
 
-	reqMem := int64(job.Resources.MemoryMB)
-	if reqMem <= 0 {
-		reqMem = 2048
-	}
-	reqVCPUs := int32(job.Resources.VCPUs)
-	if reqVCPUs <= 0 {
-		reqVCPUs = 1
-	}
+	reqVCPUs, reqMem := job.Resources.Effective()
 	if w.Allocations == nil {
 		w.Allocations = make(map[string]jobAllocation)
 	}
@@ -436,6 +450,9 @@ func (r *WorkerRegistry) isWorkerEligible(w *WorkerRecord, job *v1.BuildJob, now
 	if !r.isWorkerUsable(w, job, now) {
 		return false
 	}
+	if w.holdUntilSeq > 0 && w.Seq <= w.holdUntilSeq {
+		return false
+	}
 	free := freeCapacity(w, now)
 	if w.Status == "BUSY" && (w.noAvailability || !hasRoom(&free)) {
 		return false
@@ -552,10 +569,8 @@ func acceptsSandbox(w *v1.WorkerHeartbeat, c *v1.JobConstraints) bool {
 // capacity at all is not checked by vCPUs and memory.
 func matchesConstraints(hw *v1.WorkerHardware, req *v1.ResourceRequirements) bool {
 	if advertisesCapacity(hw) {
-		if req.MemoryMB > 0 && hw.AvailableMemoryMB < int64(req.MemoryMB) {
-			return false
-		}
-		if req.VCPUs > 0 && hw.AvailableVCPUs < int32(req.VCPUs) {
+		vcpus, mem := req.Effective()
+		if hw.AvailableMemoryMB < mem || hw.AvailableVCPUs < vcpus {
 			return false
 		}
 	}

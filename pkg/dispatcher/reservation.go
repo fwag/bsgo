@@ -45,7 +45,9 @@ func (d *Dispatcher) noteEnqueued(jobID string) {
 // no longer take the job. The caller holds d.mu.
 func (d *Dispatcher) pruneReservations(queued map[string]*v1.BuildJob) {
 	for id := range d.enqueuedAt {
-		if queued[id] == nil {
+		// A dispatched job keeps its wait time: it comes back (refused or
+		// reaped) with the credit it earned.
+		if _, dispatched := d.dispatchedJobs[id]; queued[id] == nil && !dispatched {
 			delete(d.enqueuedAt, id)
 		}
 	}

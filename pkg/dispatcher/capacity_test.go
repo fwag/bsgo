@@ -104,7 +104,7 @@ func TestReleaseAndRefusalClearPending(t *testing.T) {
 		{"job finished", func(d *Dispatcher) { d.RecordJobResult("big", "w", "p", 0, time.Second) }},
 		{"job failed", func(d *Dispatcher) { d.RecordJobResult("big", "w", "p", 1, time.Second) }},
 		{"worker refused it", func(d *Dispatcher) {
-			if !d.RequeueRefused("big", "w") {
+			if !d.RequeueRefused("big", "w", 0) {
 				panic("refusal not accepted")
 			}
 		}},
@@ -132,10 +132,10 @@ func TestRequeueRefusedPutsJobBack(t *testing.T) {
 	disp.registry.UpdateHeartbeat(capWorker("w", 8, 30720))
 	disp.EnqueueJob(capJob("big", 2, 2048))
 	_, _, _ = disp.DispatchNext(context.Background())
-	if disp.RequeueRefused("big", "other") {
+	if disp.RequeueRefused("big", "other", 0) {
 		t.Fatal("refusal from another worker accepted")
 	}
-	if !disp.RequeueRefused("big", "w") || !disp.Queue().Contains("big") || disp.IsDispatched("big") {
+	if !disp.RequeueRefused("big", "w", 0) || !disp.Queue().Contains("big") || disp.IsDispatched("big") {
 		t.Fatal("refused job is not back in the queue")
 	}
 	if disp.registry.IsBadHostForJob("big", "w") {
@@ -150,5 +150,105 @@ func TestFullWorkerAfterRestartStaysFull(t *testing.T) {
 	disp.EnqueueJob(capJob("x", 2, 2048))
 	if _, j, _ := disp.DispatchNext(context.Background()); j != nil {
 		t.Fatal("full worker received a job")
+	}
+}
+
+func TestRefusalHoldsWorkerUntilNewerHeartbeat(t *testing.T) {
+	disp := NewDispatcher(NewMockPublisher(nil), time.Hour)
+	hb := capWorker("w", 8, 30720)
+	hb.Seq = 100
+	disp.registry.UpdateHeartbeat(hb)
+	disp.EnqueueJob(capJob("j", 2, 2048))
+	_, _, _ = disp.DispatchNext(context.Background())
+	if !disp.RequeueRefused("j", "w", 100) {
+		t.Fatal("refusal not accepted")
+	}
+	steps := []struct {
+		name   string
+		seq    int64
+		wantAt bool
+	}{
+		{"before any new heartbeat", 0, false},
+		{"heartbeat taken before the refusal", 100, false},
+		{"heartbeat after the refusal", 101, true},
+	}
+	for _, st := range steps {
+		if st.seq != 0 {
+			hb.Seq = st.seq
+			disp.registry.UpdateHeartbeat(hb)
+		}
+		_, j, _ := disp.DispatchNext(context.Background())
+		if (j != nil) != st.wantAt {
+			t.Fatalf("%s: placed=%v, want %v", st.name, j != nil, st.wantAt)
+		}
+	}
+}
+
+func TestOlderHeartbeatIsIgnored(t *testing.T) {
+	reg := NewWorkerRegistry(time.Hour)
+	tests := []struct {
+		name        string
+		seq         int64
+		freeVCPUs   int32
+		wantApplied bool
+		wantFree    int32
+	}{
+		{"first", 10, 4, true, 4},
+		{"newer", 12, 2, true, 2},
+		{"overtaken", 11, 8, false, 2},
+		{"worker without seq", 0, 6, true, 6},
+	}
+	for _, tt := range tests {
+		hb := capWorker("w", tt.freeVCPUs, 8192, "x")
+		hb.Seq = tt.seq
+		if got := reg.UpdateHeartbeat(hb); got != tt.wantApplied {
+			t.Errorf("%s: applied=%v, want %v", tt.name, got, tt.wantApplied)
+		}
+		if got := reg.workers["w"].Hardware.AvailableVCPUs; got != tt.wantFree {
+			t.Errorf("%s: free vCPUs %d, want %d", tt.name, got, tt.wantFree)
+		}
+	}
+}
+
+func TestRequeuedBigJobKeepsWaitCredit(t *testing.T) {
+	tests := []struct {
+		name string
+		end  func(d *Dispatcher)
+	}{
+		{"refused", func(d *Dispatcher) { d.RequeueRefused("big", "w", 1) }},
+		{"reaped", func(d *Dispatcher) {
+			d.registry.SetClock(func() time.Time { return time.Now().Add(time.Hour) })
+			d.SetDispatchGrace(0)
+			d.ReapStaleJobs(time.Now().Add(time.Hour))
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clock := newFakeClock()
+			w := busyWorker("w", 8, 8, false)
+			d := newReservationDispatcher(clock, 15*time.Minute, w)
+			d.EnqueueJob(resJob("big", 6, 1))
+			first := d.enqueuedAt["big"]
+			clock.advance(20 * time.Minute)
+			if _, j, _ := d.DispatchNext(context.Background()); j == nil {
+				t.Fatal("job not placed")
+			}
+			tt.end(d)
+			_, _, _ = d.DispatchNext(context.Background())
+			if got, ok := d.enqueuedAt["big"]; !ok || !got.Equal(first) {
+				t.Fatalf("wait start %v (kept=%v), want the original %v", got, ok, first)
+			}
+		})
+	}
+}
+
+func TestZeroResourceJobUsesWorkerDefault(t *testing.T) {
+	hw := v1.WorkerHardware{TotalVCPUs: 8, TotalMemoryMB: 30720, AvailableVCPUs: 4, AvailableMemoryMB: 1500}
+	if matchesConstraints(&hw, &v1.ResourceRequirements{}) {
+		t.Fatal("a job without resources must need the default 2048 MiB, not fit 1500 MiB")
+	}
+	hw.AvailableMemoryMB = 2048
+	if !matchesConstraints(&hw, &v1.ResourceRequirements{}) {
+		t.Fatal("a job without resources must fit 2048 MiB")
 	}
 }

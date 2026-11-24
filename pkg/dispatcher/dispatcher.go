@@ -162,7 +162,7 @@ func (d *Dispatcher) RecordJobResult(jobID, workerID, project string, exitCode i
 // to refused it for lack of capacity. The job did not run, so it is neither a
 // failure nor a badhost. It reports false when the job is not dispatched to
 // that worker (a stale or repeated refusal).
-func (d *Dispatcher) RequeueRefused(jobID, workerID string) bool {
+func (d *Dispatcher) RequeueRefused(jobID, workerID string, heartbeatSeq int64) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -175,6 +175,7 @@ func (d *Dispatcher) RequeueRefused(jobID, workerID string) bool {
 	delete(d.dispatchedAt, jobID)
 	delete(d.activeBuilds, fmt.Sprintf("%s:%s:%s:%s", job.Project, job.Package, job.Target, job.Architecture))
 	d.registry.ReleaseJobResources(workerID, jobID, nil)
+	d.registry.HoldAfterRefusal(workerID, heartbeatSeq)
 	d.queue.Push(job)
 	return true
 }

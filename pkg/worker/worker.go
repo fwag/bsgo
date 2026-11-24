@@ -34,7 +34,9 @@ type WorkerDaemon struct {
 	cachedHashes []string
 	// heartbeatFailing is set while publishing the heartbeat fails.
 	heartbeatFailing bool
-	wg               sync.WaitGroup
+	// hbSeq is the sequence number of the last heartbeat snapshot.
+	hbSeq int64
+	wg    sync.WaitGroup
 }
 
 func NewWorkerDaemon(cfg WorkerConfig, nc *nats.Conn, sandbox Sandbox) *WorkerDaemon {
@@ -66,6 +68,7 @@ func NewWorkerDaemon(cfg WorkerConfig, nc *nats.Conn, sandbox Sandbox) *WorkerDa
 		activeJobs:   make(map[string]*activeJobContext),
 		stopChan:     make(chan struct{}),
 		cachedHashes: make([]string, 0),
+		hbSeq:        time.Now().UnixNano(),
 	}
 }
 
@@ -165,7 +168,9 @@ func (w *WorkerDaemon) emitHeartbeat() {
 		activeID = activeIDs[0]
 	}
 
+	w.hbSeq++
 	hb := v1.WorkerHeartbeat{
+		Seq:             w.hbSeq,
 		WorkerID:        w.cfg.WorkerID,
 		Architecture:    w.cfg.Architecture,
 		Archs:           w.cfg.BuildArchs(),
@@ -290,17 +295,22 @@ func fitsFree(hw v1.WorkerHardware, vcpus int32, mem int64) bool {
 // publishRefusal tells the dispatcher the job was not started for lack of
 // capacity; it queues the job again and does not count a failure.
 func (w *WorkerDaemon) publishRefusal(job *v1.BuildJob) {
+	w.mu.Lock()
+	seq := w.hbSeq
+	w.mu.Unlock()
 	data, _ := json.Marshal(map[string]any{
-		"job_id":       job.JobID,
-		"project":      job.Project,
-		"package":      job.Package,
-		"target":       job.Target,
-		"architecture": job.Architecture,
-		"worker_id":    w.cfg.WorkerID,
-		"phase":        "REQUEUED",
-		"reason":       v1.ReasonWorkerCapacity,
+		"heartbeat_seq": seq,
+		"job_id":        job.JobID,
+		"project":       job.Project,
+		"package":       job.Package,
+		"target":        job.Target,
+		"architecture":  job.Architecture,
+		"worker_id":     w.cfg.WorkerID,
+		"phase":         "REQUEUED",
+		"reason":        v1.ReasonWorkerCapacity,
 	})
 	_ = w.nc.Publish("bsgo.status", data)
+	w.emitHeartbeat() // its Seq is above heartbeat_seq: the dispatcher may place again
 }
 
 // allocateJob reserves the resources of job and registers it as active. It
@@ -481,13 +491,6 @@ func (w *natsLogWriter) Write(p []byte) (n int, err error) {
 // (defaults 1 vCPU / 2048 MiB) capped at the worker's effective capacity. The
 // sandbox, including obs-build --jobs, sees only the granted values.
 func grantResources(req v1.ResourceRequirements, total v1.WorkerHardware) (int32, int64) {
-	vcpus := req.VCPUs
-	if vcpus <= 0 {
-		vcpus = 1
-	}
-	mem := req.MemoryMB
-	if mem <= 0 {
-		mem = 2048
-	}
+	vcpus, mem := req.Effective()
 	return min(vcpus, max(total.TotalVCPUs, 1)), min(mem, total.TotalMemoryMB)
 }

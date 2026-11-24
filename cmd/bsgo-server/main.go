@@ -236,7 +236,9 @@ func subscribeWorkerHeartbeats(nc *nats.Conn, disp *dispatcher.Dispatcher) {
 	_, _ = nc.Subscribe("bsgo.workers.heartbeat", func(msg *nats.Msg) {
 		var hb v1.WorkerHeartbeat
 		if err := json.Unmarshal(msg.Data, &hb); err == nil {
-			disp.Registry().UpdateHeartbeat(hb)
+			if !disp.Registry().UpdateHeartbeat(hb) {
+				return // overtaken by a newer heartbeat
+			}
 			active := hb.ActiveJobIDs
 			if hb.ActiveJobID != "" {
 				active = append(active, hb.ActiveJobID)

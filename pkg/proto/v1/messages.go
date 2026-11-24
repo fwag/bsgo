@@ -248,6 +248,10 @@ type WorkerHeartbeat struct {
 	// the field accept every job.
 	ConstrainedOnly bool  `json:"constrained_only,omitempty"`
 	TimestampUnix   int64 `json:"timestamp_unix"`
+	// Seq increases with every heartbeat of a worker process (and across
+	// restarts), so the receiver can drop a heartbeat that overtook a newer
+	// one. Workers that predate the field send 0.
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // CanBuild reports whether the worker advertises arch.
@@ -261,6 +265,26 @@ func (h WorkerHeartbeat) CanBuild(arch string) bool {
 		}
 	}
 	return false
+}
+
+// Default request of a job that states none: the dispatcher and the worker
+// must agree on it.
+const (
+	DefaultJobVCPUs    = 1
+	DefaultJobMemoryMB = 2048
+)
+
+// Effective returns the vCPUs and memory a job asks for, the defaults when it
+// states none.
+func (r ResourceRequirements) Effective() (vcpus int32, memoryMB int64) {
+	vcpus, memoryMB = int32(r.VCPUs), int64(r.MemoryMB)
+	if vcpus <= 0 {
+		vcpus = DefaultJobVCPUs
+	}
+	if memoryMB <= 0 {
+		memoryMB = DefaultJobMemoryMB
+	}
+	return vcpus, memoryMB
 }
 
 // ReasonWorkerCapacity is the reason of a REQUEUED job status a worker sends
