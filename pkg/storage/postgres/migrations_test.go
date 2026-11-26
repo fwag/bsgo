@@ -23,8 +23,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 		t.Fatalf("failed to collect migrations: %v", err)
 	}
 
-	if len(migrations) != 15 {
-		t.Fatalf("expected 15 migrations, got %d", len(migrations))
+	if len(migrations) != 16 {
+		t.Fatalf("expected 16 migrations, got %d", len(migrations))
 	}
 
 	if migrations[0].Version != 1 {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -24,6 +25,8 @@ import (
 	v1 "github.com/openSUSE/bsgo/pkg/proto/v1"
 	"github.com/openSUSE/bsgo/pkg/publisher"
 	natsqueue "github.com/openSUSE/bsgo/pkg/queue/nats"
+	"github.com/openSUSE/bsgo/pkg/recipe/history"
+	"github.com/openSUSE/bsgo/pkg/scheduler/vrev"
 	"github.com/openSUSE/bsgo/pkg/signing"
 	"github.com/openSUSE/bsgo/pkg/storage"
 	"github.com/openSUSE/bsgo/pkg/storage/postgres"
@@ -86,6 +89,13 @@ type ServerConfig struct {
 	// GCKeepIndexVersions is the number of superseded index versions kept per
 	// prpa besides the current one.
 	GCKeepIndexVersions int
+	// VrevWorkers is the number of concurrent release number resolutions of
+	// this instance (0 disables the resolver).
+	VrevWorkers int
+	// VrevTimeout bounds one resolution.
+	VrevTimeout time.Duration
+	// VrevDelay is the pause of a resolver worker after each resolution.
+	VrevDelay time.Duration
 }
 
 func parseServerConfig() ServerConfig {
@@ -126,6 +136,9 @@ func parseServerConfig() ServerConfig {
 	flag.DurationVar(&cfg.GCInterval, "gc-interval", getEnvDuration("BSGO_GC_INTERVAL", 0), "Interval between garbage collection runs of unreachable build repository indexes and superseded artifacts, for example 6h; 0 (default) disables. Enable only after reviewing a dry run: bsgo admin gc --dry-run --json")
 	flag.DurationVar(&cfg.GCGrace, "gc-grace", getEnvDuration("BSGO_GC_GRACE", gc.DefaultGrace), "Minimum age of an object before garbage collection may delete it")
 	flag.IntVar(&cfg.GCKeepIndexVersions, "gc-keep-index-versions", gc.DefaultKeepVersions, "Superseded build repository index versions kept per prpa besides the current one")
+	flag.IntVar(&cfg.VrevWorkers, "vrev-workers", getEnvInt("BSGO_VREV_WORKERS", vrev.DefaultWorkers), "Release number (vrev) resolutions run concurrently by this instance; keep it low, every resolution fetches the history of a package from its git host; revisions units wait for are resolved first; 0 disables")
+	flag.DurationVar(&cfg.VrevTimeout, "vrev-timeout", getEnvDuration("BSGO_VREV_TIMEOUT", history.DefaultTimeout), "Time limit of one release number resolution (git history fetch and parse)")
+	flag.DurationVar(&cfg.VrevDelay, "vrev-delay", getEnvDuration("BSGO_VREV_DELAY", vrev.DefaultDelay), "Pause of a resolver worker after each resolution, to be polite to the git host")
 	flag.Parse()
 
 	if subcmd != "" {
@@ -184,6 +197,7 @@ func runControlPlane(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js je
 
 	startSchedulerAndDispatcher(ctx, cfg, nc, js, store)
 	startGC(ctx, cfg, js, store)
+	startVrev(ctx, cfg, store)
 	startHTTPServer(ctx, cfg.HTTPPort, store, nc)
 
 	fmt.Printf("bsgo Control Plane is LIVE and listening for triggers and workers\n")
@@ -485,4 +499,17 @@ func getEnvDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+func getEnvInt(key string, fallback int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid integer in %s=%q, using %d: %v\n", key, val, fallback, err)
+		return fallback
+	}
+	return n
 }

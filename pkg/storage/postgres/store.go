@@ -130,26 +130,12 @@ func (s *PostgresStore) UpsertPackage(ctx context.Context, projectName string, p
 	}
 
 	shard := manifest.ShardPath(pkg.Package.Name)
-	query := `
-		INSERT INTO project_packages (
-			project_name, package_name, shard, git_url, branch, commit_sha, enabled,
-			memory_limit, vcpus, disk_limit, timeout, manifest_yaml, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
-		ON CONFLICT (project_name, package_name) DO UPDATE SET
-			shard = EXCLUDED.shard,
-			git_url = EXCLUDED.git_url,
-			branch = EXCLUDED.branch,
-			commit_sha = EXCLUDED.commit_sha,
-			enabled = EXCLUDED.enabled,
-			memory_limit = EXCLUDED.memory_limit,
-			vcpus = EXCLUDED.vcpus,
-			disk_limit = EXCLUDED.disk_limit,
-			timeout = EXCLUDED.timeout,
-			manifest_yaml = EXCLUDED.manifest_yaml,
-			updated_at = NOW()
-	`
-
-	_, err = s.pool.Exec(ctx, query,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin package transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, upsertPackageSQL,
 		projectName, pkg.Package.Name, shard, pkg.Source.Git, pkg.Source.Branch,
 		pkg.Source.Commit, pkg.Build.Enabled, pkg.Resources.Memory, pkg.Resources.VCPUs,
 		pkg.Resources.Disk, pkg.Resources.Timeout, string(data),
@@ -157,8 +143,33 @@ func (s *PostgresStore) UpsertPackage(ctx context.Context, projectName string, p
 	if err != nil {
 		return fmt.Errorf("failed to upsert package: %w", err)
 	}
+	if err := appendRevision(ctx, tx, projectName, pkg.Package.Name, pkg.Source.Git, pkg.Source.Commit); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit package: %w", err)
+	}
 	return nil
 }
+
+const upsertPackageSQL = `
+	INSERT INTO project_packages (
+		project_name, package_name, shard, git_url, branch, commit_sha, enabled,
+		memory_limit, vcpus, disk_limit, timeout, manifest_yaml, updated_at
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+	ON CONFLICT (project_name, package_name) DO UPDATE SET
+		shard = EXCLUDED.shard,
+		git_url = EXCLUDED.git_url,
+		branch = EXCLUDED.branch,
+		commit_sha = EXCLUDED.commit_sha,
+		enabled = EXCLUDED.enabled,
+		memory_limit = EXCLUDED.memory_limit,
+		vcpus = EXCLUDED.vcpus,
+		disk_limit = EXCLUDED.disk_limit,
+		timeout = EXCLUDED.timeout,
+		manifest_yaml = EXCLUDED.manifest_yaml,
+		updated_at = NOW()
+`
 
 func (s *PostgresStore) GetPackage(ctx context.Context, projectName, packageName string) (*manifest.PackageManifest, error) {
 	var yamlStr string

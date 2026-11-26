@@ -103,10 +103,12 @@ type PackageBuildState struct {
 	BuiltCommit string `json:"built_commit,omitempty"`
 	// Blocked is the structured cause of a blocked state; Details holds its
 	// summary. Nil in every other state.
-	Blocked   *BlockedReason `json:"blocked,omitempty"`
-	Bcnt      int            `json:"bcnt,omitempty"`
-	JobID     string         `json:"job_id,omitempty"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	Blocked *BlockedReason `json:"blocked,omitempty"`
+	Bcnt    int            `json:"bcnt,omitempty"`
+	// Versrel is "<version>-<vrev>" of the last job (see CounterKey).
+	Versrel   string    `json:"versrel,omitempty"`
+	JobID     string    `json:"job_id,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // BuildStateFilter narrows ListBuildStates; empty fields match everything.
@@ -213,6 +215,41 @@ type Store interface {
 	// key, allocating them on first use. It is idempotent per key.
 	NextBuildCounters(ctx context.Context, key CounterKey) (BuildCounters, error)
 
+	// RevisionFor returns the latest revision of the package pinned to commit,
+	// or ErrNotFound.
+	RevisionFor(ctx context.Context, project, pkg, commit string) (*PackageRevision, error)
+	// ListRevisions returns the revisions of the given packages of a project
+	// (all packages when none is given), ordered by package and seq.
+	ListRevisions(ctx context.Context, project string, packages []string) ([]PackageRevision, error)
+	// WantRevisions tells the resolver that units wait for the pending
+	// revisions of these commits, so it resolves them first.
+	WantRevisions(ctx context.Context, refs []RevisionRef) error
+	// ClaimRevisions leases up to limit pending revisions to owner: per
+	// package only the lowest pending seq, wanted ones first.
+	ClaimRevisions(ctx context.Context, owner string, limit int, lease time.Duration) ([]PackageRevision, error)
+	// FinishRevision stores the vrev of a claimed revision (ErrConflict when it
+	// is no longer the lowest pending revision of its package).
+	FinishRevision(ctx context.Context, rev PackageRevision, res RevisionResult) (*PackageRevision, error)
+	// FailRevision records a failed attempt and schedules the next one after
+	// the backoff, at least minRetry; a superseded revision is skipped after
+	// MaxRevisionAttempts.
+	FailRevision(ctx context.Context, rev PackageRevision, cause string, minRetry time.Duration) (*PackageRevision, error)
+	// RevisionCounts returns the totals by state.
+	RevisionCounts(ctx context.Context) (RevisionCounts, error)
+	// ResetRevisions drops the memoized history of the packages and makes their
+	// latest revision pending again; it returns the packages changed. Unless
+	// allowDecrease the new vrev is at least the old one.
+	ResetRevisions(ctx context.Context, project string, packages []string, allowDecrease bool) ([]string, error)
+	// SetRevisionVrev sets the vrev of the latest revision of a package
+	// (commit, when not empty, must match; version, when empty, is the stored
+	// one).
+	SetRevisionVrev(ctx context.Context, project, pkg, commit, version string, vrev int) (*PackageRevision, error)
+	// NearestHistory returns the memo of the first of commits (newest first)
+	// that has one under key, or nil.
+	NearestHistory(ctx context.Context, key HistoryKey, commits []string) (*SourceHistory, error)
+	// PutHistory memoizes a fold result; an existing row is kept.
+	PutHistory(ctx context.Context, h SourceHistory) error
+
 	// RequestForcedRebuild records that a unit must be rebuilt regardless of
 	// its meta. An empty repo or arch matches every repository or architecture.
 	RequestForcedRebuild(ctx context.Context, req ForcedRebuild) error
@@ -260,6 +297,8 @@ type MemoryStore struct {
 	states     map[string]*PackageBuildState            // key: project/repo/arch/package/flavor
 	dod        map[string]*DoDRepo                      // key: url
 	counters   map[CounterKey]BuildCounters
+	revisions  map[string][]PackageRevision // key: project\x00package
+	history    map[string]*SourceHistory
 	forced     []ForcedRebuild
 	indexes    map[string]*BuildRepoIndex       // key: project/repo/arch
 	prpaStates map[string]*PrpaState            // key: project/repo/arch
@@ -275,6 +314,8 @@ func NewMemoryStore() *MemoryStore {
 		states:     make(map[string]*PackageBuildState),
 		dod:        make(map[string]*DoDRepo),
 		counters:   make(map[CounterKey]BuildCounters),
+		revisions:  make(map[string][]PackageRevision),
+		history:    make(map[string]*SourceHistory),
 		indexes:    make(map[string]*BuildRepoIndex),
 		prpaStates: make(map[string]*PrpaState),
 		metas:      make(map[string]map[string]storedMeta),
@@ -331,6 +372,7 @@ func (s *MemoryStore) UpsertPackage(_ context.Context, projectName string, pkg *
 		s.packages[projectName] = make(map[string]*manifest.PackageManifest)
 	}
 	s.packages[projectName][pkg.Package.Name] = pkg
+	s.appendRevisionLocked(projectName, pkg.Package.Name, pkg.Source.Git, pkg.Source.Commit)
 	return nil
 }
 

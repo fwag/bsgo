@@ -1,6 +1,6 @@
 # Plan: Release counters (CI_CNT / B_CNT) from the source history
 
-Status: proposed
+Status: W1-W3 implemented, W4-W5 in progress, W6 not implemented (decision 1), W7-W8 open
 Audience: implementation agents (Sonnet) + human reviewer
 Depends on: plan 01 (checker, recipe fetch, manifests), plan 03 (coord leases, CLI patterns)
 
@@ -159,7 +159,7 @@ The release must not go down for the same version. Cases:
 | Existing bsgo builds `1.<n>` | new CI ≥ 1; if equal, legacy floor on B_CNT (3.3) |
 | OBS-built installations (`41.1`) | not guaranteed: git gives 25 for kernel-source. Optional seed from OBS (W6), see open question 1 |
 
-### 3.5 Never block passes, never mark units broken
+### 3.5 Never block passes, never mark units broken; on-demand priority
 
 - The checker only reads the revision table (one indexed query per job). A unit
   whose revision is not resolved yet gets the verdict **blocked** with details
@@ -168,17 +168,38 @@ The release must not go down for the same version. Cases:
   the index; other units are unaffected.
 - The check happens at the start of `newJob`, before the build-environment
   expansion, so only units that would get a job wait.
-- Resolution runs in a background resolver (W3) with bounded concurrency,
-  outside the pass.
+- Resolution runs in a background resolver (W3) outside the pass. A resolver
+  failure (git host down, commit gone, rate limit) only delays the revision; it
+  never changes a unit to broken or failed.
+- **On-demand priority.** The resolver works in two tiers: first the revisions
+  units wait for *right now*, then the backfill of everything else. The checker
+  records the wanted revisions when it returns the blocked verdict above
+  (`Store.WantRevisions`, one batched write per pass, `package_revisions.wanted_at`,
+  refreshed at most once a minute per revision). `ClaimRevisions` orders by
+  "wanted within the last 30 minutes" first, then by age. The checker repeats the
+  request on every pass while the unit waits, so a want expires by itself when
+  the unit no longer waits (pin moved on, package disabled). A unit that needs a
+  job therefore waits seconds, not the duration of the cold-start backfill.
+  Priority is about **order**, not parallelism.
+- **Polite to the git host.** The default is 2 workers (`--vrev-workers`) and a
+  pause of 1 s after every resolution (`--vrev-delay`), with no burst at cold
+  start. Errors back off exponentially per revision (1m, 2m, 4m, ... max 30m); an
+  error that looks like the server pushing back (429, 503, "too many requests",
+  "rate limit") also pauses every worker of the process for 1 minute and retries
+  that revision no earlier than after 5 minutes. The cold-start backfill of
+  ~3,500 packages therefore takes 30-60 minutes; that is accepted because the
+  units that need a job are resolved first.
 
 ### 3.6 Multi-replica correctness
 
 - Revision append: inside the `UpsertPackage` transaction with
   `pg_advisory_xact_lock(hashtext('pkgrev/'||project||'/'||package))`; seq is
   `max(seq)+1`; unique `(project, package, seq)`.
-- Resolution claim: `UPDATE ... SET claimed_by=$me, claimed_until=now()+'10m'
-  WHERE <lowest unresolved seq of the package> AND (claimed_until IS NULL OR
-  claimed_until < now()) RETURNING` — no coord lease needed. The git computation
+- Resolution claim: `UPDATE ... SET claimed_by=$me, claimed_until=now()+lease
+  WHERE <lowest pending seq of the package> AND (claimed_until IS NULL OR
+  claimed_until < now()) RETURNING`, picking candidates `FOR UPDATE SKIP LOCKED`
+  ordered wanted first (3.5) — no coord lease needed. The lease is twice the
+  resolution timeout, at least 10 minutes. The git computation
   is a pure function of `(url, commit, lookup, config)`, so a duplicate after a
   lease expiry yields the same result.
 - Finalization (floor, vrev write) in one short transaction under the same
@@ -191,7 +212,7 @@ The release must not go down for the same version. Cases:
 ### 3.7 Caching
 
 - `source_history` (Postgres) memoizes the fold result per
-  `(url, commit, lookup, algo_rev)`: `version`, `release_start`, `vt` (JSONB,
+  `(url, commit, lookup, algo_rev, config_hash)`: `version`, `release_start`, `vt` (JSONB,
   version→count, keys sorted by `encoding/json`), `main_recipe`, `config_hash`,
   `walked`, `computed_at`. Only requested commits (pins) are stored, never every
   walked commit (3,500 packages × a few pins × ≤ 4 KB).
@@ -224,8 +245,9 @@ The release must not go down for the same version. Cases:
 - `git log --first-parent --diff-merges=first-parent --raw --no-abbrev
   --no-renames -- ':(glob)*.spec'` over glibc's 301 commits: < 10 ms.
 - Expected cost per package, cold: 2 network round trips + parse ≈ 1 s.
-  3,500 packages with 4 workers ≈ 15 min; incremental: 1 history fetch + a few
-  blobs. Gitea's proof-of-work challenge sits in front of the web/API endpoints;
+  3,500 packages with 4 workers would be ≈ 15 min; the implemented default is
+  2 workers with a 1 s pause (3.5), so ≈ 30-60 min; incremental: 1 history fetch
+  + a few blobs. Gitea's proof-of-work challenge sits in front of the web/API endpoints;
   only the git smart-HTTP protocol is used (as `pkg/recipe/fetch` does).
 - No persistent mirrors: a throwaway bare repo per resolution (full blob:none
   history is ≤ ~2 MB for typical repos; kernel-source with all spec blobs of the
@@ -257,12 +279,14 @@ CREATE TABLE package_revisions (
     version     text,                          -- main recipe version, 'unknown' allowed
     git_vrev    integer,
     vrev        integer,                       -- final CI_CNT; NULL until resolved
-    source      varchar(16),                   -- git | seed | admin
+    min_vrev    integer,                       -- lower bound for the next resolution (admin recompute)
+    source      varchar(16),                   -- git | admin
     attempts    integer      NOT NULL DEFAULT 0,
     last_error  text,
     next_try_at timestamptz,
     claimed_by  text,
     claimed_until timestamptz,
+    wanted_at   timestamptz,                   -- last time a unit waited for it (3.5)
     created_at  timestamptz  NOT NULL DEFAULT now(),
     resolved_at timestamptz,
     PRIMARY KEY (project, package, seq)
@@ -275,27 +299,33 @@ CREATE TABLE source_history (
     commit_sha   varchar(64) NOT NULL,
     lookup       text        NOT NULL,   -- package name, or pinned source.recipe
     algo_rev     integer     NOT NULL,
+    config_hash  text        NOT NULL,   -- part of the key: another prjconf is another memo
     main_recipe  text        NOT NULL,   -- '' when none
     version      text        NOT NULL,
     release_start integer    NOT NULL,
     vt           jsonb       NOT NULL,
     walked       integer     NOT NULL,   -- first-parent commits folded in this run
-    config_hash  text        NOT NULL,
     computed_at  timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (url, commit_sha, lookup, algo_rev)
+    PRIMARY KEY (url, commit_sha, lookup, algo_rev, config_hash)
 );
 
 ALTER TABLE build_counters ADD COLUMN IF NOT EXISTS versrel text;   -- NULL = legacy row
 CREATE INDEX IF NOT EXISTS idx_build_counters_versrel
     ON build_counters(project, repo, arch, package, flavor, versrel);
+ALTER TABLE package_build_state ADD COLUMN IF NOT EXISTS versrel text NOT NULL DEFAULT '';
 
 -- seed one pending revision per existing package pin
 INSERT INTO package_revisions (project, package, seq, git_url, commit_sha)
 SELECT project_name, package_name, 1, git_url, commit_sha FROM project_packages
-WHERE git_url <> '' AND commit_sha <> '';
+WHERE git_url <> '' AND commit_sha <> '' ON CONFLICT DO NOTHING;
 ```
 
-Down migration drops the two tables and the column/index.
+Down migration drops the two tables and the columns/index.
+
+A legacy `build_counters` row (no `versrel`) with the same `(commit, meta)` key as a
+new allocation belongs to a job that was never built (otherwise no new job is
+made for that key; for example a `scheduled` job that is resent after a restart):
+it is renumbered in place instead of reusing the old `1.<n>`.
 
 ## 6. Work packages
 
@@ -407,19 +437,26 @@ Store methods (names indicative):
   §3.6.
 - `NearestHistory` / `PutHistory` for `source_history` (`ON CONFLICT DO
   NOTHING`, then re-read).
+- `WantRevisions(ctx, refs)`: marks the pending revisions of the given
+  `(project, package, commit)` as wanted (3.5); `ClaimRevisions` serves wanted ones
+  first. `ListRevisions`, `RevisionCounts`, `ResetRevisions` and `SetRevisionVrev`
+  serve the CLI (W5) and the progress line.
 
 Resolver (`pkg/scheduler/vrev`):
 - Loop every 10 s (and immediately after start): claim up to `workers` rows,
   resolve with `history.Resolve`, finish or fail. Config: the project's own
   prjconf via `buildconfig.Render(prj, "", "", project)` parsed with arch
   `noarch`; `ConfigHash` = sha256 of that text.
-- Server flags: `--vrev-workers` (default 4; 0 disables), `--vrev-timeout`
-  (per resolution, default 5m).
+- Server flags: `--vrev-workers` (default 2; 0 disables; be polite to the git
+  host, priority is order, not parallelism), `--vrev-delay` (pause of a worker
+  after each resolution, default 1s), `--vrev-timeout` (per resolution, default
+  5m). Workers claim one revision at a time, so a newly wanted revision is
+  served by the next free worker.
 - Logs, one line per resolution, no decoration:
-  `[VREV] SUSE:SLFO:1.2/kernel-source 3adc0dd8c228: version 6.12.0 vrev 25 (git 25, floor -) walked 207 blobs 194 in 1.2s`
+  `[VREV] SUSE:SLFO:1.2/kernel-source 3adc0dd8c228: version 6.12.0 vrev 25 (git 25) walked 207 blobs 194 in 1.2s`
   `[VREV] SUSE:SLFO:1.2/foo 0123456789ab: failed (attempt 2, retry in 2m): <error>`
   and a summary every 5 minutes while rows are pending:
-  `[VREV] pending 1234, resolved 2266, failed 3`.
+  `[VREV] pending 1234, resolved 2266, skipped 3`.
 
 Acceptance: MemoryStore and Postgres (integration test against the podman
 compose Postgres) table tests: append on commit change only; url change appends;
@@ -498,7 +535,7 @@ would be `160000.25.x` while OBS shipped `160000.41.1`).
 
 ### W7. Validation on aisrv — operator step after deploy
 
-1. After deploy, wait for `[VREV] pending 0` (expected ≤ 20 min).
+1. After deploy, wait for `[VREV] pending 0` (expected 30-60 min with the default 2 workers; units that need a job are resolved first and wait seconds).
 2. `bsgo admin release show SUSE:SLFO:1.2 kernel-source kernel-source-azure --json`:
    expect vrev 25 and 4 (§4).
 3. Sample of ~30 packages (mix: small, kernel, multibuild, packages with merges,
@@ -560,8 +597,9 @@ exists.
    OBS only by coincidence (kernel-source 25 vs 41, kernel-source-azure 4 vs 2)?
 3. Re-pin to an older commit gets a new, higher vrev (OBS semantics) instead of
    reusing the old one: confirm.
-4. Units wait as `blocked` until their revision is resolved (≤ ~20 min after the
-   first deploy, seconds later): acceptable?
+4. Units wait as `blocked` until their revision is resolved (seconds for units that
+   need a job, the resolver serves them first; the full backfill takes 30-60 min
+   after the first deploy): acceptable?
 5. Both `kernel-source:kernel-azure` and `kernel-source-azure:kernel-azure` are
    built (as in OBS). Should one be excluded in the prjconf
    (`BuildFlags: excludebuild:kernel-source:kernel-azure`) to avoid two
@@ -575,3 +613,10 @@ exists.
 3. Confirmed: re-pinning an older commit gets a new, higher vrev.
 4. Accepted: units wait as `blocked` until their revision is resolved.
 5. No exclusion: both `kernel-azure` builds stay, as in OBS.
+6. On-demand priority: the resolver resolves first the revisions of units that
+   need a job right now (recorded by the checker), before the background
+   backfill of all other packages, so a unit waiting to build waits seconds, not
+   the duration of the cold-start backfill (3.5).
+7. Polite to the git host: low default concurrency (2 workers, 1 s pause, no burst
+   at cold start), exponential backoff on errors and 429, a slower cold-start
+   backfill (30-60 min) is fine (3.5).
