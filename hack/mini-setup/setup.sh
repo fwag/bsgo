@@ -22,11 +22,16 @@ if ! podman ps -q -f name=bsgo-postgres | grep -q .; then
     docker.io/library/postgres:16-alpine
 fi
 
-# 3. Garage S3
+# 3. Garage S3. Its data (/var/lib/garage: objects, node key, layout, buckets,
+# keys) lives in a host directory, so removing or recreating the container
+# keeps every artifact and published repository.
+GARAGE_DATA="${GARAGE_DATA:-$HOME/bsgo-data/garage}"
+mkdir -p "$GARAGE_DATA"
 if ! podman ps -q -f name=bsgo-garage | grep -q .; then
   podman rm -f bsgo-garage 2>/dev/null || true
-  podman run -d --name bsgo-garage -p 3900:3900 -p 3903:3903 \
+  podman run -d --name bsgo-garage --restart=always -p 3900:3900 -p 3903:3903 \
     -v "$DIR/garage.toml:/etc/garage.toml:ro,Z" \
+    -v "$GARAGE_DATA:/var/lib/garage:Z" \
     docker.io/dxflrs/garage:v1.0.1 /garage server
 fi
 
