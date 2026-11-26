@@ -45,6 +45,7 @@ func TestMultiArchBaselibsExport(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	resolveRevisions(t, store, project)
 
 	blobs := buildrepo.NewMemoryBlobs()
 	reader := buildrepo.NewReader(store, blobs)

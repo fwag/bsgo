@@ -65,18 +65,67 @@ func TestPostgresBuildStatesBatchAndBuiltMeta(t *testing.T) {
 func TestPostgresBuildCounters(t *testing.T) {
 	store, prj := newCheckerStore(t)
 	ctx := context.Background()
-	key := func(repo, commit, meta string) storage.CounterKey {
-		return storage.CounterKey{Project: prj, Repo: repo, Arch: "x86_64", Package: "pkg", SourceCommit: commit, Meta: meta}
+	key := func(repo, commit, meta string, ci int, versrel string) storage.CounterKey {
+		return storage.CounterKey{
+			Project: prj, Repo: repo, Arch: "x86_64", Package: "pkg", SourceCommit: commit, Meta: meta,
+			CI: ci, Versrel: versrel,
+		}
 	}
 	steps := []struct {
 		k    storage.CounterKey
 		want storage.BuildCounters
 	}{
-		{key("std", "c1", "m1"), storage.BuildCounters{CI: 1, B: 1}},
-		{key("std", "c1", "m1"), storage.BuildCounters{CI: 1, B: 1}},
-		{key("std", "c1", "m2"), storage.BuildCounters{CI: 1, B: 2}},
-		{key("std", "c2", "m3"), storage.BuildCounters{CI: 2, B: 1}},
-		{key("other", "c1", "m1"), storage.BuildCounters{CI: 1, B: 1}},
+		{key("std", "c1", "m1", 7, "1.0-7"), storage.BuildCounters{CI: 7, B: 1}},
+		{key("std", "c1", "m1", 7, "1.0-7"), storage.BuildCounters{CI: 7, B: 1}},
+		{key("std", "c1", "m1", 9, "1.0-9"), storage.BuildCounters{CI: 7, B: 1}},
+		{key("std", "c1", "m2", 7, "1.0-7"), storage.BuildCounters{CI: 7, B: 2}},
+		{key("std", "c2", "m3", 8, "1.0-8"), storage.BuildCounters{CI: 8, B: 1}},
+		{key("other", "c1", "m1", 7, "1.0-7"), storage.BuildCounters{CI: 7, B: 1}},
+	}
+	for i, s := range steps {
+		got, err := store.NextBuildCounters(ctx, s.k)
+		if err != nil || got != s.want {
+			t.Errorf("step %d: got %+v, %v; want %+v", i, got, err, s.want)
+		}
+	}
+}
+
+func TestPostgresBuildCountersLegacyFloor(t *testing.T) {
+	store, prj := newCheckerStore(t)
+	ctx := context.Background()
+	for _, row := range []struct {
+		repo string
+		b    int
+	}{{"std", 130}, {"other", 9}} {
+		_, err := store.Pool().Exec(ctx, `
+			INSERT INTO build_counters (project, repo, arch, package, flavor, source_commit, meta, ci_cnt, bcnt)
+			VALUES ($1, $2, 'x86_64', 'pkg', '', 'old', 'm', 1, $3)`, prj, row.repo, row.b)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := func(repo string, ci int, meta string) storage.CounterKey {
+		return storage.CounterKey{
+			Project: prj, Repo: repo, Arch: "x86_64", Package: "pkg", SourceCommit: "c", Meta: meta,
+			CI: ci, Versrel: fmt.Sprintf("1.0-%d", ci),
+		}
+	}
+	_, err := store.Pool().Exec(ctx, `
+		INSERT INTO build_counters (project, repo, arch, package, flavor, source_commit, meta, ci_cnt, bcnt)
+		VALUES ($1, 'std', 'x86_64', 'pkg', '', 'c', 'legacy-meta', 1, 3)`, prj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := []struct {
+		k    storage.CounterKey
+		want storage.BuildCounters
+	}{
+		{key("std", 25, "legacy-meta"), storage.BuildCounters{CI: 25, B: 1}},
+		{key("std", 25, "legacy-meta"), storage.BuildCounters{CI: 25, B: 1}},
+		{key("std", 1, "m1"), storage.BuildCounters{CI: 1, B: 131}},
+		{key("other", 1, "m1"), storage.BuildCounters{CI: 1, B: 10}},
+		{key("std", 1, "m2"), storage.BuildCounters{CI: 1, B: 132}},
+		{key("std", 2, "m3"), storage.BuildCounters{CI: 2, B: 1}},
 	}
 	for i, s := range steps {
 		got, err := store.NextBuildCounters(ctx, s.k)

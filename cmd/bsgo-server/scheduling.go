@@ -141,6 +141,7 @@ func startChecker(ctx context.Context, cfg ServerConfig, nc *nats.Conn, js jetst
 		Store: store, Recipes: &fetch.Fetcher{Cache: recipeCache}, Indexes: reader,
 		DoD:  dod.NewRepoCache(nil, blobs, store, dod.RepoCacheConfig{TTL: cfg.DoDRepomdTTL}),
 		Sink: newJobSink(js, nc, disp, cfg.S3Bucket),
+		Logf: func(format string, args ...any) { logf("CHECKER", format, args...) },
 	})
 	runner := &coord.Runner{
 		Coord: coordinator, Owner: owner, Debounce: cfg.CheckerDebounce, MaxDelay: 10 * cfg.CheckerDebounce,

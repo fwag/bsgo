@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/openSUSE/bsgo/pkg/bininfo"
 	"github.com/openSUSE/bsgo/pkg/manifest"
@@ -121,9 +122,15 @@ type world struct {
 	// bins is the content of the own build repository by unit.
 	bins map[string][]bininfo.BinInfo
 	prj  *manifest.ProjectManifest
+	// manual leaves package revisions pending until resolveRevisions is called.
+	manual bool
 }
 
 type worldOpt func(*world)
+
+// withPendingRevisions keeps package revisions unresolved until the test
+// resolves them.
+func withPendingRevisions(w *world) { w.manual = true }
 
 func newWorld(t *testing.T, boot []bininfo.BinInfo, opts ...worldOpt) *world {
 	t.Helper()
@@ -227,7 +234,33 @@ func (w *world) addPackage(name string, files map[string]string, mutate ...func(
 	if err := w.store.UpsertPackage(context.Background(), w.prj.Project.Name, pm); err != nil {
 		w.t.Fatal(err)
 	}
+	if !w.manual {
+		w.resolveRevisions(func(r storage.PackageRevision) storage.RevisionResult {
+			return storage.RevisionResult{Version: "1", GitVrev: r.Seq}
+		})
+	}
 	return commit
+}
+
+// resolveRevisions resolves every pending revision like the background
+// resolver would; result decides the outcome per revision.
+func (w *world) resolveRevisions(result func(storage.PackageRevision) storage.RevisionResult) {
+	w.t.Helper()
+	ctx := context.Background()
+	for {
+		claimed, err := w.store.ClaimRevisions(ctx, "test", 100, time.Minute)
+		if err != nil {
+			w.t.Fatal(err)
+		}
+		if len(claimed) == 0 {
+			return
+		}
+		for _, r := range claimed {
+			if _, err := w.store.FinishRevision(ctx, r, result(r)); err != nil {
+				w.t.Fatal(err)
+			}
+		}
+	}
 }
 
 // pkg adds a spec-only package named name requiring requires and producing

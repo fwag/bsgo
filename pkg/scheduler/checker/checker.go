@@ -37,6 +37,8 @@ type Store interface {
 	ListBuildStates(ctx context.Context, project string, filter storage.BuildStateFilter) ([]*storage.PackageBuildState, error)
 	UpsertBuildStates(ctx context.Context, states []*storage.PackageBuildState) error
 	NextBuildCounters(ctx context.Context, key storage.CounterKey) (storage.BuildCounters, error)
+	RevisionFor(ctx context.Context, project, pkg, commit string) (*storage.PackageRevision, error)
+	WantRevisions(ctx context.Context, refs []storage.RevisionRef) error
 	ListForcedRebuilds(ctx context.Context, project string) ([]storage.ForcedRebuild, error)
 	GetPrpaState(ctx context.Context, project, repo, arch string) (*storage.PrpaState, error)
 	SetPrpaState(ctx context.Context, st *storage.PrpaState) error
@@ -85,6 +87,8 @@ type Deps struct {
 	Now func() time.Time
 	// FetchWorkers bounds concurrent recipe fetches; zero means 16.
 	FetchWorkers int
+	// Logf receives plain diagnostic lines (no decoration); nil discards.
+	Logf func(format string, args ...any)
 }
 
 // Checker runs prpa passes.

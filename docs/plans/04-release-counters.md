@@ -1,6 +1,6 @@
 # Plan: Release counters (CI_CNT / B_CNT) from the source history
 
-Status: W1-W3 implemented, W4-W5 in progress, W6 not implemented (decision 1), W7-W8 open
+Status: W1-W4 implemented, W5 in progress, W6 not implemented (decision 1), W7-W8 open
 Audience: implementation agents (Sonnet) + human reviewer
 Depends on: plan 01 (checker, recipe fetch, manifests), plan 03 (coord leases, CLI patterns)
 

@@ -16,8 +16,13 @@ import (
 // newJob ports BSSched::BuildJob::create for one unit: it expands the full
 // build environment, orders the bdeps with their preinstall/vminstall/
 // runscripts/notmeta flags, allocates the release counters and assembles the
-// JobSpec. A non-nil verdict means the job cannot be created.
+// JobSpec. The release number of the package revision is read first: a unit
+// that waits for it is blocked before any expansion work is spent on it. A non-nil verdict means the job cannot be created.
 func (ps *pass) newJob(u *unit, meta, explain string) (*JobSpec, *verdict) {
+	rev, v := ps.revisionOf(u)
+	if v != nil {
+		return nil, v
+	}
 	build, err := ps.pool.GetBuild(ps.exp, u.info.Subpacks, ps.jobDeps(u))
 	var ee *solv.ExpandError
 	if errors.As(err, &ee) {
@@ -35,12 +40,15 @@ func (ps *pass) newJob(u *unit, meta, explain string) (*JobSpec, *verdict) {
 	counters, err := ps.c.d.Store.NextBuildCounters(ps.ctx, storage.CounterKey{
 		Project: ps.prpa.Project, Repo: ps.prpa.Repo, Arch: ps.prpa.Arch,
 		Package: u.pkg, Flavor: u.flavor, SourceCommit: u.commit, Meta: attempt,
+		CI: rev.Vrev, Versrel: versrel(u, rev.Vrev),
 	})
 	if err != nil {
 		ps.fail(fmt.Errorf("allocate build counters of %s: %w", u.name, err))
 		return nil, &verdict{storage.StateBroken, err.Error()}
 	}
-	return ps.jobSpec(u, meta, explain, attempt, counters, bdeps), nil
+	spec := ps.jobSpec(u, meta, explain, attempt, counters, bdeps)
+	spec.Versrel = versrel(u, rev.Vrev)
+	return spec, nil
 }
 
 // jobDeps returns the dependencies the job's build root is expanded from:

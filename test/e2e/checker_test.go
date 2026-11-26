@@ -173,6 +173,7 @@ func TestCheckerEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	resolveRevisions(t, store, project)
 
 	blobs := buildrepo.NewMemoryBlobs()
 	reader := buildrepo.NewReader(store, blobs)
@@ -306,4 +307,25 @@ func fakeBuild(ctx context.Context, t *testing.T, h *jobstatus.Handler, blobs *b
 			{Filename: bi.Filename, S3Key: prefix + bi.Filename, SHA256: bi.SHA256, Size: bi.Size},
 		},
 	})
+}
+
+// resolveRevisions resolves the pending package revisions of the project the
+// way the background resolver would, with a fixed version and the sequence
+// number as git vrev. It does not claim: the database may be shared with other
+// tests.
+func resolveRevisions(t *testing.T, store storage.Store, project string) {
+	t.Helper()
+	ctx := context.Background()
+	revs, err := store.ListRevisions(ctx, project, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range revs {
+		if r.State != storage.RevisionPending {
+			continue
+		}
+		if _, err := store.FinishRevision(ctx, r, storage.RevisionResult{Version: "1", GitVrev: r.Seq}); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

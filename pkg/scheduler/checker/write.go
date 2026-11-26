@@ -15,6 +15,7 @@ func (ps *pass) emitAndStore() error {
 	if ps.err != nil {
 		return ps.err
 	}
+	ps.recordWanted()
 	if err := ps.saveMetas(); err != nil {
 		return err
 	}
@@ -57,7 +58,7 @@ func (ps *pass) changedRows() []*storage.PackageBuildState {
 			SourceCommit: d.commit, Meta: d.meta,
 		}
 		if d.job != nil {
-			row.JobID, row.Bcnt = d.job.JobID, d.job.BCnt
+			row.JobID, row.Bcnt, row.Versrel = d.job.JobID, d.job.BCnt, d.job.Versrel
 		}
 		if !sameRow(ps.row(d.unit), row) {
 			rows = append(rows, row)

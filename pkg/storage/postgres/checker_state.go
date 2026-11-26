@@ -9,10 +9,11 @@ import (
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
 
-// NextBuildCounters allocates CI_CNT and B_CNT for one build. Allocation is
-// serialized per (project, package, flavor) with a transaction-level advisory
-// lock and idempotent per key, so a retried scheduling pass reuses the
-// counters of the first attempt.
+// NextBuildCounters allocates B_CNT for one build; CI_CNT is the vrev of the
+// package revision, carried by the key. Allocation is serialized per
+// (project, package, flavor) with a transaction-level advisory lock and
+// idempotent per key, so a retried scheduling pass reuses the counters of the
+// first attempt.
 func (s *PostgresStore) NextBuildCounters(ctx context.Context, key storage.CounterKey) (storage.BuildCounters, error) {
 	if err := storage.ValidateCounterKey(key); err != nil {
 		return storage.BuildCounters{}, err
@@ -28,34 +29,31 @@ func (s *PostgresStore) NextBuildCounters(ctx context.Context, key storage.Count
 		return storage.BuildCounters{}, fmt.Errorf("failed to lock build counters: %w", err)
 	}
 	var c storage.BuildCounters
+	var stored *string
 	err = tx.QueryRow(ctx, `
-		SELECT ci_cnt, bcnt FROM build_counters
+		SELECT ci_cnt, bcnt, versrel FROM build_counters
 		WHERE project = $1 AND repo = $2 AND arch = $3 AND package = $4 AND flavor = $5
 		  AND source_commit = $6 AND meta = $7`,
-		key.Project, key.Repo, key.Arch, key.Package, key.Flavor, key.SourceCommit, key.Meta).Scan(&c.CI, &c.B)
-	if err == nil {
+		key.Project, key.Repo, key.Arch, key.Package, key.Flavor, key.SourceCommit, key.Meta).Scan(&c.CI, &c.B, &stored)
+	if err == nil && stored != nil {
 		return c, nil
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return storage.BuildCounters{}, fmt.Errorf("failed to read build counters: %w", err)
 	}
-	err = tx.QueryRow(ctx, `
-		SELECT
-			COALESCE((SELECT max(ci_cnt) FROM build_counters
-				WHERE project = $1 AND package = $4 AND flavor = $5 AND source_commit = $6),
-				(SELECT COALESCE(max(ci_cnt), 0) + 1 FROM build_counters
-				WHERE project = $1 AND package = $4 AND flavor = $5)),
-			(SELECT COALESCE(max(bcnt), 0) + 1 FROM build_counters
-				WHERE project = $1 AND repo = $2 AND arch = $3 AND package = $4 AND flavor = $5
-				  AND source_commit = $6)`,
-		key.Project, key.Repo, key.Arch, key.Package, key.Flavor, key.SourceCommit).Scan(&c.CI, &c.B)
-	if err != nil {
-		return storage.BuildCounters{}, fmt.Errorf("failed to compute build counters: %w", err)
+	c.CI = key.CI
+	if c.B, err = nextBcnt(ctx, tx, key); err != nil {
+		return storage.BuildCounters{}, err
 	}
+	// A row written before revisions existed (stored without versrel) belongs
+	// to a job that was never built, otherwise no new job is made for its key:
+	// it is renumbered in place.
 	_, err = tx.Exec(ctx, `
-		INSERT INTO build_counters (project, repo, arch, package, flavor, source_commit, meta, ci_cnt, bcnt)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		key.Project, key.Repo, key.Arch, key.Package, key.Flavor, key.SourceCommit, key.Meta, c.CI, c.B)
+		INSERT INTO build_counters (project, repo, arch, package, flavor, source_commit, meta, ci_cnt, bcnt, versrel)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (project, repo, arch, package, flavor, source_commit, meta)
+		DO UPDATE SET ci_cnt = EXCLUDED.ci_cnt, bcnt = EXCLUDED.bcnt, versrel = EXCLUDED.versrel`,
+		key.Project, key.Repo, key.Arch, key.Package, key.Flavor, key.SourceCommit, key.Meta, c.CI, c.B, key.Versrel)
 	if err != nil {
 		return storage.BuildCounters{}, fmt.Errorf("failed to store build counters: %w", err)
 	}
@@ -63,6 +61,31 @@ func (s *PostgresStore) NextBuildCounters(ctx context.Context, key storage.Count
 		return storage.BuildCounters{}, fmt.Errorf("failed to commit build counters: %w", err)
 	}
 	return c, nil
+}
+
+// nextBcnt is B_CNT for a new build: one above the highest of the same
+// versrel in the (project, repo, arch) (OBS nextbcnt), and, when the new CI
+// is not above that of the builds made before revisions existed, above their
+// highest too, so the release never goes down.
+func nextBcnt(ctx context.Context, tx pgx.Tx, key storage.CounterKey) (int, error) {
+	var b, legacyCI, legacyB int
+	err := tx.QueryRow(ctx, `
+		SELECT
+			(SELECT COALESCE(max(bcnt), 0) FROM build_counters
+				WHERE project = $1 AND repo = $2 AND arch = $3 AND package = $4 AND flavor = $5 AND versrel = $6),
+			(SELECT COALESCE(max(ci_cnt), 0) FROM build_counters
+				WHERE project = $1 AND package = $4 AND flavor = $5 AND versrel IS NULL),
+			(SELECT COALESCE(max(bcnt), 0) FROM build_counters
+				WHERE project = $1 AND repo = $2 AND arch = $3 AND package = $4 AND flavor = $5 AND versrel IS NULL)`,
+		key.Project, key.Repo, key.Arch, key.Package, key.Flavor, key.Versrel).Scan(&b, &legacyCI, &legacyB)
+	if err != nil {
+		return 0, fmt.Errorf("failed to compute build counters: %w", err)
+	}
+	b++
+	if key.CI <= legacyCI {
+		b = max(b, legacyB+1)
+	}
+	return b, nil
 }
 
 // RequestForcedRebuild records a forced rebuild request; repeating it keeps the request and takes the latest priority.

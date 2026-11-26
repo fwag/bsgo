@@ -13,10 +13,10 @@ import (
 
 const upsertBuildStateSQL = `
 	INSERT INTO package_build_state
-		(project, repo, arch, package, flavor, state, details, source_commit, meta, bcnt, job_id, built_meta, built_commit, blocked, updated_at)
+		(project, repo, arch, package, flavor, state, details, source_commit, meta, bcnt, job_id, built_meta, built_commit, blocked, versrel, updated_at)
 	VALUES ($1, $2, $3, $4, $5, $6::varchar, $7, $8, $9::varchar, $10, $11,
 		CASE WHEN $6::varchar = 'succeeded' THEN $9::varchar ELSE '' END,
-		CASE WHEN $6::varchar = 'succeeded' THEN $8::varchar ELSE '' END, $12::jsonb, NOW())
+		CASE WHEN $6::varchar = 'succeeded' THEN $8::varchar ELSE '' END, $12::jsonb, $13, NOW())
 	ON CONFLICT (project, repo, arch, package, flavor) DO UPDATE SET
 		state = EXCLUDED.state,
 		details = EXCLUDED.details,
@@ -31,6 +31,7 @@ const upsertBuildStateSQL = `
 			THEN COALESCE(NULLIF(EXCLUDED.source_commit, ''), package_build_state.source_commit)
 			ELSE package_build_state.built_commit END,
 		blocked = EXCLUDED.blocked,
+		versrel = COALESCE(NULLIF(EXCLUDED.versrel, ''), package_build_state.versrel),
 		updated_at = NOW()`
 
 func upsertBuildStateArgs(st *storage.PackageBuildState) ([]any, error) {
@@ -42,17 +43,17 @@ func upsertBuildStateArgs(st *storage.PackageBuildState) ([]any, error) {
 		}
 	}
 	return []any{st.Project, st.Repo, st.Arch, st.Package, st.Flavor,
-		st.State, st.Details, st.SourceCommit, st.Meta, st.Bcnt, st.JobID, blocked}, nil
+		st.State, st.Details, st.SourceCommit, st.Meta, st.Bcnt, st.JobID, blocked, st.Versrel}, nil
 }
 
-const buildStateColumns = `project, repo, arch, package, flavor, state, details, source_commit, meta, built_meta, built_commit, blocked, bcnt, job_id, updated_at`
+const buildStateColumns = `project, repo, arch, package, flavor, state, details, source_commit, meta, built_meta, built_commit, blocked, bcnt, job_id, versrel, updated_at`
 
 // scanBuildState reads one row selected with buildStateColumns.
 func scanBuildState(row pgx.Row) (*storage.PackageBuildState, error) {
 	var st storage.PackageBuildState
 	var blocked []byte
 	if err := row.Scan(&st.Project, &st.Repo, &st.Arch, &st.Package, &st.Flavor, &st.State, &st.Details,
-		&st.SourceCommit, &st.Meta, &st.BuiltMeta, &st.BuiltCommit, &blocked, &st.Bcnt, &st.JobID, &st.UpdatedAt); err != nil {
+		&st.SourceCommit, &st.Meta, &st.BuiltMeta, &st.BuiltCommit, &blocked, &st.Bcnt, &st.JobID, &st.Versrel, &st.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if len(blocked) > 0 {

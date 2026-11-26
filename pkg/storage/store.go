@@ -139,15 +139,21 @@ type CounterKey struct {
 	Flavor       string
 	SourceCommit string
 	Meta         string
+	// CI is the CI_CNT of the build: the vrev of the package revision of
+	// SourceCommit (see PackageRevision).
+	CI int
+	// Versrel is "<version>-<vrev>": the version of the unit's own recipe and
+	// the vrev. B_CNT counts the builds of one versrel (OBS nextbcnt).
+	Versrel string
 }
 
 // BuildCounters are the release counters of one build.
 type BuildCounters struct {
-	// CI is CI_CNT: the number of distinct source commits seen for the unit in
-	// the project, counted in order of first use.
+	// CI is CI_CNT, the CounterKey's CI.
 	CI int
-	// B is B_CNT: the number of builds of this source commit in this
-	// (project, repo, arch), counted from 1.
+	// B is B_CNT: the number of builds of this versrel of the unit in this
+	// (project, repo, arch), counted from 1, and above every build made before
+	// revisions existed when CI is not higher than theirs.
 	B int
 }
 
@@ -212,7 +218,7 @@ type Store interface {
 	UpsertBuildStates(ctx context.Context, states []*PackageBuildState) error
 
 	// NextBuildCounters returns the CI_CNT and B_CNT of the build identified by
-	// key, allocating them on first use. It is idempotent per key.
+	// key, allocating B_CNT on first use. It is idempotent per key.
 	NextBuildCounters(ctx context.Context, key CounterKey) (BuildCounters, error)
 
 	// RevisionFor returns the latest revision of the package pinned to commit,
@@ -296,7 +302,7 @@ type MemoryStore struct {
 	solvs      map[string]*TargetSolv                   // key: project:target:arch -> solv
 	states     map[string]*PackageBuildState            // key: project/repo/arch/package/flavor
 	dod        map[string]*DoDRepo                      // key: url
-	counters   map[CounterKey]BuildCounters
+	counters   map[counterRow]counterValue
 	revisions  map[string][]PackageRevision // key: project\x00package
 	history    map[string]*SourceHistory
 	forced     []ForcedRebuild
@@ -313,7 +319,7 @@ func NewMemoryStore() *MemoryStore {
 		solvs:      make(map[string]*TargetSolv),
 		states:     make(map[string]*PackageBuildState),
 		dod:        make(map[string]*DoDRepo),
-		counters:   make(map[CounterKey]BuildCounters),
+		counters:   make(map[counterRow]counterValue),
 		revisions:  make(map[string][]PackageRevision),
 		history:    make(map[string]*SourceHistory),
 		indexes:    make(map[string]*BuildRepoIndex),
@@ -557,6 +563,9 @@ func preserveBuildIdentity(next, prev *PackageBuildState) {
 	}
 	if next.Bcnt < prev.Bcnt {
 		next.Bcnt = prev.Bcnt
+	}
+	if next.Versrel == "" {
+		next.Versrel = prev.Versrel
 	}
 	next.BuiltMeta = prev.BuiltMeta
 	next.BuiltCommit = prev.BuiltCommit

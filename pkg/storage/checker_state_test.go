@@ -3,6 +3,7 @@ package storage_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/openSUSE/bsgo/pkg/storage"
@@ -10,20 +11,25 @@ import (
 
 func TestNextBuildCounters(t *testing.T) {
 	ctx := context.Background()
-	key := func(repo, commit, meta string) storage.CounterKey {
-		return storage.CounterKey{Project: "p", Repo: repo, Arch: "x86_64", Package: "pkg", SourceCommit: commit, Meta: meta}
+	key := func(repo, commit, meta string, ci int, versrel string) storage.CounterKey {
+		return storage.CounterKey{
+			Project: "p", Repo: repo, Arch: "x86_64", Package: "pkg", SourceCommit: commit, Meta: meta,
+			CI: ci, Versrel: versrel,
+		}
 	}
 	tests := []struct {
 		name string
 		k    storage.CounterKey
 		want storage.BuildCounters
 	}{
-		{"first build of first commit", key("std", "c1", "m1"), storage.BuildCounters{CI: 1, B: 1}},
-		{"same key is idempotent", key("std", "c1", "m1"), storage.BuildCounters{CI: 1, B: 1}},
-		{"rebuild of the same commit", key("std", "c1", "m2"), storage.BuildCounters{CI: 1, B: 2}},
-		{"new commit", key("std", "c2", "m3"), storage.BuildCounters{CI: 2, B: 1}},
-		{"other repo keeps CI and counts B itself", key("other", "c1", "m1"), storage.BuildCounters{CI: 1, B: 1}},
-		{"other repo new commit shares CI numbering", key("other", "c3", "m9"), storage.BuildCounters{CI: 3, B: 1}},
+		{"first build", key("std", "c1", "m1", 7, "1.0-7"), storage.BuildCounters{CI: 7, B: 1}},
+		{"same key is idempotent", key("std", "c1", "m1", 7, "1.0-7"), storage.BuildCounters{CI: 7, B: 1}},
+		{"idempotent even when the revision was re-resolved", key("std", "c1", "m1", 9, "1.0-9"), storage.BuildCounters{CI: 7, B: 1}},
+		{"rebuild of the same versrel", key("std", "c1", "m2", 7, "1.0-7"), storage.BuildCounters{CI: 7, B: 2}},
+		{"same versrel from another commit continues", key("std", "c1b", "m3", 7, "1.0-7"), storage.BuildCounters{CI: 7, B: 3}},
+		{"new versrel restarts B", key("std", "c2", "m4", 8, "1.0-8"), storage.BuildCounters{CI: 8, B: 1}},
+		{"other repo counts B itself", key("other", "c1", "m1", 7, "1.0-7"), storage.BuildCounters{CI: 7, B: 1}},
+		{"other version of the same vrev is its own versrel", key("std", "c3", "m5", 7, "2.0-7"), storage.BuildCounters{CI: 7, B: 1}},
 	}
 	s := storage.NewMemoryStore()
 	for _, tc := range tests {
@@ -32,8 +38,58 @@ func TestNextBuildCounters(t *testing.T) {
 			t.Errorf("%s: got %+v, %v; want %+v", tc.name, got, err, tc.want)
 		}
 	}
-	if _, err := s.NextBuildCounters(ctx, storage.CounterKey{}); err == nil {
-		t.Error("an incomplete key must be rejected")
+	for _, bad := range []storage.CounterKey{{}, key("std", "c", "m", 0, "1-0"), key("std", "c", "m", 1, "")} {
+		if _, err := s.NextBuildCounters(ctx, bad); err == nil {
+			t.Errorf("incomplete key %+v must be rejected", bad)
+		}
+	}
+}
+
+func TestNextBuildCountersLegacyFloor(t *testing.T) {
+	ctx := context.Background()
+	s := storage.NewMemoryStore()
+	old := storage.CounterKey{Project: "p", Repo: "std", Arch: "x86_64", Package: "pkg", SourceCommit: "old", Meta: "m"}
+	s.AddLegacyCounters(old, storage.BuildCounters{CI: 1, B: 130})
+	oldOther := old
+	oldOther.Repo = "other"
+	s.AddLegacyCounters(oldOther, storage.BuildCounters{CI: 1, B: 9})
+	key := func(repo string, ci int, meta string) storage.CounterKey {
+		return storage.CounterKey{
+			Project: "p", Repo: repo, Arch: "x86_64", Package: "pkg", SourceCommit: "c", Meta: meta,
+			CI: ci, Versrel: fmt.Sprintf("1.0-%d", ci),
+		}
+	}
+	tests := []struct {
+		name string
+		k    storage.CounterKey
+		want storage.BuildCounters
+	}{
+		{"CI equal to the legacy one continues above its B", key("std", 1, "m1"), storage.BuildCounters{CI: 1, B: 131}},
+		{"the floor is per repository", key("other", 1, "m1"), storage.BuildCounters{CI: 1, B: 10}},
+		{"next attempt continues the versrel", key("std", 1, "m2"), storage.BuildCounters{CI: 1, B: 132}},
+		{"higher CI starts at 1", key("std", 2, "m3"), storage.BuildCounters{CI: 2, B: 1}},
+	}
+	for _, tc := range tests {
+		got, err := s.NextBuildCounters(ctx, tc.k)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: got %+v, %v; want %+v", tc.name, got, err, tc.want)
+		}
+	}
+}
+
+func TestNextBuildCountersRenumbersALegacyRowOfTheSameKey(t *testing.T) {
+	ctx := context.Background()
+	s := storage.NewMemoryStore()
+	k := storage.CounterKey{
+		Project: "p", Repo: "std", Arch: "x86_64", Package: "pkg", SourceCommit: "c", Meta: "m",
+		CI: 25, Versrel: "1.0-25",
+	}
+	s.AddLegacyCounters(k, storage.BuildCounters{CI: 1, B: 3})
+	for i := range 2 {
+		got, err := s.NextBuildCounters(ctx, k)
+		if err != nil || got != (storage.BuildCounters{CI: 25, B: 1}) {
+			t.Errorf("call %d: got %+v, %v; want the legacy job renumbered to 25.1 and kept", i, got, err)
+		}
 	}
 }
 

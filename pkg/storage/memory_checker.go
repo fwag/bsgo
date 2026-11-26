@@ -11,10 +11,34 @@ import (
 // ValidateCounterKey checks that every field a counter row is keyed by is set.
 func ValidateCounterKey(key CounterKey) error {
 	if key.Project == "" || key.Repo == "" || key.Arch == "" || key.Package == "" ||
-		key.SourceCommit == "" || key.Meta == "" {
-		return fmt.Errorf("build counters require project, repo, arch, package, source commit and meta")
+		key.SourceCommit == "" || key.Meta == "" || key.Versrel == "" || key.CI < 1 {
+		return fmt.Errorf("build counters require project, repo, arch, package, source commit, meta, versrel and ci")
 	}
 	return nil
+}
+
+// counterRow is the identity of a build_counters row; the vrev and versrel
+// of the build are values.
+type counterRow struct {
+	project, repo, arch, pkg, flavor, commit, meta string
+}
+
+type counterValue struct {
+	ci, b int
+	// versrel is empty for rows written before revisions existed.
+	versrel string
+}
+
+func rowOf(key CounterKey) counterRow {
+	return counterRow{key.Project, key.Repo, key.Arch, key.Package, key.Flavor, key.SourceCommit, key.Meta}
+}
+
+// AddLegacyCounters records a build made before revisions existed (a row
+// without versrel), for tests of the legacy floor.
+func (s *MemoryStore) AddLegacyCounters(key CounterKey, c BuildCounters) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.counters[rowOf(key)] = counterValue{ci: c.CI, b: c.B}
 }
 
 // NextBuildCounters implements Store.
@@ -24,29 +48,33 @@ func (s *MemoryStore) NextBuildCounters(_ context.Context, key CounterKey) (Buil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.counters[key]; ok {
-		return c, nil
+	// A row written before revisions existed belongs to a job that was never
+	// built (otherwise no new job is made for its key): it is renumbered.
+	if v, ok := s.counters[rowOf(key)]; ok && v.versrel != "" {
+		return BuildCounters{CI: v.ci, B: v.b}, nil
 	}
-	ci, maxCI, b := 0, 0, 0
-	for k, c := range s.counters {
-		if k.Project != key.Project || k.Package != key.Package || k.Flavor != key.Flavor {
+	b, legacyCI, legacyB := 0, 0, 0
+	for r, v := range s.counters {
+		if r.project != key.Project || r.pkg != key.Package || r.flavor != key.Flavor {
 			continue
 		}
-		maxCI = max(maxCI, c.CI)
-		if k.SourceCommit != key.SourceCommit {
-			continue
-		}
-		ci = c.CI
-		if k.Repo == key.Repo && k.Arch == key.Arch {
-			b = max(b, c.B)
+		sameRepo := r.repo == key.Repo && r.arch == key.Arch
+		switch {
+		case v.versrel == "":
+			legacyCI = max(legacyCI, v.ci)
+			if sameRepo {
+				legacyB = max(legacyB, v.b)
+			}
+		case sameRepo && v.versrel == key.Versrel:
+			b = max(b, v.b)
 		}
 	}
-	if ci == 0 {
-		ci = maxCI + 1
+	b++
+	if key.CI <= legacyCI {
+		b = max(b, legacyB+1)
 	}
-	c := BuildCounters{CI: ci, B: b + 1}
-	s.counters[key] = c
-	return c, nil
+	s.counters[rowOf(key)] = counterValue{ci: key.CI, b: b, versrel: key.Versrel}
+	return BuildCounters{CI: key.CI, B: b}, nil
 }
 
 // RequestForcedRebuild implements Store.

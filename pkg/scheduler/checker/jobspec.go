@@ -35,6 +35,8 @@ type JobSpec struct {
 	Release string
 	// CICnt and BCnt are the counters Release was computed from.
 	CICnt, BCnt int
+	// Versrel is "<version>-<vrev>", the identity B_CNT is counted under.
+	Versrel string
 	// DistURL is the --disturl value; it embeds the source commit.
 	DistURL string
 	// Meta is the hash of the build meta, the tree of dependencies the build
