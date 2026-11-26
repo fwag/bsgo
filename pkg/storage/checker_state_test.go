@@ -77,6 +77,40 @@ func TestNextBuildCountersLegacyFloor(t *testing.T) {
 	}
 }
 
+func TestNextBuildCountersNeverGoesBelowALegacyCI(t *testing.T) {
+	ctx := context.Background()
+	s := storage.NewMemoryStore()
+	legacy := func(commit string, ci, b int) {
+		s.AddLegacyCounters(storage.CounterKey{
+			Project: "p", Repo: "std", Arch: "x86_64", Package: "pkg", SourceCommit: commit, Meta: "m",
+		}, storage.BuildCounters{CI: ci, B: b})
+	}
+	legacy("old1", 1, 130)
+	legacy("old2", 3, 4)
+	key := func(ci int, meta string) storage.CounterKey {
+		return storage.CounterKey{
+			Project: "p", Repo: "std", Arch: "x86_64", Package: "pkg", SourceCommit: "c", Meta: meta,
+			CI: ci, Versrel: fmt.Sprintf("1.0-%d", ci),
+		}
+	}
+	tests := []struct {
+		name string
+		k    storage.CounterKey
+		want storage.BuildCounters
+	}{
+		{"a lower CI is raised to the legacy one, above its builds", key(1, "m1"), storage.BuildCounters{CI: 3, B: 5}},
+		{"the raised release continues", key(2, "m2"), storage.BuildCounters{CI: 3, B: 6}},
+		{"an equal CI behaves the same", key(3, "m3"), storage.BuildCounters{CI: 3, B: 7}},
+		{"a higher CI is kept", key(4, "m4"), storage.BuildCounters{CI: 4, B: 1}},
+	}
+	for _, tc := range tests {
+		got, err := s.NextBuildCounters(ctx, tc.k)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: got %+v, %v; want %+v", tc.name, got, err, tc.want)
+		}
+	}
+}
+
 func TestNextBuildCountersRenumbersALegacyRowOfTheSameKey(t *testing.T) {
 	ctx := context.Background()
 	s := storage.NewMemoryStore()

@@ -53,28 +53,35 @@ func (s *MemoryStore) NextBuildCounters(_ context.Context, key CounterKey) (Buil
 	if v, ok := s.counters[rowOf(key)]; ok && v.versrel != "" {
 		return BuildCounters{CI: v.ci, B: v.b}, nil
 	}
-	b, legacyCI, legacyB := 0, 0, 0
+	legacyCI := 0
 	for r, v := range s.counters {
-		if r.project != key.Project || r.pkg != key.Package || r.flavor != key.Flavor {
+		if r.project == key.Project && r.pkg == key.Package && r.flavor == key.Flavor && v.versrel == "" {
+			legacyCI = max(legacyCI, v.ci)
+		}
+	}
+	ci, versrel := key.CI, key.Versrel
+	if ci < legacyCI {
+		ci, versrel = legacyCI, key.WithCI(legacyCI)
+	}
+	b, legacyB := 0, 0
+	for r, v := range s.counters {
+		if r.project != key.Project || r.pkg != key.Package || r.flavor != key.Flavor ||
+			r.repo != key.Repo || r.arch != key.Arch {
 			continue
 		}
-		sameRepo := r.repo == key.Repo && r.arch == key.Arch
 		switch {
-		case v.versrel == "":
-			legacyCI = max(legacyCI, v.ci)
-			if sameRepo {
-				legacyB = max(legacyB, v.b)
-			}
-		case sameRepo && v.versrel == key.Versrel:
+		case v.versrel == "" && v.ci == legacyCI:
+			legacyB = max(legacyB, v.b)
+		case v.versrel == versrel:
 			b = max(b, v.b)
 		}
 	}
 	b++
-	if key.CI <= legacyCI {
+	if ci == legacyCI {
 		b = max(b, legacyB+1)
 	}
-	s.counters[rowOf(key)] = counterValue{ci: key.CI, b: b, versrel: key.Versrel}
-	return BuildCounters{CI: key.CI, B: b}, nil
+	s.counters[rowOf(key)] = counterValue{ci: ci, b: b, versrel: versrel}
+	return BuildCounters{CI: ci, B: b}, nil
 }
 
 // RequestForcedRebuild implements Store.

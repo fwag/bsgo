@@ -41,8 +41,8 @@ func (s *PostgresStore) NextBuildCounters(ctx context.Context, key storage.Count
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return storage.BuildCounters{}, fmt.Errorf("failed to read build counters: %w", err)
 	}
-	c.CI = key.CI
-	if c.B, err = nextBcnt(ctx, tx, key); err != nil {
+	var versrel string
+	if c.CI, c.B, versrel, err = nextCounters(ctx, tx, key); err != nil {
 		return storage.BuildCounters{}, err
 	}
 	// A row written before revisions existed (stored without versrel) belongs
@@ -53,7 +53,7 @@ func (s *PostgresStore) NextBuildCounters(ctx context.Context, key storage.Count
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (project, repo, arch, package, flavor, source_commit, meta)
 		DO UPDATE SET ci_cnt = EXCLUDED.ci_cnt, bcnt = EXCLUDED.bcnt, versrel = EXCLUDED.versrel`,
-		key.Project, key.Repo, key.Arch, key.Package, key.Flavor, key.SourceCommit, key.Meta, c.CI, c.B, key.Versrel)
+		key.Project, key.Repo, key.Arch, key.Package, key.Flavor, key.SourceCommit, key.Meta, c.CI, c.B, versrel)
 	if err != nil {
 		return storage.BuildCounters{}, fmt.Errorf("failed to store build counters: %w", err)
 	}
@@ -63,29 +63,41 @@ func (s *PostgresStore) NextBuildCounters(ctx context.Context, key storage.Count
 	return c, nil
 }
 
-// nextBcnt is B_CNT for a new build: one above the highest of the same
-// versrel in the (project, repo, arch) (OBS nextbcnt), and, when the new CI
-// is not above that of the builds made before revisions existed, above their
-// highest too, so the release never goes down.
-func nextBcnt(ctx context.Context, tx pgx.Tx, key storage.CounterKey) (int, error) {
-	var b, legacyCI, legacyB int
-	err := tx.QueryRow(ctx, `
+// nextCounters is CI_CNT and B_CNT for a new build. CI is the key's, raised
+// to the highest CI of the builds made before revisions existed when that is
+// higher, so the release never goes below an installed one. B is one above the
+// highest of the same versrel in the (project, repo, arch) (OBS nextbcnt) and,
+// when CI equals the legacy CI, above the legacy builds of it too.
+func nextCounters(ctx context.Context, tx pgx.Tx, key storage.CounterKey) (ci, b int, versrel string, err error) {
+	var legacyCI int
+	err = tx.QueryRow(ctx, `
+		SELECT COALESCE(max(ci_cnt), 0) FROM build_counters
+		WHERE project = $1 AND package = $2 AND flavor = $3 AND versrel IS NULL`,
+		key.Project, key.Package, key.Flavor).Scan(&legacyCI)
+	if err != nil {
+		return 0, 0, "", fmt.Errorf("failed to read legacy build counters: %w", err)
+	}
+	ci, versrel = key.CI, key.Versrel
+	if ci < legacyCI {
+		ci, versrel = legacyCI, key.WithCI(legacyCI)
+	}
+	var legacyB int
+	err = tx.QueryRow(ctx, `
 		SELECT
 			(SELECT COALESCE(max(bcnt), 0) FROM build_counters
 				WHERE project = $1 AND repo = $2 AND arch = $3 AND package = $4 AND flavor = $5 AND versrel = $6),
-			(SELECT COALESCE(max(ci_cnt), 0) FROM build_counters
-				WHERE project = $1 AND package = $4 AND flavor = $5 AND versrel IS NULL),
 			(SELECT COALESCE(max(bcnt), 0) FROM build_counters
-				WHERE project = $1 AND repo = $2 AND arch = $3 AND package = $4 AND flavor = $5 AND versrel IS NULL)`,
-		key.Project, key.Repo, key.Arch, key.Package, key.Flavor, key.Versrel).Scan(&b, &legacyCI, &legacyB)
+				WHERE project = $1 AND repo = $2 AND arch = $3 AND package = $4 AND flavor = $5
+				  AND versrel IS NULL AND ci_cnt = $7)`,
+		key.Project, key.Repo, key.Arch, key.Package, key.Flavor, versrel, legacyCI).Scan(&b, &legacyB)
 	if err != nil {
-		return 0, fmt.Errorf("failed to compute build counters: %w", err)
+		return 0, 0, "", fmt.Errorf("failed to compute build counters: %w", err)
 	}
 	b++
-	if key.CI <= legacyCI {
+	if ci == legacyCI {
 		b = max(b, legacyB+1)
 	}
-	return b, nil
+	return ci, b, versrel, nil
 }
 
 // RequestForcedRebuild records a forced rebuild request; repeating it keeps the request and takes the latest priority.

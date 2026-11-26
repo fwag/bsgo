@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/openSUSE/bsgo/pkg/recipe/history"
 	"github.com/openSUSE/bsgo/pkg/scheduler/vrev"
 	"github.com/openSUSE/bsgo/pkg/storage"
 )
@@ -15,6 +17,11 @@ func startVrev(ctx context.Context, cfg ServerConfig, store storage.Store) {
 	if cfg.VrevWorkers <= 0 {
 		logf("VREV", "disabled (--vrev-workers=0): units whose revision is not resolved wait")
 		return
+	}
+	if n, err := history.SweepTemp(time.Hour); err != nil {
+		logf("VREV", "sweeping stale temp directories failed: %v", err)
+	} else if n > 0 {
+		logf("VREV", "removed %d stale temp directories of killed resolutions", n)
 	}
 	r := vrev.New(store, vrev.Options{
 		Owner:   "bsgo-server-vrev-" + uuid.NewString(),

@@ -66,7 +66,7 @@ func TestBlockedVerdictShowsLastResolverError(t *testing.T) {
 	w.wantState("p", storage.StateBlocked, "waiting for release number (source history of "+commit[:12]+"): fetch: connection reset")
 }
 
-func TestMissingRevisionIsBlockedAndLoggedOncePerPass(t *testing.T) {
+func TestMissingRevisionIsBlockedAndLoggedOncePerInterval(t *testing.T) {
 	w := newWorld(t, nil)
 	var logs []string
 	w.deps.Store = noRevisions{w.store}
@@ -81,8 +81,9 @@ func TestMissingRevisionIsBlockedAndLoggedOncePerPass(t *testing.T) {
 	if st := w.state("m"); st.State != storage.StateBlocked || !strings.HasPrefix(st.Details, "waiting for release number") {
 		t.Errorf("state %+v", st)
 	}
+	w.run()
 	if len(logs) != 1 {
-		t.Errorf("%d log lines, want one for the package in this pass: %v", len(logs), logs)
+		t.Errorf("%d log lines, want one per revision however many passes run: %v", len(logs), logs)
 	}
 }
 

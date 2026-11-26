@@ -175,3 +175,40 @@ func TestPostgresForcedRebuildsAndIndexPointer(t *testing.T) {
 		t.Errorf("pointer %+v %v, want the latest", idx, err)
 	}
 }
+
+func TestPostgresBuildCountersNeverGoBelowALegacyCI(t *testing.T) {
+	store, prj := newCheckerStore(t)
+	ctx := context.Background()
+	for _, row := range []struct {
+		commit string
+		ci, b  int
+	}{{"old1", 1, 130}, {"old2", 3, 4}} {
+		_, err := store.Pool().Exec(ctx, `
+			INSERT INTO build_counters (project, repo, arch, package, flavor, source_commit, meta, ci_cnt, bcnt)
+			VALUES ($1, 'std', 'x86_64', 'pkg', '', $2, 'm', $3, $4)`, prj, row.commit, row.ci, row.b)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := func(ci int, meta string) storage.CounterKey {
+		return storage.CounterKey{
+			Project: prj, Repo: "std", Arch: "x86_64", Package: "pkg", SourceCommit: "c", Meta: meta,
+			CI: ci, Versrel: fmt.Sprintf("1.0-%d", ci),
+		}
+	}
+	steps := []struct {
+		k    storage.CounterKey
+		want storage.BuildCounters
+	}{
+		{key(1, "m1"), storage.BuildCounters{CI: 3, B: 5}},
+		{key(2, "m2"), storage.BuildCounters{CI: 3, B: 6}},
+		{key(3, "m3"), storage.BuildCounters{CI: 3, B: 7}},
+		{key(4, "m4"), storage.BuildCounters{CI: 4, B: 1}},
+	}
+	for i, s := range steps {
+		got, err := store.NextBuildCounters(ctx, s.k)
+		if err != nil || got != s.want {
+			t.Errorf("step %d: got %+v, %v; want %+v", i, got, err, s.want)
+		}
+	}
+}

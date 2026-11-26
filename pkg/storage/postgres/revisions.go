@@ -380,3 +380,29 @@ func (s *PostgresStore) SetRevisionVrev(ctx context.Context, project, pkg, commi
 	}
 	return out, nil
 }
+
+// RenewRevisionClaim implements storage.Store.
+func (s *PostgresStore) RenewRevisionClaim(ctx context.Context, rev storage.PackageRevision, owner string, lease time.Duration) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE package_revisions SET claimed_until = now() + make_interval(secs => $5)
+		WHERE project = $1 AND package = $2 AND seq = $3 AND state = 'pending' AND claimed_by = $4`,
+		rev.Project, rev.Package, rev.Seq, owner, lease.Seconds())
+	if err != nil {
+		return fmt.Errorf("failed to renew revision claim: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return storage.ErrConflict
+	}
+	return nil
+}
+
+// ReleaseRevisionClaims implements storage.Store.
+func (s *PostgresStore) ReleaseRevisionClaims(ctx context.Context, owner string) (int, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE package_revisions SET claimed_by = NULL, claimed_until = NULL
+		WHERE claimed_by = $1 AND state = 'pending'`, owner)
+	if err != nil {
+		return 0, fmt.Errorf("failed to release revision claims: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}

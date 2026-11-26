@@ -90,11 +90,9 @@ type pass struct {
 
 	mu    sync.Mutex
 	retry time.Duration
-	// wanted lists the revisions units wait for, wantedSeen dedupes it and
-	// logged remembers the once-per-pass log lines.
+	// wanted lists the revisions units wait for, wantedSeen dedupes it.
 	wanted     []storage.RevisionRef
 	wantedSeen map[storage.RevisionRef]bool
-	logged     map[string]bool
 }
 
 func (c *Checker) newPass(ctx context.Context, p Prpa) (*pass, error) {

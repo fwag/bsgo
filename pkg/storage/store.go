@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -147,9 +148,20 @@ type CounterKey struct {
 	Versrel string
 }
 
+// WithCI returns the key's versrel for another CI (the version is kept).
+func (k CounterKey) WithCI(ci int) string {
+	version := k.Versrel
+	if i := strings.LastIndexByte(version, '-'); i >= 0 {
+		version = version[:i]
+	}
+	return version + "-" + strconv.Itoa(ci)
+}
+
 // BuildCounters are the release counters of one build.
 type BuildCounters struct {
-	// CI is CI_CNT, the CounterKey's CI.
+	// CI is CI_CNT: the CounterKey's CI, raised to the highest CI of the
+	// builds made before revisions existed when that is higher, so a release
+	// never goes below an installed one.
 	CI int
 	// B is B_CNT: the number of builds of this versrel of the unit in this
 	// (project, repo, arch), counted from 1, and above every build made before
@@ -233,6 +245,12 @@ type Store interface {
 	// ClaimRevisions leases up to limit pending revisions to owner: per
 	// package only the lowest pending seq, wanted ones first.
 	ClaimRevisions(ctx context.Context, owner string, limit int, lease time.Duration) ([]PackageRevision, error)
+	// RenewRevisionClaim extends the lease of a revision claimed by owner
+	// (ErrConflict when owner no longer holds it).
+	RenewRevisionClaim(ctx context.Context, rev PackageRevision, owner string, lease time.Duration) error
+	// ReleaseRevisionClaims drops every lease held by owner, so a process that
+	// stops hands its revisions back at once; it returns how many.
+	ReleaseRevisionClaims(ctx context.Context, owner string) (int, error)
 	// FinishRevision stores the vrev of a claimed revision (ErrConflict when it
 	// is no longer the lowest pending revision of its package).
 	FinishRevision(ctx context.Context, rev PackageRevision, res RevisionResult) (*PackageRevision, error)

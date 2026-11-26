@@ -100,8 +100,11 @@ type Checker struct {
 	// trees caches the dependency metas by hash (content-addressed, so never
 	// stale), metas the generated metas by their input key (the OBS meta
 	// shortcut).
-	trees map[string][]string
-	metas map[string]string
+	// missingLogged is when the missing-revision line of a revision was last
+	// logged.
+	missingLogged map[string]time.Time
+	trees         map[string][]string
+	metas         map[string]string
 }
 
 // New returns a Checker.

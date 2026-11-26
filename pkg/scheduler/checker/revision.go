@@ -27,7 +27,7 @@ func (ps *pass) revisionOf(u *unit) (*storage.PackageRevision, *verdict) {
 	case err == nil:
 		return nil, ps.waitForRevision(u, rev.LastError)
 	case errors.Is(err, storage.ErrNotFound):
-		ps.logOnce("missing-revision/"+u.pkg+"/"+u.commit, fmt.Sprintf(
+		ps.logMissing(ps.prpa.Project+"/"+u.pkg+"/"+u.commit, fmt.Sprintf(
 			"%s: no revision of commit %s (manifest stored without a revision log)", u.pkg, short(u.commit)))
 		return nil, ps.waitForRevision(u, "")
 	}
@@ -75,15 +75,25 @@ func (ps *pass) log(msg string) {
 	}
 }
 
-// logOnce logs msg once per pass for key.
-func (ps *pass) logOnce(key, msg string) {
-	ps.mu.Lock()
-	seen := ps.logged[key]
-	if ps.logged == nil {
-		ps.logged = map[string]bool{}
+// missingLogInterval is how often the missing-revision line repeats per
+// revision: a store written by an old binary would otherwise log it on every
+// pass of every prpa.
+const missingLogInterval = 10 * time.Minute
+
+// logMissing logs msg unless it was logged for key within missingLogInterval.
+func (ps *pass) logMissing(key, msg string) {
+	c := ps.c
+	now := c.d.Now()
+	c.mu.Lock()
+	last, seen := c.missingLogged[key]
+	if !seen || now.Sub(last) >= missingLogInterval {
+		if c.missingLogged == nil {
+			c.missingLogged = map[string]time.Time{}
+		}
+		c.missingLogged[key] = now
+		seen = false
 	}
-	ps.logged[key] = true
-	ps.mu.Unlock()
+	c.mu.Unlock()
 	if !seen {
 		ps.log(msg)
 	}

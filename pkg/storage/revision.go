@@ -282,6 +282,34 @@ func (s *MemoryStore) ClaimRevisions(_ context.Context, owner string, limit int,
 	return out, nil
 }
 
+// RenewRevisionClaim implements Store.
+func (s *MemoryStore) RenewRevisionClaim(_ context.Context, rev PackageRevision, owner string, lease time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, err := s.pendingRevisionLocked(rev)
+	if err != nil || row.ClaimedBy != owner {
+		return ErrConflict
+	}
+	row.ClaimedUntil = s.now().Add(lease)
+	return nil
+}
+
+// ReleaseRevisionClaims implements Store.
+func (s *MemoryStore) ReleaseRevisionClaims(_ context.Context, owner string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, log := range s.revisions {
+		for i := range log {
+			if log[i].ClaimedBy == owner && log[i].State == RevisionPending {
+				log[i].ClaimedBy, log[i].ClaimedUntil = "", time.Time{}
+				n++
+			}
+		}
+	}
+	return n, nil
+}
+
 // pendingRevisionLocked returns the stored row of rev when it is still
 // pending and the lowest pending revision of its package.
 func (s *MemoryStore) pendingRevisionLocked(rev PackageRevision) (*PackageRevision, error) {

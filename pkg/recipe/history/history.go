@@ -113,7 +113,7 @@ func Resolve(ctx context.Context, req Request, memo Memo) (*Result, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	dir, err := os.MkdirTemp("", "bsgo-history-*")
+	dir, err := os.MkdirTemp("", tempPrefix+"*")
 	if err != nil {
 		return nil, err
 	}

@@ -16,7 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
+	"regexp"
 	"sync"
 	"time"
 
@@ -38,7 +38,15 @@ const (
 	// rateLimitRetry is the least wait before the revision is tried again.
 	rateLimitPause = time.Minute
 	rateLimitRetry = 5 * time.Minute
-	minLease       = 10 * time.Minute
+	// DefaultLease is the lease of a claimed revision. It is renewed while the
+	// resolution runs, so a crashed process frees its revisions within it.
+	DefaultLease = 2 * time.Minute
+	// failureStreak consecutive failures of any kind (git host down, TLS,
+	// challenge page, ...) pause every worker, for backoffStart doubling up to
+	// backoffMax while the failures go on; one success resets it.
+	failureStreak = 3
+	backoffStart  = time.Minute
+	backoffMax    = 30 * time.Minute
 )
 
 // Store is the persistent state the resolver needs; storage.Store satisfies it.
@@ -46,6 +54,8 @@ type Store interface {
 	GetProject(ctx context.Context, name string) (*manifest.ProjectManifest, error)
 	GetPackage(ctx context.Context, project, pkg string) (*manifest.PackageManifest, error)
 	ClaimRevisions(ctx context.Context, owner string, limit int, lease time.Duration) ([]storage.PackageRevision, error)
+	RenewRevisionClaim(ctx context.Context, rev storage.PackageRevision, owner string, lease time.Duration) error
+	ReleaseRevisionClaims(ctx context.Context, owner string) (int, error)
 	FinishRevision(ctx context.Context, rev storage.PackageRevision, res storage.RevisionResult) (*storage.PackageRevision, error)
 	FailRevision(ctx context.Context, rev storage.PackageRevision, cause string, minRetry time.Duration) (*storage.PackageRevision, error)
 	RevisionCounts(ctx context.Context) (storage.RevisionCounts, error)
@@ -70,6 +80,9 @@ type Options struct {
 	Delay time.Duration
 	// Poll is the wait of an idle worker; zero means DefaultPoll.
 	Poll time.Duration
+	// Lease is the lease of a claimed revision, renewed every third of it
+	// while the resolution runs; zero means DefaultLease.
+	Lease time.Duration
 	// Summary is the interval of the progress line; zero means DefaultSummary.
 	Summary time.Duration
 	// Logf receives one plain line per event; nil discards.
@@ -87,6 +100,8 @@ type Resolver struct {
 
 	mu         sync.Mutex
 	pauseUntil time.Time
+	failures   int
+	backoff    time.Duration
 	configs    map[string]projectConfig
 }
 
@@ -108,6 +123,9 @@ func New(store Store, opts Options) *Resolver {
 	}
 	if opts.Summary <= 0 {
 		opts.Summary = DefaultSummary
+	}
+	if opts.Lease <= 0 {
+		opts.Lease = DefaultLease
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = history.DefaultTimeout
@@ -134,6 +152,14 @@ func (r *Resolver) Run(ctx context.Context) {
 	}
 	r.summaryLoop(ctx)
 	wg.Wait()
+	// Hand the claims back at once instead of leaving them to expire.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if n, err := r.store.ReleaseRevisionClaims(rctx, r.opts.Owner); err != nil {
+		r.opts.Logf("release claims failed: %v", err)
+	} else if n > 0 {
+		r.opts.Logf("released %d claimed revisions", n)
+	}
 }
 
 func (r *Resolver) worker(ctx context.Context) {
@@ -189,7 +215,7 @@ func (r *Resolver) summaryLoop(ctx context.Context) {
 // Step claims one pending revision, wanted ones first, and resolves it. It
 // reports whether a revision was worked on.
 func (r *Resolver) Step(ctx context.Context) bool {
-	claimed, err := r.store.ClaimRevisions(ctx, r.opts.Owner, 1, max(2*r.opts.Timeout, minLease))
+	claimed, err := r.store.ClaimRevisions(ctx, r.opts.Owner, 1, r.opts.Lease)
 	if err != nil {
 		if ctx.Err() == nil {
 			r.opts.Logf("claim failed: %v", err)
@@ -206,7 +232,9 @@ func (r *Resolver) Step(ctx context.Context) bool {
 func (r *Resolver) resolve(ctx context.Context, rev storage.PackageRevision) {
 	label := fmt.Sprintf("%s/%s %s", rev.Project, rev.Package, short(rev.Commit))
 	start := r.opts.Now()
+	stop := r.heartbeat(ctx, rev)
 	res, err := r.compute(ctx, rev)
+	stop()
 	if ctx.Err() != nil {
 		return
 	}
@@ -214,6 +242,7 @@ func (r *Resolver) resolve(ctx context.Context, rev storage.PackageRevision) {
 		r.fail(ctx, rev, label, err)
 		return
 	}
+	r.succeeded()
 	done, err := r.store.FinishRevision(ctx, rev, storage.RevisionResult{Version: res.Version, GitVrev: res.GitVrev})
 	switch {
 	case errors.Is(err, storage.ErrConflict):
@@ -230,14 +259,64 @@ func (r *Resolver) resolve(ctx context.Context, rev storage.PackageRevision) {
 		r.opts.Now().Sub(start).Round(10*time.Millisecond))
 }
 
+// heartbeat renews the lease of rev while a resolution runs; the returned
+// function stops it.
+func (r *Resolver) heartbeat(ctx context.Context, rev storage.PackageRevision) func() {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		t := time.NewTicker(r.opts.Lease / 3)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if err := r.store.RenewRevisionClaim(ctx, rev, r.opts.Owner, r.opts.Lease); err != nil && ctx.Err() == nil {
+					r.opts.Logf("%s/%s: renew lease failed: %v", rev.Project, rev.Package, err)
+				}
+			}
+		}
+	}()
+	return func() { close(done); <-finished }
+}
+
+func (r *Resolver) succeeded() {
+	r.mu.Lock()
+	r.failures, r.backoff = 0, 0
+	r.mu.Unlock()
+}
+
+// noteFailure counts a failed resolution; after failureStreak in a row every
+// worker pauses, for longer while the failures continue, so a git host that is
+// down is not hammered. A pushback of the server pauses at least rateLimitPause.
+func (r *Resolver) noteFailure(cause error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failures++
+	var pause time.Duration
+	if r.failures >= failureStreak {
+		r.backoff = min(max(2*r.backoff, backoffStart), backoffMax)
+		pause = r.backoff
+	}
+	if rateLimited(cause) {
+		pause = max(pause, rateLimitPause)
+	}
+	if pause > 0 {
+		r.pauseUntil = r.opts.Now().Add(pause)
+		r.opts.Logf("pausing all workers for %s after %d consecutive failures", pause, r.failures)
+	}
+}
+
 func (r *Resolver) fail(ctx context.Context, rev storage.PackageRevision, label string, cause error) {
 	var minRetry time.Duration
 	if rateLimited(cause) {
 		minRetry = rateLimitRetry
-		r.mu.Lock()
-		r.pauseUntil = r.opts.Now().Add(rateLimitPause)
-		r.mu.Unlock()
 	}
+	r.noteFailure(cause)
 	row, err := r.store.FailRevision(ctx, rev, cause.Error(), minRetry)
 	if err != nil {
 		if !errors.Is(err, storage.ErrConflict) {
@@ -253,13 +332,12 @@ func (r *Resolver) fail(ctx context.Context, rev storage.PackageRevision, label 
 		row.NextTryAt.Sub(r.opts.Now()).Round(time.Second), cause)
 }
 
-// rateLimited reports whether a git error looks like the server asking to slow
-// down.
-func rateLimited(err error) bool {
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "429") || strings.Contains(msg, "too many requests") ||
-		strings.Contains(msg, "rate limit") || strings.Contains(msg, "503")
-}
+// pushbackRe matches the text git prints when the HTTP server asks to slow
+// down. Only that text counts: a commit id or URL may contain "429".
+var pushbackRe = regexp.MustCompile(`The requested URL returned error: (429|503)\b`)
+
+// rateLimited reports whether a git error is the server asking to slow down.
+func rateLimited(err error) bool { return pushbackRe.MatchString(err.Error()) }
 
 func short(commit string) string {
 	if len(commit) > 12 {

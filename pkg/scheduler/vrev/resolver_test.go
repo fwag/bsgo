@@ -173,7 +173,7 @@ func TestRateLimitPausesAllWorkers(t *testing.T) {
 	e.pin("a", "c1a")
 	e.pin("b", "c1b")
 	e.outcome = func(req history.Request, _ history.Memo) (*history.Result, error) {
-		return nil, errors.New("fetch: HTTP 429 Too Many Requests")
+		return nil, errors.New("git fetch: exit status 128: fatal: unable to access: The requested URL returned error: 429")
 	}
 	ctx := context.Background()
 	r := e.resolver(1)
@@ -253,5 +253,112 @@ func TestZeroWorkersDisablesRun(t *testing.T) {
 	e.resolver(0).Run(context.Background())
 	if len(e.calls) != 0 {
 		t.Errorf("disabled resolver resolved %v", e.calls)
+	}
+}
+
+func TestPushbackNeedsGitsErrorText(t *testing.T) {
+	e := newEnv(t)
+	e.pin("a", "429429429429")
+	e.pin("b", "c1b")
+	e.outcome = func(req history.Request, _ history.Memo) (*history.Result, error) {
+		return nil, errors.New("git fetch https://git.example/503/a 429429429429: connection reset")
+	}
+	r := e.resolver(1)
+	r.Step(context.Background())
+	if a := e.revision("a", "429429429429"); a.NextTryAt.Sub(e.now) >= 5*time.Minute {
+		t.Errorf("a number in the commit or URL is not a rate limit: retry in %s", a.NextTryAt.Sub(e.now))
+	}
+}
+
+func TestConsecutiveFailuresPauseAllWorkersWithGrowingBackoff(t *testing.T) {
+	e := newEnv(t)
+	for _, p := range []string{"a", "b", "c", "d"} {
+		e.pin(p, "c1"+p)
+	}
+	fail := true
+	e.outcome = func(req history.Request, _ history.Memo) (*history.Result, error) {
+		if fail {
+			return nil, errors.New("git fetch: unable to access: Could not resolve host")
+		}
+		return result(req.Commit, "1.0", 1), nil
+	}
+	ctx := context.Background()
+	r := e.resolver(1)
+	for range 3 {
+		r.Step(ctx)
+	}
+	logs := strings.Join(e.logs, "\n")
+	if !strings.Contains(logs, "pausing all workers for 1m0s after 3 consecutive failures") {
+		t.Fatalf("no pause after three failures:\n%s", logs)
+	}
+	done := make(chan struct{})
+	cctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	go func() { r.Run(cctx); close(done) }()
+	<-done
+	if len(e.calls) != 3 {
+		t.Errorf("workers must stay paused, calls %v", e.calls)
+	}
+	e.now = e.now.Add(2 * time.Minute)
+	r.Step(ctx)
+	if !strings.Contains(strings.Join(e.logs, "\n"), "pausing all workers for 2m0s after 4 consecutive failures") {
+		t.Errorf("backoff must double while failures go on:\n%s", strings.Join(e.logs, "\n"))
+	}
+	fail = false
+	e.now = e.now.Add(time.Hour)
+	r.Step(ctx)
+	e.logs = nil
+	fail = true
+	for range 3 {
+		e.now = e.now.Add(time.Hour)
+		r.Step(ctx)
+	}
+	if !strings.Contains(strings.Join(e.logs, "\n"), "for 1m0s after 3 consecutive failures") {
+		t.Errorf("a success must reset the streak and the backoff:\n%s", strings.Join(e.logs, "\n"))
+	}
+}
+
+func TestLeaseIsRenewedWhileResolvingAndReleasedOnShutdown(t *testing.T) {
+	store := storage.NewMemoryStore()
+	if err := store.UpsertProject(context.Background(), &manifest.ProjectManifest{SchemaVersion: "v1", Project: manifest.ProjectInfo{Name: prj}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"a", "b"} {
+		pm := &manifest.PackageManifest{
+			SchemaVersion: "v1", Package: manifest.PackageInfo{Name: p},
+			Source: manifest.PackageSource{Git: "https://git.example/" + p, Commit: "c1" + p},
+		}
+		if err := store.UpsertPackage(context.Background(), prj, pm); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	r := vrev.New(store, vrev.Options{
+		Owner: "me", Workers: 1, Lease: 60 * time.Millisecond, Poll: time.Hour, Delay: time.Hour,
+		Resolve: func(ctx context.Context, req history.Request, _ history.Memo) (*history.Result, error) {
+			close(started)
+			select {
+			case <-release:
+				return result(req.Commit, "1.0", 1), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+	<-started
+	time.Sleep(250 * time.Millisecond)
+	claimed, err := store.ClaimRevisions(context.Background(), "other", 10, time.Minute)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("while one resolution runs the other package is claimable, the running one is not: %v, %v", claimed, err)
+	}
+	cancel()
+	<-done
+	got, err := store.ClaimRevisions(context.Background(), "other", 10, time.Minute)
+	if err != nil || len(got) != 1 {
+		t.Errorf("shutdown must release the claim of the cancelled resolution: %v, %v", got, err)
 	}
 }

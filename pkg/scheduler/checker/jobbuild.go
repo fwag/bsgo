@@ -47,7 +47,7 @@ func (ps *pass) newJob(u *unit, meta, explain string) (*JobSpec, *verdict) {
 		return nil, &verdict{storage.StateBroken, err.Error()}
 	}
 	spec := ps.jobSpec(u, meta, explain, attempt, counters, bdeps)
-	spec.Versrel = versrel(u, rev.Vrev)
+	spec.Versrel = versrel(u, counters.CI)
 	return spec, nil
 }
 

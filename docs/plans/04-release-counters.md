@@ -136,11 +136,13 @@ version), and the cost of walking the whole first-parent history is small (§4).
   package, flavor, versrel)`; idempotent per attempt as today (the existing
   full-key lookup returns the stored row). bsgo keeps counting job creations
   (attempts), not finished builds: gaps are harmless, monotonic either way.
-- **Legacy floor** (existing rows, `versrel IS NULL`): if the new CI_CNT is
-  `<=` the max legacy `ci_cnt` of the unit (project, package, flavor), then
+- **Legacy floor** (existing rows, `versrel IS NULL`): let `L` be the max legacy
+  `ci_cnt` of the unit (project, package, flavor). If the new CI is `< L` it is
+  **raised to `L`** (the versrel is renamed accordingly), and if it equals `L`,
   `B_CNT = max(B_CNT, 1 + max legacy bcnt of (project, repo, arch, package,
-  flavor))`. This guarantees every new `(CI, B)` is lexicographically greater
-  than every installed `160000.1.<n>` / `160000.2.<n>`. No rewrite of legacy rows.
+  flavor) with ci_cnt = L)`. Every new `(CI, B)` is therefore lexicographically
+  greater than every installed `160000.1.<n>` / `160000.2.<n>`. No rewrite of
+  legacy rows (except a legacy row of the very same job key, see §5).
 
 ### 3.4 Upgrade policy
 
@@ -186,7 +188,10 @@ The release must not go down for the same version. Cases:
   start. Errors back off exponentially per revision (1m, 2m, 4m, ... max 30m); an
   error that looks like the server pushing back (429, 503, "too many requests",
   "rate limit") also pauses every worker of the process for 1 minute and retries
-  that revision no earlier than after 5 minutes. The cold-start backfill of
+  that revision no earlier than after 5 minutes (only git's own text "The requested
+  URL returned error: 429/503" counts). After 3 consecutive failures of any kind
+  (host down, TLS, challenge page) every worker pauses 1 minute, doubling up to 30
+  minutes while failures continue; one success resets it. The cold-start backfill of
   ~3,500 packages therefore takes 30-60 minutes; that is accepted because the
   units that need a job are resolved first.
 
@@ -198,8 +203,9 @@ The release must not go down for the same version. Cases:
 - Resolution claim: `UPDATE ... SET claimed_by=$me, claimed_until=now()+lease
   WHERE <lowest pending seq of the package> AND (claimed_until IS NULL OR
   claimed_until < now()) RETURNING`, picking candidates `FOR UPDATE SKIP LOCKED`
-  ordered wanted first (3.5) — no coord lease needed. The lease is twice the
-  resolution timeout, at least 10 minutes. The git computation
+  ordered wanted first (3.5) — no coord lease needed. The lease is 2 minutes, renewed
+  every 40 s while a resolution runs; a process releases its claims on graceful
+  shutdown, a crashed one frees them by lease expiry. The git computation
   is a pure function of `(url, commit, lookup, config)`, so a duplicate after a
   lease expiry yields the same result.
 - Finalization (floor, vrev write) in one short transaction under the same
@@ -626,3 +632,16 @@ exists.
 7. Polite to the git host: low default concurrency (2 workers, 1 s pause, no burst
    at cold start), exponential backoff on errors and 429, a slower cold-start
    backfill (30-60 min) is fine (3.5).
+
+### W8 notes (known gaps and operator facts)
+
+- A permanently failing **latest** revision (for example a commit that no longer
+  exists on the server) is retried forever with backoff and its units stay blocked;
+  the operator unblocks it with `bsgo admin release set <project> <package> --vrev N
+  --version V`.
+- Only spec recipes are parsed: a package whose main recipe is a kiwi, dsc or
+  Dockerfile gets version `unknown` (OBS parses those). Known gap.
+- Git hardening of the history fetch: no user or system git config, protocols limited
+  to https and http, blob-less fallback fetch.
+- The resolver removes `bsgo-history-*` temp directories older than an hour at
+  startup.

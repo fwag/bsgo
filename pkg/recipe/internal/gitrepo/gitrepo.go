@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -68,11 +69,15 @@ func New(dir, url, commit string) *Repo {
 	return &Repo{dir: dir, url: url, commit: commit}
 }
 
+// AllowProtocols is the GIT_ALLOW_PROTOCOL of every git command. Production
+// fetches only over http(s); tests that serve repositories from disk widen it.
+var AllowProtocols = "https:http"
+
 // env builds the process environment.
 func (g *Repo) env(noLazy bool) []string {
 	env := append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1", "GIT_CONFIG_NOSYSTEM=1",
-		"GIT_ALLOW_PROTOCOL=file:git:http:https:ssh",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_ALLOW_PROTOCOL="+AllowProtocols,
 		"GIT_CONFIG_COUNT=4",
 		"GIT_CONFIG_KEY_0=remote.src.url", "GIT_CONFIG_VALUE_0="+g.url,
 		"GIT_CONFIG_KEY_1=remote.src.fetch", "GIT_CONFIG_VALUE_1="+g.commit+":"+CommitRef,
@@ -150,7 +155,7 @@ func (g *Repo) fetchPinned(ctx context.Context, opts ...string) error {
 	args := append([]string{"fetch", "--quiet"}, opts...)
 	args = append(args, "--no-tags", "src")
 	if _, err := g.Exec(exec.CommandContext(ctx, "git", args...), ""); err != nil {
-		if ferr := g.fetchReachable(ctx); ferr != nil {
+		if ferr := g.fetchReachable(ctx, slices.Contains(opts, "--filter=blob:none") && !slices.Contains(opts, "--depth")); ferr != nil {
 			return fmt.Errorf("%w; fetching the branches: %w", err, ferr)
 		}
 	}
@@ -162,10 +167,17 @@ func (g *Repo) fetchPinned(ctx context.Context, opts ...string) error {
 // branch histories and points CommitRef at exactly the commit, which must be
 // reachable from one of them. There is no fallback to a tip. The commit is a
 // validated full hex id, so it is safe as an argument.
-func (g *Repo) fetchReachable(ctx context.Context) error {
-	// No blob filter: a server that refuses unadvertised commits also refuses
-	// the lazy blob fetches a partial clone would need later.
-	if _, err := g.Exec(exec.CommandContext(ctx, "git", "fetch", "--quiet", "--no-tags", "branches"), ""); err != nil {
+//
+// A history fetch (blobless) keeps the filter, so the fallback does not
+// download the content of every branch. A single-commit fetch does not: a
+// server that refuses unadvertised commits also refuses the lazy blob fetches
+// a partial clone would need later.
+func (g *Repo) fetchReachable(ctx context.Context, blobless bool) error {
+	args := []string{"fetch", "--quiet", "--no-tags"}
+	if blobless {
+		args = append(args, "--filter=blob:none")
+	}
+	if _, err := g.Exec(exec.CommandContext(ctx, "git", append(args, "branches")...), ""); err != nil {
 		return err
 	}
 	_, err := g.Exec(exec.CommandContext(ctx, "git", "update-ref", CommitRef, g.commit), "")

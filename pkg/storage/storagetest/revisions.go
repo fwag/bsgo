@@ -120,6 +120,7 @@ func Revisions(t *testing.T, s storage.Store, prefix string, cleanup func(prefix
 		{"floor keeps the vrev monotonic per version", floorCases},
 		{"finish only the lowest pending revision", finishInOrder},
 		{"claim gives one row per package and respects leases", claimCases},
+		{"claims are renewed and released", renewAndRelease},
 		{"wanted revisions are claimed first", wantedFirst},
 		{"skipped superseded revision does not block", skippedDoesNotBlock},
 		{"reset keeps the old vrev as minimum", resetCases},
@@ -391,5 +392,33 @@ func historyCases(t *testing.T, f *fixture) {
 	other.AlgoRev = 2
 	if h, _ = f.s.NearestHistory(ctx, other, []string{"c2"}); h != nil {
 		t.Errorf("a row under another algo rev must not match: %+v", h)
+	}
+}
+
+func renewAndRelease(t *testing.T, f *fixture) {
+	ctx := context.Background()
+	f.pin("a", "u", "a1")
+	got := f.claimed(1, 1000, 300*time.Millisecond)
+	if len(got) != 1 {
+		t.Fatalf("claimed %d", len(got))
+	}
+	if err := f.s.RenewRevisionClaim(ctx, got[0], "test", time.Minute); err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	if err := f.s.RenewRevisionClaim(ctx, got[0], "someone else", time.Minute); !errors.Is(err, storage.ErrConflict) {
+		t.Errorf("renew by a stranger: %v, want ErrConflict", err)
+	}
+	time.Sleep(400 * time.Millisecond)
+	if again := f.claimed(1, 1000, time.Minute); len(again) != 0 {
+		t.Errorf("a renewed lease expired: %+v", again)
+	}
+	if n, err := f.s.ReleaseRevisionClaims(ctx, "test"); err != nil || n < 1 {
+		t.Fatalf("release: %d, %v", n, err)
+	}
+	if again := f.claimed(1, 1000, time.Minute); len(again) != 1 {
+		t.Errorf("a released revision must be claimable at once, got %d", len(again))
+	}
+	if err := f.s.RenewRevisionClaim(ctx, got[0], "other", time.Minute); !errors.Is(err, storage.ErrConflict) {
+		t.Errorf("renew after release by another owner: %v", err)
 	}
 }
