@@ -1,6 +1,6 @@
 # Plan: Release counters (CI_CNT / B_CNT) from the source history
 
-Status: W1-W4 implemented, W5 in progress, W6 not implemented (decision 1), W7-W8 open
+Status: W1-W5 implemented, W6 not implemented (decision 1), W7-W8 open
 Audience: implementation agents (Sonnet) + human reviewer
 Depends on: plan 01 (checker, recipe fetch, manifests), plan 03 (coord leases, CLI patterns)
 
@@ -494,7 +494,7 @@ continues for the same versrel across attempts, restarts at 1 for a new versrel;
 legacy floor (legacy `ci=1,bcnt=130`, new CI 1 → B 131; new CI 2 → B 1);
 retried attempt returns stored counters.
 
-### W5. CLI — required
+### W5. CLI — implemented
 
 Files: `pkg/cli/admin_release.go` (+ tests), `pkg/cli/admin.go`,
 `docs/specs/04-access-control-and-auth.md` (scope `admin:release[:<project>]`).
@@ -503,18 +503,24 @@ Files: `pkg/cli/admin_release.go` (+ tests), `pkg/cli/admin.go`,
 `admin gc`):
 - `show <project> [<package>...] [--all-revisions] [--json]`: per package the
   latest revision (seq, commit, version, git_vrev, vrev, state, last error) and,
-  per unit known to the build state, the last versrel/bcnt.
-- `recompute <project> [<package>...|--all] [--dry-run] [--yes] [--json]`:
-  deletes the matching `source_history` rows and sets the **latest** revision to
-  pending; on finish the new vrev is `max(old vrev, computed)` unless
-  `--allow-decrease` (prints a warning; changes no existing binaries).
-- `set <project> <package> --vrev N [--commit C] [--dry-run] [--yes] [--json]`:
-  sets the latest revision (must match `--commit` if given) to `vrev = N`,
-  `source = admin`.
-- `seed <project> --file F [--dry-run] [--yes] [--json]`: see W6.
+  per unit known to the build state, the last versrel/bcnt
+  (`package_build_state.versrel`). A named package without a revision log is an
+  error.
+- `recompute <project> <package>...|--all [--allow-decrease] [--dry-run] [--yes] [--json]`:
+  drops the `source_history` rows of the packages' git urls and sets the **latest**
+  revision to pending (a revision that is pending already is left alone); on finish
+  the new vrev is `max(old vrev, computed)` (`min_vrev`) unless `--allow-decrease`
+  (prints a warning on stderr; changes no existing binaries). The unit waits as
+  blocked until the resolver is through (seconds: the checker records it as wanted).
+- `set <project> <package> --vrev N [--commit C] [--version V] [--dry-run] [--yes] [--json]`:
+  sets the latest revision (must be pinned to `--commit`, a prefix is enough, if
+  given) to `vrev = N`, `source = admin`; `--version` is needed only while the
+  revision has no version yet.
+- `seed <project> --file F ...`: not implemented, see W6.
 
 Rich `--help` with examples; without `--yes`/`--dry-run` mutations ask when
-interactive and fail when not; `--json` deterministic.
+interactive and fail when not; `--json` prints one deterministic document on
+stdout, diagnostics (warnings) go to stderr, no ANSI.
 
 ### W6. Optional seed from OBS — not now (decision 1)
 

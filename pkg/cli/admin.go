@@ -28,6 +28,7 @@ triggers, force package rebuilds, and manage queue priorities.`,
 	adminCmd.AddCommand(newAdminPurgeCmd(opts))
 	adminCmd.AddCommand(newAdminBuildRepoCmd(store, opts, buildRepo))
 	adminCmd.AddCommand(newAdminGCCmd(store, opts, gcOpen))
+	adminCmd.AddCommand(newAdminReleaseCmd(store, opts))
 	return adminCmd
 }
 
