@@ -7,9 +7,14 @@ Wants=bsgo-signd.service bsgo-repo-slfo11.service
 WorkingDirectory=%h/Devel/bsgo
 EnvironmentFile=%h/Devel/bsgo/config/s3-credentials.env
 Environment=DATABASE_URL=postgres://bsgo:password@localhost:5432/bsgodb?sslmode=disable
+# Temp files (publish dirs with copies of the RPMs, DoD uploads, signing, and
+# createrepo_c) go to disk, not to /tmp: /tmp is a RAM-backed tmpfs with a
+# per-user quota. Leftovers of a run interrupted by a restart are removed.
+Environment=TMPDIR=/var/tmp/bsgo-server
+ExecStartPre=/bin/sh -c 'mkdir -p /var/tmp/bsgo-server && find /var/tmp/bsgo-server -mindepth 1 -maxdepth 1 -name "bsgo-*" -exec rm -rf {} +'
 # The containers may still be starting after boot.
 ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do podman exec bsgo-postgres pg_isready -q && exit 0; sleep 2; done; exit 1'
-ExecStart=%h/Devel/bsgo/bin/bsgo-server -role all -signd-addr 127.0.0.1:5167 -gc-interval 6h
+ExecStart=%h/Devel/bsgo/bin/bsgo-server -role all -signd-addr 127.0.0.1:5167 -gc-interval 6h -work-dir /var/tmp/bsgo-server
 StandardOutput=append:%h/Devel/bsgo/server.log
 StandardError=append:%h/Devel/bsgo/server.log
 Restart=on-failure
